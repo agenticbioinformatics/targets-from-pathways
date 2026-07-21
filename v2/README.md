@@ -15,22 +15,25 @@ public, disease-independent map of how genes functionally relate to a target,
 so our core research question is whether pathway topology alone — without
 patient-specific omics — can provide a credible, orthogonal line of evidence
 for alternative-target discovery. We sharpen this beyond simple pathway
-overlap by adding a network-diffusion (physics-inspired) propagation model
-alongside topological distance, and by explicitly cross-validating pathway
-evidence against independent, non-pathway-derived genetic evidence to avoid
-circular reasoning — a rigor gap the original project's own scoring formula
-did not address. The tool uses only public data: Open Targets Platform for
-disease-target genetic associations, tractability, and safety, and Reactome
-for pathway gene sets and functional interactions; no patient-specific data
-is required. Given a target of interest and a disease, the pipeline finds
-disease-relevant pathways, builds a gene-gene graph spanning the target's and
-the disease's pathway neighborhoods, scores candidate genes by topological
-and diffusion proximity to the target, re-weights by independent genetic
-evidence, and annotates candidates with tractability and safety information
-so results are actionable, not just statistically interesting. What's novel
-here relative to the original project is the explicit orthogonality
-discipline (excluding pathway-derived Open Targets evidence from the
-validation step) and the addition of a literature-curated benchmark of known
+overlap by adding network-diffusion (physics-inspired) propagation models —
+standard random-walk-with-restart and a backtrack-free (non-backtracking)
+walk variant — alongside topological distance, and by explicitly
+cross-validating pathway evidence against independent, non-pathway-derived
+genetic evidence to avoid circular reasoning — a rigor gap the original
+project's own scoring formula did not address. The tool uses only public
+data: Open Targets Platform for disease-target genetic associations,
+tractability, and safety, and Reactome for pathway gene sets and functional
+interactions; no patient-specific data is required. Given a target of
+interest and a disease, the pipeline finds disease-relevant pathways, builds
+a gene-gene graph spanning the target's and the disease's pathway
+neighborhoods, incorporates independent genetic evidence directly as node
+and edge weights on that graph, scores candidate genes by weighted
+topological and diffusion proximity to the target, and annotates candidates
+with tractability and safety information so results are actionable, not just
+statistically interesting. What's novel here relative to the original
+project is the explicit orthogonality discipline (excluding pathway-derived
+Open Targets evidence from the weighting step), the backtrack-free walk
+scoring method, and the addition of a literature-curated benchmark of known
 clinical resistance mechanisms (e.g. EGFR→MET) to sanity-check the method
 against ground truth before trusting its output. The expected deliverable is
 a small web app: a researcher enters a target and a disease and gets back a
@@ -39,9 +42,10 @@ limitations going in: pathway database coverage and curation bias, sparse
 Open Targets safety annotation coverage for many genes, a benchmark set small
 enough (5–15 cases) that validation results must be read as descriptive, not
 statistically powered, and the deliberate exclusion of patient-specific
-expression data from the default pipeline (available as an optional,
-off-by-default filter). This tool is meant to complement, not replace,
-genetic and clinical evidence in target prioritization.
+expression data entirely — no tissue-expression filter is included, keeping
+the method strictly pathway- and association-evidence-based. This tool is
+meant to complement, not replace, genetic and clinical evidence in target
+prioritization.
 
 ## Pipeline overview
 
@@ -50,15 +54,16 @@ genetic and clinical evidence in target prioritization.
 | 1. Ingest | Take target gene + disease (EFO ID) + pathway DB config; fetch/cache Open Targets and Reactome data. | Setup |
 | 2. Disease-pathway discovery | GSEA (FDR-corrected) of disease-associated genes against pathway gene sets → disease-relevant pathway list. | H1 |
 | 3. Pathway graph construction | Build a gene-gene graph from the union of disease-relevant and target-relevant pathway co-membership (+ optional Reactome functional-interaction edges); pin DB version, fix random seeds. | H1, H2 |
-| 4. Candidate scoring | Swappable `--method`: topology score (co-membership / shortest path / branch-convergence) or diffusion score (personalized PageRank / random-walk-with-restart from the target node, via an existing library). | H1, H2, H3 |
-| 5. Genetic-evidence integration | Re-weight/flag candidates using Open Targets evidence restricted to non-pathway-derived datatypes (e.g. `genetic_association`, `known_drug`), explicitly excluding `affected_pathway`/literature-pathway sources, to preserve orthogonality with Stages 2–4. | H4 |
-| 6. Contextual annotation & filtering | Attach Open Targets tractability bucket and safety flags; compute a configurable composite score. Optional, off-by-default tissue-expression filter (GTEx) down-weights candidates not expressed in the disease-relevant tissue. | H5, H6, H10 |
+| 4. Genetic-evidence weighting | Compute Open Targets evidence restricted to non-pathway-derived datatypes (e.g. `genetic_association`, `known_drug`, explicitly excluding `affected_pathway`/literature-pathway sources) and map the resulting scores onto the Stage 3 graph as node weights and, optionally, derived edge weights — so genetic evidence directly informs Stage 5's scoring rather than only re-ranking its output after the fact, while preserving orthogonality with Stages 2–3. | H4 |
+| 5. Candidate scoring | Swappable `--method`: topology score (co-membership / shortest path / branch-convergence, weight-aware), random-walk-with-restart (RWR), or backtrack-free walk (BFW, a non-backtracking RWR variant, via [GBA-centrality](https://github.com/jedrzejkubica/GBA-centrality)) — all from the target node, all able to consume Stage 4's node/edge weights. | H1, H2, H3 |
+| 6. Contextual annotation & filtering | Attach Open Targets tractability bucket and safety flags; compute a configurable composite score. No tissue-expression filtering — the method stays strictly pathway- and association-evidence-based. | H5, H6 |
 | 7. Benchmark validation | Score a small literature-curated set of known resistance/compensation gene pairs (held out of Stage 2's seed genes); report descriptive rank/percentile recovery vs. a random background, not a significance test. | H8 |
 | 8. Output/report | Ranked table (per-candidate scores, evidence trace, tractability/safety) plus a web UI: target + disease in, ranked list out. | Deliverable |
 
-Hypotheses H7 (cross-pathway-DB consensus) and H9 (target-modality
-generalization) were evaluated and explicitly dropped/deferred from hackathon
-scope — see the brainstorm changelog below.
+Hypotheses H7 (cross-pathway-DB consensus), H9 (target-modality
+generalization), and H10 (disease-context expression weighting) were
+evaluated and explicitly dropped from hackathon scope — H10 was removed
+entirely (not kept as an optional filter) per the plan update below.
 
 ### Review changelog (Phase 6, converged after 3 of 5 iterations)
 
@@ -73,6 +78,25 @@ scope — see the brainstorm changelog below.
   to avoid validating pathway evidence against itself.
 - **Iter 3:** no substantive issues found — converged, stopped early.
 
+### Plan update (user-directed, post-review)
+
+- **Stage 5 (candidate scoring):** added backtrack-free walk (BFW /
+  non-backtracking random-walk-with-restart) as a third scoring method
+  alongside topology and standard RWR, using the existing
+  [GBA-centrality](https://github.com/jedrzejkubica/GBA-centrality) tool
+  rather than reimplementing non-backtracking walk logic — consistent with
+  the earlier review requirement to reuse existing libraries for graph
+  algorithms.
+- **Stage 4 (was "genetic-evidence integration"), reordered ahead of
+  candidate scoring:** changed from post-hoc re-ranking of Stage 5's output
+  to computing node weights (and optional edge weights) from Open Targets
+  association scores, still restricted to non-pathway datatypes for
+  orthogonality, which now feed directly into Stage 5's topology and
+  diffusion computations.
+- **Stage 6 (contextual annotation & filtering):** removed the optional
+  GTEx tissue-expression filter entirely; H10 is dropped from scope rather
+  than kept as an off-by-default option.
+
 ## Development plan
 
 Sized for a small (2–4 person) mixed bio+CS team on laptop-scale compute.
@@ -83,11 +107,10 @@ Sized for a small (2–4 person) mixed bio+CS team on laptop-scale compute.
 - Milestone: for a toy (target, disease) pair, produce a disease-relevant
   pathway list and a constructed gene-gene graph.
 
-**Day 2 — Scoring and evidence integration**
-- Stage 4 (topology + diffusion candidate scoring, both methods runnable)
-- Stage 5 (genetic-evidence integration, non-pathway datatypes only)
-- Stage 6 (tractability + safety annotation, composite score; expression
-  filter only if time allows)
+**Day 2 — Weighting and scoring**
+- Stage 4 (genetic-evidence node/edge weighting, non-pathway datatypes only)
+- Stage 5 (topology + RWR + BFW candidate scoring, all weight-aware)
+- Stage 6 (tractability + safety annotation, composite score)
 - Milestone: full ranked, annotated candidate list on a real example (e.g.
   rheumatic disease / PTGS2, reusing the original project's example as a
   known-reasonable sanity check).

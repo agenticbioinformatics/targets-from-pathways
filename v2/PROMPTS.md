@@ -98,68 +98,84 @@ beyond this repo.
 **Wire to next stage:**
 > Ensure `build_graph.py` outputs the target gene's node ID explicitly
 > alongside the graph file (e.g. a small sidecar JSON with `target_node` and
-> `graph_path`), since Stage 4's scoring methods need to know which node is
-> the diffusion/BFS source without re-deriving it.
+> `graph_path`), since Stage 4's weighting and Stage 5's scoring methods
+> (topology, RWR, BFW) all need to know which node is the source, without
+> re-deriving it.
 
 ---
 
 ## Day 2
 
-### Stage 4 — Candidate scoring
+### Stage 4 — Genetic-evidence weighting
 
 **Implement:**
-> Write `score_candidates.py` that loads the Stage 3 graph and target node,
-> and supports `--method topology` and `--method diffusion` (default:
-> run both, output both scores as separate columns). Topology method:
-> compute, for each candidate gene, shortest-path distance to the target
-> node and a co-membership count (number of shared pathways). Diffusion
-> method: run personalized PageRank (via `networkx.pagerank` with
-> personalization concentrated on the target node) or an existing
-> random-walk-with-restart implementation — do not hand-roll the diffusion
-> algorithm. Use the fixed seed from the graph metadata for any stochastic
-> step. Output a ranked TSV: gene, topology_score, diffusion_score.
+> Write `genetic_evidence_weights.py` that takes the Stage 3 graph (with
+> its target node) and the Open Targets association data, and computes
+> per-gene genetic-evidence scores restricted explicitly to non-pathway-
+> derived datatypes (`genetic_association`, `known_drug` — exclude
+> `affected_pathway` and any literature/pathway-derived datatype). Add a
+> `--datatypes` CLI arg (comma-separated) defaulting to
+> `genetic_association,known_drug` so the exclusion is explicit and
+> overridable, with a code comment explaining why `affected_pathway` is
+> excluded by default (orthogonality with Stages 2-3). Map these scores
+> onto the graph as node weight attributes (`genetic_evidence_score`,
+> default 0 for genes with no matching evidence), and optionally derive
+> edge weights via a `--edge-weight-mode` CLI arg (`none` default, or
+> `avg`/`product` of the two endpoint node weights). Output the updated
+> graph in the same serialization format Stage 3 produces, plus a plain
+> TSV of per-gene weights for inspection.
 
 **Test:**
-> Add a pytest test on a small synthetic graph (e.g. a star graph plus a
-> longer chain) where you can hand-compute expected shortest-path distances
-> and a rough expected diffusion ranking (closer nodes should rank higher);
-> assert `score_candidates.py`'s topology output matches exactly and the
-> diffusion output preserves the expected relative ordering.
+> Add a pytest test with a small fixture Open Targets association table
+> containing a mix of datatypes for a few genes on a small synthetic graph;
+> verify that node weights only reflect the allowed datatypes, that a gene
+> with only `affected_pathway` evidence gets weight 0 by default, and that
+> edge weights (when enabled) are computed correctly from endpoint node
+> weights for a hand-picked edge.
+
+**Wire to next stage:**
+> Ensure `genetic_evidence_weights.py` writes the weighted graph in exactly
+> the same format Stage 3 produces, so `score_candidates.py` (Stage 5) can
+> load either the unweighted Stage 3 graph or this weighted graph
+> interchangeably via the same `--graph` argument. Document the node/edge
+> weight attribute names as a comment at the top of the script.
+
+### Stage 5 — Candidate scoring (topology, RWR, BFW)
+
+**Implement:**
+> Write `score_candidates.py` that loads a graph (optionally weighted, from
+> Stage 3 or Stage 4) and target node, and supports `--method topology`,
+> `--method rwr`, and `--method bfw` (default: run all three, output as
+> separate columns). Topology method: shortest-path distance to the target
+> node and co-membership count, using edge weights if present. RWR method:
+> personalized PageRank / random-walk-with-restart (via `networkx.pagerank`
+> or an existing RWR library) personalized on the target node, using
+> node/edge weights if present — do not hand-roll this algorithm. BFW
+> method: backtrack-free walk (non-backtracking random-walk-with-restart)
+> — use the existing [GBA-centrality](https://github.com/jedrzejkubica/GBA-centrality)
+> tool (add it as a dependency, e.g. git submodule or local pip-installable
+> package) rather than reimplementing non-backtracking walk logic; check
+> its README for the expected graph input format and adapt Stage 3/4's
+> graph export if needed. Use the fixed seed from the graph metadata for
+> any stochastic step. Output a ranked TSV: gene, topology_score, rwr_score,
+> bfw_score.
+
+**Test:**
+> Add a pytest test on a small synthetic graph containing both a short
+> cycle and a longer chain (backtrack-free walks differ most from RWR when
+> short cycles are present) where you can hand-compute expected
+> shortest-path distances; assert `score_candidates.py`'s topology output
+> matches exactly, that `rwr_score` and `bfw_score` are both produced, and
+> that they differ on the cyclic portion of the fixture in the expected
+> direction (BFW should not artificially inflate a node reachable only by
+> immediate back-and-forth on a single edge).
 
 **Wire to next stage:**
 > Confirm `score_candidates.py`'s output TSV uses a `gene` column that
 > matches the gene identifier convention used by the Open Targets data
 > (document whether it's HGNC symbol or Ensembl ID, and add an ID-mapping
-> step if they differ) so Stage 5 can join on it directly without silent
+> step if they differ) so Stage 6 can join on it directly without silent
 > mismatches.
-
-### Stage 5 — Genetic-evidence integration
-
-**Implement:**
-> Write `genetic_evidence.py` that takes Stage 4's candidate score TSV and
-> the Open Targets association data, and joins in a genetic-evidence score
-> per candidate gene for the given disease, restricted explicitly to
-> non-pathway-derived datatypes (`genetic_association`, `known_drug` —
-> exclude `affected_pathway` and any literature/pathway-derived datatype).
-> Add a `--datatypes` CLI arg (comma-separated) defaulting to
-> `genetic_association,known_drug` so the exclusion is explicit and
-> overridable, with a code comment explaining why `affected_pathway` is
-> excluded by default (orthogonality with Stages 2-4). Output the merged
-> TSV with a new `genetic_evidence_score` column (0 for genes with no
-> matching evidence, not dropped from the table).
-
-**Test:**
-> Add a pytest test with a small fixture Open Targets association table
-> containing a mix of datatypes for a few genes; verify that
-> `genetic_evidence_score` for each gene only reflects the allowed
-> datatypes, and that a gene with only `affected_pathway` evidence gets a
-> score of 0 by default.
-
-**Wire to next stage:**
-> Ensure `genetic_evidence.py`'s output TSV schema is a strict superset of
-> Stage 4's (adds `genetic_evidence_score`, doesn't rename or drop existing
-> columns) so Stage 6 can be run on either Stage 4's or Stage 5's output
-> interchangeably during development.
 
 ### Stage 6 — Contextual annotation & filtering
 
@@ -168,14 +184,13 @@ beyond this repo.
 > joins in, per gene, an Open Targets tractability bucket and a safety flag
 > (from Open Targets safety data), computing a `composite_score` as a
 > configurable weighted sum (`--weights` CLI arg, e.g.
-> `topology:0.3,diffusion:0.3,genetic_evidence:0.2,tractability:0.1,safety:0.1`,
-> with sane documented defaults). Add an optional `--expression-filter`
-> flag that, if a GTEx tissue-expression file path and a `--tissue` arg are
-> given, down-weights (does not hard-drop) candidates below a median-TPM
-> threshold; leave this off by default. Document that safety data has
-> sparse coverage and genes with no safety annotation should not be
-> penalized as if they were confirmed safe (flag them as `safety: unknown`,
-> not `safety: safe`).
+> `topology:0.2,rwr:0.2,bfw:0.2,genetic_evidence:0.2,tractability:0.1,safety:0.1`,
+> with sane documented defaults). Document that safety data has sparse
+> coverage and genes with no safety annotation should not be penalized as
+> if they were confirmed safe (flag them as `safety: unknown`, not
+> `safety: safe`). Do not incorporate any tissue-expression data — this
+> pipeline is intentionally pathway- and association-evidence-based only,
+> with no expression filter of any kind.
 
 **Test:**
 > Add a pytest test with a small fixture tractability/safety table covering
@@ -228,8 +243,8 @@ beyond this repo.
 > Write a small pipeline orchestrator `run_pipeline.py` that chains Stages
 > 1-6 given `--target` and `--disease`, and a minimal web app (e.g. Flask or
 > Streamlit) with a form for target + disease, running `run_pipeline.py` and
-> displaying the ranked candidate table (composite score, topology,
-> diffusion, genetic evidence, tractability, safety) plus, for each
+> displaying the ranked candidate table (composite score, topology, RWR,
+> BFW, genetic evidence, tractability, safety) plus, for each
 > candidate on click/expand, the evidence trace (which shared pathways,
 > which datatypes). Include the Stage 7 benchmark summary as a static
 > "validation" panel/page in the app, not recomputed per request.
