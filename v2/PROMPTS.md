@@ -114,6 +114,13 @@ beyond this repo.
 > reliable direction or sign, so honour `--fi-curated-only` /
 > `--fi-min-score` here and record the filter in the manifest.
 >
+> **The interaction source is an open decision** — see "Open decision — what
+> counts as pathway topology?" in README.md. The FI file assumed here is
+> option B of five, chosen as a placeholder, not settled. Keep the FI parsing
+> behind a single adapter function so swapping to a Reactome
+> reaction-derived source (Pathway Commons SIF or BioPAX) is one function
+> body, not a rewrite. Do not resolve this decision yourself.
+>
 > **(e) Reports.** Write `coverage_report.json` (per source: raw gene count,
 > mapped count, percent mapped, dropped count, and up to 20 example dropped
 > identifiers) and `scale_report.json` (gene-set size distribution before and
@@ -177,6 +184,15 @@ beyond this repo.
 > Also compute the set of pathways containing the `--target` gene from the
 > manifest and include it in the output (a `contains_target` boolean
 > column). Log the count of sets tested before and after collapsing.
+>
+> **Correcting for annotation bias is an open decision** — see "Open
+> decision — correcting Stage 2 for annotation bias" in README.md. BH-FDR
+> alone is option C of three, chosen as a placeholder. Well-studied genes
+> carry both more Open Targets evidence and more Reactome annotation, so
+> enrichment is inflated systematically and the significant-pathway count
+> will likely be large (v1 returned 250). Structure the code so a
+> per-pathway specificity score can be added as an extra column and filter
+> without reshaping the output. Do not resolve this decision yourself.
 
 **Test:**
 > Add a pytest test for `gsea_discovery.py` using a small synthetic gene set
@@ -211,6 +227,10 @@ beyond this repo.
 > directional, signed edges read straight from Stage 1's
 > `interactions.parquet` (already parsed, filtered and canonicalized — do
 > not re-parse the Reactome FI file here). Tag every edge with `source_db`.
+> Which curation those edges come from is an open decision (see README.md,
+> "Open decision — what counts as pathway topology?"); this stage must work
+> unchanged whichever option is chosen, since it only ever reads the
+> normalized table.
 >
 > **Weight co-membership edges by `1 / (|pathway| - 1)`** (or another
 > documented decreasing function of set size), summed over the pathways that

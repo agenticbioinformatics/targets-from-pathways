@@ -180,6 +180,96 @@ Its outputs are two database-agnostic tables (`gene_sets`, `interactions`)
 plus a canonical `genes` table, a disease-subset association table, and a
 manifest; downstream stages read only these, never raw source files.
 
+## Open decisions
+
+Nothing in this section is agreed. Each item names the placeholder the plan
+currently assumes, and each **requires research and a decision owner** before
+Day 1 code is final.
+
+### 1. What counts as "pathway topology"?
+
+The project claims pathways only, which is what rules out Open Targets'
+`interaction` table — that is protein-protein interaction data and carries
+neither sign nor direction. But the same objection applies to the source the
+plan currently uses: Reactome's Functional Interaction network (Wu et al.
+2010) merges curated reactions with **machine-learning-predicted interactions
+trained on PPI, co-expression and domain-domain features**. Using
+`FIsInGene_*` unfiltered breaks the pathways-only claim exactly as a PPI
+network would.
+
+*Suggested rule, if adopted:* an edge is admissible iff it is derivable from
+a curated Reactome reaction or complex — no PPI assay, co-expression, text
+mining, or ML prediction.
+
+Reactome's reaction graph, projected to genes, would supply direction and
+sign from curation alone:
+
+| Reactome relation | Edge | Sign |
+|---|---|---|
+| A input to reaction R, B output of R | A → B | + |
+| A catalyses R, B output of R | A → B | + |
+| A positive / negative regulator of R | A → outputs(R) | + / − |
+| A, B in the same complex | A — B | 0 |
+
+*Options:* curated-only FI (**current placeholder**) · Pathway Commons SIF
+filtered to `datasource = reactome` · Reactome BioPAX Level 3, sign from
+`Control.controlType` · co-membership only, no interaction edges.
+
+*Trade-off:* reaction-derived graphs are far sparser than FI's ~230k edges —
+less hub domination, but lower candidate recall and some benchmark pairs may
+become unreachable.
+
+### 2. Correcting Stage 2 for annotation bias
+
+GSEA assumes exchangeable gene labels. Well-studied genes carry both more
+Open Targets evidence *and* more Reactome annotation, so enrichment inflates
+systematically rather than randomly — hardest for the large, well-curated
+pathways least informative about any specific disease. v1 returned 250
+pathways and 3,259 candidates, which is barely discriminative. The Jaccard
+collapsing already in Stage 2 fixes redundancy, not bias.
+
+*Options:* BH-FDR alone (**current placeholder**) · disease-label permutation
+null — run the identical enrichment for ~200 other EFO diseases with
+comparable gene counts and report an empirical specificity p per pathway ·
+a cheaper cached "promiscuity score", the fraction of a reference disease
+panel for which a pathway is significant, excluding the top decile.
+
+The permutation null materially increases Stage 2 runtime, which matters for
+Stage 7's repeated runs.
+
+### 3. Capping the target-pathway union in Stage 3
+
+Stage 3 builds from (disease-relevant pathways) ∪ (target-containing
+pathways). The size cap constrains the first term only. If the target sits in
+one very large pathway — PTGS2 is in several — that single membership pulls
+much of Reactome into the graph.
+
+*Options:* no cap (**current placeholder**) · apply the same
+`--min/--max-set-size` to the target side · keep only the *k* smallest
+pathways containing the target · exclude Reactome's top-level hierarchy
+roots. Not mutually exclusive.
+
+### Open research
+
+Needed before Stage 1 can be finished. All are measurable or checkable on
+Day 1 — Stage 1's `coverage_report.json` and `scale_report.json` are designed
+to answer the last three directly.
+
+- Do Reactome **numbered-release URLs** exist for `ReactomePathways.gmt` and
+  the FI file? If not, pin by recorded sha256 rather than by URL.
+- The FI file's **real schema** — and is curated cleanly separable from
+  predicted? Assumed to be `Gene1, Gene2, Annotation, Direction, Score` with
+  curated at `Score == 1.0`; unverified.
+- Does **Pathway Commons SIF retain BioPAX `controlType`** (ACTIVATION /
+  INHIBITION)? This alone decides whether that option is viable at all.
+- Is the Reactome mapping file **PE-level or gene-level**, and what is a
+  correct PE→gene collapse? (v1 leaked `GRB2-1` by getting this wrong.)
+- The real **Reactome→Ensembl mapping rate** — the 90% coverage floor is a
+  placeholder.
+- The real **set-size distribution and projected edge count** — the
+  `--max-set-size` of 200 is GSEA convention, not a derived number. The
+  Jaccard threshold of 0.7 is likewise a placeholder.
+
 ## Development plan
 
 Sized for a small (2–4 person) mixed bio+CS team on laptop-scale compute.
