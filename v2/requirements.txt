@@ -1,0 +1,47 @@
+# Stage 0 — shared schemas (inter-stage data contracts)
+pydantic>=2.0
+pandera
+
+# Stage 1 — ingest & canonicalize (download, parquet I/O, ID mapping)
+pyarrow
+pandas
+
+# Stage 2 — disease-pathway discovery (GSEA, FDR correction)
+blitzgsea
+statsmodels
+
+# Stage 3 — pathway-based gene-gene graph construction
+networkx
+scipy
+
+# Stage 4 — genetic-evidence weighting
+pandas
+pyarrow
+
+# Stage 5 — candidate scoring (topology, RWR, backtrack-free walk)
+networkx
+numpy
+# GBA-centrality (backtrack-free walk / non-backtracking RWR) is a standalone
+# tool, not on PyPI — see "Non-pip dependencies" below.
+
+# Stage 6 — contextual annotation & filtering
+pandas
+
+# Stage 7 — benchmark validation
+pandas
+numpy
+scipy
+
+# Stage 8 — output/report + web UI
+streamlit
+
+# Testing (all stages)
+pytest
+
+# Non-pip dependencies:
+# - GBA-centrality (Stage 5, backtrack-free walk / non-backtracking RWR):
+#   standalone tool, not distributed via PyPI. Install per instructions at
+#   https://github.com/jedrzejkubica/GBA-centrality
+# - Flask is a documented alternative to Streamlit for Stage 8's web UI
+#   (README/PROMPTS.md leave this an open choice); if Flask is picked instead,
+#   swap the `streamlit` line above for `flask`.
