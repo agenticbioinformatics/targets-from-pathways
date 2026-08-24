@@ -1,183 +1,329 @@
-> Open Targets Hackathon, October 21-22, 2025
+# Target Rescue via Pathways (v2) — Hackathon Plan
 
+> Fresh redesign of the pathway-based alternative-target tool, building on the
+> lessons and open questions from the original [targets-from-pathways](../README.md)
+> project (Open Targets Hackathon, Oct 2025), but not bound to its specific
+> method choices.
 
-<h1 align="left">Project #18: Target prioritization by pathways </h1>
+## Introduction
 
-<p align="center">
-  <img width="600" height="400" src="figures/team_logo.png">
-</p>
+When a therapy acting on a specific molecular target stops working for a
+patient, clinicians and researchers need alternative or compensatory targets
+that could restore treatment efficacy, but systematically finding them is
+hard without patient-specific multi-omics data. Biological pathways encode a
+public, disease-independent map of how genes functionally relate to a target,
+so our core research question is whether pathway topology alone — without
+patient-specific omics — can provide a credible, orthogonal line of evidence
+for alternative-target discovery. We sharpen this beyond simple pathway
+overlap by adding network-diffusion (physics-inspired) propagation models —
+standard random-walk-with-restart and a backtrack-free (non-backtracking)
+walk variant — alongside topological distance, and by explicitly
+cross-validating pathway evidence against independent, non-pathway-derived
+genetic evidence to avoid circular reasoning — a rigor gap the original
+project's own scoring formula did not address. The tool uses only public
+data: Open Targets Platform for disease-target genetic associations,
+tractability, and safety, and Reactome for pathway gene sets and
+directional, signed functional interactions; no patient-specific data is
+required. Given a target of interest and a disease,
+the pipeline finds disease-relevant pathways, builds a **pathway-based
+gene-gene graph** spanning the target's and the disease's pathway
+neighborhoods — a directed graph with positive/negative (activating/
+inhibiting) edges sourced from Reactome's functional-interaction
+annotations — incorporates independent genetic evidence directly as node and
+edge weights on that graph, scores candidate genes by weighted topological
+and diffusion proximity to the target, and annotates candidates with
+tractability and safety information so results are actionable, not just
+statistically interesting. The pipeline runs on Reactome alone for the
+hackathon, but every stage consumes database-agnostic normalized tables
+carrying a `source_db` column, so a second curation (WikiPathways, OmniPath,
+KEGG) can later be added as a single adapter without touching downstream
+stages — cross-database comparison is a documented stretch goal rather than
+core scope. What's novel here relative to the original project is the
+explicit orthogonality discipline (excluding pathway-derived Open Targets
+evidence from the weighting step), the directed/signed graph representation,
+the backtrack-free walk scoring method, end-to-end identifier
+canonicalisation with mapping-coverage reporting, and the addition of a
+literature-curated benchmark of known clinical resistance mechanisms (e.g.
+EGFR→MET) to sanity-check the method against ground truth before trusting
+its output. The expected deliverable is
+a small web app: a researcher enters a target and a disease and gets back a
+ranked, evidence-annotated list of candidate alternative targets. Known
+limitations going in: single-database (Reactome) coverage and curation bias,
+uncorrected in this version because no second curation is run; sparse
+Open Targets safety annotation coverage for many genes, a benchmark set small
+enough (5–15 cases) that validation results must be read as descriptive, not
+statistically powered, and the deliberate exclusion of patient-specific
+expression data entirely — no tissue-expression filter is included, keeping
+the method strictly pathway- and association-evidence-based. This tool is
+meant to complement, not replace, genetic and clinical evidence in target
+prioritization.
 
+## Pipeline overview
 
-The aim of the project was to develop a disease-specific and pathway-based target assessment tool. We built a bioinformatics workflow that uses a target of interest and disease-specific biological pathways to find alternative targets for treatments. This tool can help researchers understand biological pathways underlying disease and identify promising intervention points considering both efficacy and safety profiles along with target tractability.
+| Stage | Purpose | Addresses |
+|---|---|---|
+| 1. Ingest & canonicalize | Take target gene + disease (EFO ID); resolve source data by version-pinned, checksummed download (or validate an existing `--data-dir`); **canonicalize every gene identifier to Ensembl gene ID** using the Open Targets `target` parquet as the ID authority; subset OT associations to the disease; normalize Reactome gene sets and functional interactions into two database-agnostic tables; emit a manifest plus mapping-coverage and graph-scale reports. | Setup, H1 |
+| 2. Disease-pathway discovery | GSEA (FDR-corrected) of disease-associated genes against Reactome gene sets, over size-capped and redundancy-collapsed sets → disease-relevant pathway list. | H1 |
+| 3. Pathway-based gene-gene graph construction | Build a **directed, signed** pathway-based gene-gene graph (`networkx.DiGraph`) from the union of disease-relevant and target-relevant pathway co-membership — with co-membership edges down-weighted by pathway size — plus directional, positive/negative (activating/inhibiting) relation edges from Stage 1's normalized Reactome functional-interaction table; DB versions and seed carried from the manifest. | H1, H2 |
+| 4. Genetic-evidence weighting | Compute Open Targets evidence restricted to non-pathway-derived datatypes (e.g. `genetic_association`, `known_drug`, explicitly excluding `affected_pathway`/literature-pathway sources) and map the resulting scores onto the Stage 3 graph as **node weights and edge weights** — so genetic evidence directly informs Stage 5's scoring rather than only re-ranking its output after the fact, while preserving orthogonality with Stages 2–3. | H4 |
+| 5. Candidate scoring | Swappable `--method`: topology score (co-membership / shortest path / branch-convergence, direction- and weight-aware), random-walk-with-restart (RWR), or backtrack-free walk (BFW, a non-backtracking RWR variant, via [GBA-centrality](https://github.com/jedrzejkubica/GBA-centrality)) — all from the target node, all able to consume Stage 4's node/edge weights and Stage 3's edge directions/signs. | H1, H2, H3 |
+| 6. Contextual annotation & filtering | Attach Open Targets tractability bucket and safety flags; compute a configurable composite score. No tissue-expression filtering — the method stays strictly pathway- and association-evidence-based. | H5, H6 |
+| 7. Benchmark validation | Score a small literature-curated set of known resistance/compensation gene pairs (held out of Stage 2's seed genes); report descriptive rank/percentile recovery against a random background, not a significance test. | H8 |
+| 8. Output/report | Ranked table (per-candidate scores, evidence trace, tractability/safety) plus a web UI: target + disease in, ranked list out. | Deliverable |
 
+Hypotheses H9 (target-modality generalization) and H10 (disease-context
+expression weighting) were evaluated and explicitly dropped from hackathon
+scope — H10 was removed entirely (not kept as an optional filter) per the
+first plan update below. H7 (cross-pathway-DB consensus) was briefly
+promoted into core scope, then returned to **stretch goal** status in plan
+update 3: the hackathon build runs Reactome only, but Stage 1's normalized
+`source_db`-tagged tables keep the seam open so a second curation can be
+added later as one adapter.
 
-## Contributors
-- Jędrzej Kubica (jedrzej.kubica@univ-grenoble-alpes.fr)
-- Polina Rusina (polina@ebi.ac.uk)
-- Siddharth Sethi (sidharth.sethi@astx.com)
-- Elvis Poku-Adusei (elvispokkad@yahoo.com)
+### Review changelog (Phase 6, converged after 3 of 5 iterations)
 
+- **Iter 1:** merged target-pathway context into graph construction; merged
+  tractability/safety/expression into one annotation stage; added FDR
+  correction requirement to GSEA; required benchmark genes be held out of
+  the seed-gene list; required using existing libraries for GSEA and
+  diffusion rather than reimplementing; required pinned DB versions and
+  fixed seeds.
+- **Iter 2:** caught that Open Targets' aggregated association score is
+  partly pathway-derived — restricted Stage 5 to non-pathway datatypes only,
+  to avoid validating pathway evidence against itself.
+- **Iter 3:** no substantive issues found — converged, stopped early.
 
-## Introdution
+### Plan update (user-directed, post-review)
 
-We celebrated a decade of the Open Targets Platform (https://platform.opentargets.org/) for drug target identification and prioritisation at the Open Targets Hackathon on October 21-22, 2025. We imagined a scenario where a researcher is investigating a patient for whom the therapy acting on a specific target is failing. This necessitates finding alternative or compensatory targets that would make the treatment effective.
+- **Stage 5 (candidate scoring):** added backtrack-free walk (BFW /
+  non-backtracking random-walk-with-restart) as a third scoring method
+  alongside topology and standard RWR, using the existing
+  [GBA-centrality](https://github.com/jedrzejkubica/GBA-centrality) tool
+  rather than reimplementing non-backtracking walk logic — consistent with
+  the earlier review requirement to reuse existing libraries for graph
+  algorithms.
+- **Stage 4 (was "genetic-evidence integration"), reordered ahead of
+  candidate scoring:** changed from post-hoc re-ranking of Stage 5's output
+  to computing node weights (and optional edge weights) from Open Targets
+  association scores, still restricted to non-pathway datatypes for
+  orthogonality, which now feed directly into Stage 5's topology and
+  diffusion computations.
+- **Stage 6 (contextual annotation & filtering):** removed the optional
+  GTEx tissue-expression filter entirely; H10 is dropped from scope rather
+  than kept as an off-by-default option.
 
-Biological pathways are rich source of information for such a study, therefore we aimed to add an additional line of evidence for the identification of alternative targets based only on pathways.
+### Plan update 2 (user-directed)
 
-The pipeline begins by retrieving genes that are already associated with the disease from the Open Targets Platform. We it performs Gene Set Enrichment Analysis (GSEA) to identify pathways relevant to the disease. From these pathways, it retrieves all genes to define a broader disease-associated pathway context. At the same time, it extracts all genes involved in the pathways that have the target of interest. It then finds the intersection of disease- and pathway-specific genes, which represents alternative target candidates that can function within the same molecular processes and disease. These candidates are prioritised using a scoring strategy.
+- **Stage 3, renamed "pathway-based gene-gene graph construction":** the
+  graph is now explicitly directed and signed (positive/negative,
+  activating/inhibiting edges), sourced from Reactome's functional-
+  interaction annotations and, where selected, KEGG's relation types.
+  "Gene-gene graph" is renamed "pathway-based gene-gene graph" throughout to
+  make the pathway provenance explicit.
+- **Stages 1–3 (and, by extension, 2 and 7):** added multi-database support
+  — `--pathway-db` now accepts `reactome`, `kegg`, or `reactome,kegg`, so
+  GSEA and graph construction can run on either database alone or their
+  union. H7 (cross-pathway-DB consensus) is promoted from Backup to core
+  scope: Stage 7's benchmark now reports validation results per database
+  configuration side by side, which is the actual comparison H7 called for.
+- **Stage 4 (genetic-evidence weighting):** edge weighting is no longer
+  optional — both node and edge weights are computed from Open Targets data
+  by default (previously edge weights defaulted to off).
 
+### Plan update 3 (user-directed, Stage 1 redesign)
 
-## Methods
+Three decisions, and a rewrite of Stage 1 to match.
 
-We introduced a new methodology for target prioritization based only on biological pathways. The user provides a disease and a target of interest. First, the pipeline finds disease-associated genes using the Open Targets Platform (https://platform.opentargets.org/) and performs Gene Set Enrichment Analysis (GSEA) using the blitzgsea Python package (https://github.com/MaayanLab/blitzgsea). Genes are prioritezed using pathway selectivity formula (described below) and network propagation (Random Walk with Restart, MutliXrank (Baptista et al, 2020) ; https://github.com/anthbapt/multixrank). The output is a ranking of genes, where the higher the score, the more likely the gene is going to serve as alternative treatment.
+**Decision 1 — Reactome only for the hackathon.** Multi-database support is
+withdrawn from core scope (see H7 note above). This is a deliberate scope
+trade, not a retreat: it removes one GSEA run and the combined run from
+Stage 2, removes the need for a `MultiDiGraph` with parallel conflicting
+edges in Stage 3 (cross-DB sign conflicts cannot arise with one source, so a
+plain `DiGraph` suffices), cuts Stage 7 from ~45 full pipeline runs to
+~10–15, and cuts Stage 8's side-by-side database toggle. The recovered time
+is explicitly reallocated to the degree-matched null model and the
+non-pathway baseline comparison, without which the ranked output cannot be
+distinguished from a list of network hubs. The `source_db` column and the
+adapter seam are retained throughout even though only one value is ever
+emitted, so adding a source later is a new file rather than a refactor.
 
+**Decision 2 — Ensembl gene ID is the canonical internal identifier.** Open
+Targets is the primary evidence source and is natively Ensembl-keyed, and
+Ensembl IDs are stable across symbol renames. Reactome symbols are mapped in
+at Stage 1 and mapped back out to symbols only for display in Stages 6/8.
 
-### Flowchart
-<img width="901" height="261" alt="Flow chart drawio" src="https://github.com/user-attachments/assets/df33bbc8-1842-4937-9062-806452cb6636" />
+**Decision 3 — Stage 1 may download its own inputs**, from a version-pinned
+registry with sha256 verification and a `--no-download` opt-out, replacing
+the previous print-instructions-only rule. Reproducibility is then enforced
+rather than documented, and a new team member gets a working data directory
+in one command.
 
+**Decision 4 — pin Open Targets Platform release 26.06** (released
+2026-06-24), rather than the 25.09 release used by v1. Pin the release
+*number*: `.../platform/latest/` is a moving pointer and would silently
+change results between runs, which is the opposite of what the registry is
+for. Note the consequence — v1's published PTGS2 / rheumatic-disease numbers
+were computed on 25.09 and are therefore a loose sanity reference, not a
+reproducible comparison; do not treat a difference against them as a bug
+without first checking whether the underlying associations changed.
 
-## How to use this repo
+**Stage 1, renamed "Ingest & canonicalize":** promoted from a file-existence
+checker to the resolve → normalize → canonicalize stage. It is now the only
+place gene identifiers are mapped, which is where that work belongs — v1's
+published top-10 contains `GRB2-1`, a Reactome *physical entity* identifier
+leaking into a gene list, which is exactly the class of bug a single
+canonicalisation point prevents. Stage 1 now also emits a mapping-coverage
+report (fail the run below a coverage floor) and a graph-scale report
+projecting Stage 3's edge count from the gene-set size distribution, so an
+infeasible graph is caught on Day 1 morning rather than on Day 2 evening.
+Its outputs are two database-agnostic tables (`gene_sets`, `interactions`)
+plus a canonical `genes` table, a disease-subset association table, and a
+manifest; downstream stages read only these, never raw source files.
 
-```
-git clone git@github.com:jedrzejkubica/targets-from-pathways.git
-cd targets-from-pathways
-```
+## Open decisions
 
-### Data
+Nothing in this section is agreed. Each item names the placeholder the plan
+currently assumes, and each **requires research and a decision owner** before
+Day 1 code is final.
 
-Prepare input data and run the pipeline as described below. We assume that all files are downloaded into `data/`.
+### 1. What counts as "pathway topology"?
 
-```
-mkdir data
-```
+The project claims pathways only, which is what rules out Open Targets'
+`interaction` table — that is protein-protein interaction data and carries
+neither sign nor direction. But the same objection applies to the source the
+plan currently uses: Reactome's Functional Interaction network (Wu et al.
+2010) merges curated reactions with **machine-learning-predicted interactions
+trained on PPI, co-expression and domain-domain features**. Using
+`FIsInGene_*` unfiltered breaks the pathways-only claim exactly as a PPI
+network would.
 
-- Open Targets associations parquets, source: Open Targets Platform (Associations - indirect (by data source))
-  ```
-  wget --recursive --no-parent --no-host-directories --cut-dirs 6 ftp://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/association_by_datasource_indirect .
-  ```
+*Suggested rule, if adopted:* an edge is admissible iff it is derivable from
+a curated Reactome reaction or complex — no PPI assay, co-expression, text
+mining, or ML prediction.
 
-- Open Targets targets parquets, source: Open Targets Platform (Target)
-  ```
-  wget --recursive --no-parent --no-host-directories --cut-dirs 6 ftp://ftp.ebi.ac.uk/pub/databases/opentargets/platform/25.09/output/target .
-  ```
+Reactome's reaction graph, projected to genes, would supply direction and
+sign from curation alone:
 
-- ReactomePathways.gmt file, source: https://reactome.org/download/current/
-  ```
-  wget https://reactome.org/download/current/ReactomePathways.gmt.zip
-  unzip ReactomePathways.gmt.zip
-  ```
+| Reactome relation | Edge | Sign |
+|---|---|---|
+| A input to reaction R, B output of R | A → B | + |
+| A catalyses R, B output of R | A → B | + |
+| A positive / negative regulator of R | A → outputs(R) | + / − |
+| A, B in the same complex | A — B | 0 |
 
-- Reactome gene-to-pathway mapping file, source: https://reactome.org/download-data
-  ```
-  wget https://download.reactome.org/94/Ensembl2Reactome_PE_All_Levels.txt
-  ```
-  
-- Reactome functional interactions (described in Wu et al., 2010), source: https://reactome.org/download-data
-  ```
-  wget http://cpws.reactome.org/caBigR3WebApp2025/FIsInGene_04142025_with_annotations.txt.zip
-  unzip FIsInGene_04142025_with_annotations.txt.zip
-  ```
+*Options:* curated-only FI (**current placeholder**) · Pathway Commons SIF
+filtered to `datasource = reactome` · Reactome BioPAX Level 3, sign from
+`Control.controlType` · co-membership only, no interaction edges.
 
+*Trade-off:* reaction-derived graphs are far sparser than FI's ~230k edges —
+less hub domination, but lower candidate recall and some benchmark pairs may
+become unreachable.
 
-### Run pipeline
+### 2. Correcting Stage 2 for annotation bias
 
-In the instructions below we use an example: rheumatic disease (EFO_0005755) and PTGS2 as the target of interest.
+GSEA assumes exchangeable gene labels. Well-studied genes carry both more
+Open Targets evidence *and* more Reactome annotation, so enrichment inflates
+systematically rather than randomly — hardest for the large, well-curated
+pathways least informative about any specific disease. v1 returned 250
+pathways and 3,259 candidates, which is barely discriminative. The Jaccard
+collapsing already in Stage 2 fixes redundancy, not bias.
 
-1) Gene Set Enrichment Analysis (GSEA): Find pathways associated with the disease
+*Options:* BH-FDR alone (**current placeholder**) · disease-label permutation
+null — run the identical enrichment for ~200 other EFO diseases with
+comparable gene counts and report an empirical specificity p per pathway ·
+a cheaper cached "promiscuity score", the fraction of a reference disease
+panel for which a pathway is significant, excluding the top decile.
 
-```
-python gsea/run_gsea.py \
-  --target_parquets_dir data/target/ \
-  --associations_parquets_dir data/association_by_datasource_indirect/ \
-  --disease EFO_0005755 \
-  --datatype genetic_association \
-  --gmt_file data/ReactomePathways_merged.gmt \
-  --pval_threshold 0.05 \
-  --fdr_threshold 1 \
-  1>disease_pathways.txt
-```
+The permutation null materially increases Stage 2 runtime, which matters for
+Stage 7's repeated runs.
 
-NOTE: `--pval_threshold` and `--fdr_threshold` are user-specified parameters for filtering GSEA results based on statistical significance. Only results with a p-value less <= threshold are kept. Only results with FDR <= threshold are kept.
+### 3. Capping the target-pathway union in Stage 3
 
-2) Pathway-based scoring: 
+Stage 3 builds from (disease-relevant pathways) ∪ (target-containing
+pathways). The size cap constrains the first term only. If the target sits in
+one very large pathway — PTGS2 is in several — that single membership pulls
+much of Reactome into the graph.
 
-For each gene the score is calculated as follows:
+*Options:* no cap (**current placeholder**) · apply the same
+`--min/--max-set-size` to the target side · keep only the *k* smallest
+pathways containing the target · exclude Reactome's top-level hierarchy
+roots. Not mutually exclusive.
 
-`score = (#disease pathways containing the gene + #target pathways containing the gene) / (total number of disease pathways + total number of target pathways)`
+### Open research
 
-Pathway selectivity scores genes based on how frequently they occur in both pathways associated with the disease and the specified target. 
+Needed before Stage 1 can be finished. All are measurable or checkable on
+Day 1 — Stage 1's `coverage_report.json` and `scale_report.json` are designed
+to answer the last three directly.
 
-```
-python reactome/run_reactome.py \
-  --pathway_mapping_file data/Ensembl2Reactome_PE_All_Levels.txt \
-  --disease_pathways_file disease_pathways.txt \
-  --target PTGS2 \
-  1>scores.tsv
-```
+- Do Reactome **numbered-release URLs** exist for `ReactomePathways.gmt` and
+  the FI file? If not, pin by recorded sha256 rather than by URL.
+- The FI file's **real schema** — and is curated cleanly separable from
+  predicted? Assumed to be `Gene1, Gene2, Annotation, Direction, Score` with
+  curated at `Score == 1.0`; unverified.
+- Does **Pathway Commons SIF retain BioPAX `controlType`** (ACTIVATION /
+  INHIBITION)? This alone decides whether that option is viable at all.
+- Is the Reactome mapping file **PE-level or gene-level**, and what is a
+  correct PE→gene collapse? (v1 leaked `GRB2-1` by getting this wrong.)
+- The real **Reactome→Ensembl mapping rate** — the 90% coverage floor is a
+  placeholder.
+- The real **set-size distribution and projected edge count** — the
+  `--max-set-size` of 200 is GSEA convention, not a derived number. The
+  Jaccard threshold of 0.7 is likewise a placeholder.
 
-3) (WIP) Network propagation scoring:
-```
-cd network_propagation
-```
+## Development plan
 
-Build a Reactome functional interaction network:
-```
-python parse_interactions.py --interactions_file ../data/FIsInGene_04142025_with_annotations.txt 1>interactions_reactome.tsv
-```
+Sized for a small (2–4 person) mixed bio+CS team on laptop-scale compute.
 
-Before running MultiXrank:
-- create seeds.txt: one target per line (e.g., disease genes)
-- modify config.yml as specified in https://github.com/anthbapt/multixrank
+**Day 1 — Core graph pipeline**
+- Stage 0 (`schemas.py`: the inter-stage table contracts, written once and
+  validated on read *and* write by every stage — ~45 min, and the single
+  highest-leverage hour of the three days)
+- Stage 1 (ingest & canonicalize: pinned download, Ensembl canonicalisation,
+  normalized Reactome tables, manifest, coverage + scale reports)
+- Stage 2 (GSEA disease-pathway discovery, FDR-corrected)
+- Stage 3 (directed, signed pathway-based gene-gene graph construction,
+  versioned/seeded)
+- In parallel, no code required: curate the Stage 7 benchmark TSV of known
+  resistance pairs with verified PMIDs. This is literature work, it gates
+  Day 3, and it is the one file that must not be agent-generated.
+- Milestone: for a toy (target, disease) pair, produce a disease-relevant
+  pathway list and a constructed pathway-based gene-gene graph, with Stage
+  1's coverage report showing >90% identifier mapping for every source.
 
-run MultiXrank:
-```
-python run_multixrank.py
-```
-The scores will be saved to: output/multiplex_1.tsv
+**Day 2 — Weighting and scoring**
+- Stage 4 (genetic-evidence node/edge weighting, non-pathway datatypes only)
+- Stage 5 (topology + RWR + BFW candidate scoring, all weight-aware)
+- Stage 6 (tractability + safety annotation, composite score)
+- Milestone: full ranked, annotated candidate list on a real example (e.g.
+  rheumatic disease / PTGS2, reusing the original project's example as a
+  known-reasonable sanity check).
 
+**Day 3 — Validation, integration, demo**
+- Stage 7 (benchmark validation against curated resistance cases)
+- Stage 8 (output/report + minimal web UI)
+- End-to-end integration test, documentation pass, demo rehearsal buffer.
 
-## Results
+## Testing steps
 
-Part 1. Pathway-based scoring
-
-We found 250 disease-specific pathways for rheumatic disease (EFO_0005755). We found 3259 genes that are both disease-specific and on the same pathways as target (PTGS2). Here are top 10 genes based on pathway selectivity:
-
-| GENE          | SCORE      |
-|---------------|------------|
-| PTGS2          | 0.279       |
-| CHUK           | 0.238 |
-| ALOX5   | 0.235 |
-| ALOX15  | 0.229 |
-| IKBKG  | 0.226 |
-| PIK3R1  | 0.223 |
-| RELA  | 0.214 |
-| IKBKB  | 0.211 |
-| GRB2-1  | 0.194 |
-
-
-## Future steps
-
-Short-term:
-- test the pathway selectivity scoring formula
-- finalize network propagation with Reactome functional interaction network
-
-Long-term:
-- adapt for other target types (genes, proteins, miRNA)
-- effect of target knockout within the network
-- recommend top drugs (including repurposing) given a desired effect (inhibition, activation) 
-- use efficy and safety (Open Targets Pharmacovigilance)
-- integrate pipeline within Open Targets Platform (https://platform.opentargets.org/)
-
-
-### Python environment
-
-required packages: networkx, pandas, blitzgsea (https://github.com/MaayanLab/blitzgsea), multixrank (https://github.com/anthbapt/multixrank)
-
-
-## Special thank you to the organizers of the Open Targets Hackathon!
-
-
-## References
-1. Wu, G., Feng, X. & Stein, L. A human functional protein interaction network and its application to cancer data analysis. Genome Biol 11, R53 (2010). https://doi.org/10.1186/gb-2010-11-5-r53
-2. Baptista, A., Gonzalez, A. & Baudot, A. Universal multilayer network exploration by random walk with restart. Commun Phys 5, 170 (2022). https://doi.org/10.1038/s42005-022-00937-9
-3. Alexander Lachmann, Zhuorui Xie, Avi Ma’ayan, blitzGSEA: efficient computation of gene set enrichment analysis through gamma distribution approximation, Bioinformatics, Volume 38, Issue 8, March 2022, Pages 2356–2357, https://doi.org/10.1093/bioinformatics/btac076
+- **Per-stage sanity checks**: a tiny synthetic fixture (~15–20 genes, 3–5
+  pathways with a hand-constructed, known-correct answer, including at least
+  one deliberate positive and one negative edge) run through each stage
+  independently, checking exact expected output (e.g. Stage 3's graph has
+  the expected directed, signed edges, Stage 5's topology score matches a
+  hand-computed value).
+- **Identifier-mapping check**: assert Stage 1 maps a clean HGNC symbol, a
+  deprecated symbol via the Open Targets synonym field, and records an
+  unmappable symbol in the dropped list with the correct count — the check
+  that would have caught v1's `GRB2-1`.
+- **Manifest determinism check**: the same inputs produce a byte-identical
+  manifest modulo timestamp, and every recorded artifact sha256 matches the
+  file on disk.
+- **End-to-end integration run**: full pipeline on a real (target, disease)
+  pair (e.g. PTGS2 / rheumatic disease, EFO_0005755) checked for a
+  non-degenerate ranked output and sane runtime.
+- **Ground-truth validation**: Stage 7's benchmark run against the
+  literature-curated resistance/compensation pairs — this is the check that
+  catches pipeline bugs before any
+  biological conclusion is trusted, and the one place small-n results must
+  be reported descriptively (e.g. "N of 10 known pairs ranked in top 5%"),
+  not as a statistical test.
