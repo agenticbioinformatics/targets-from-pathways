@@ -1,0 +1,88 @@
+{
+  "cli_parameters": {
+    "disease": "MONDO_0000001",
+    "max_set_size": 200,
+    "min_set_size": 1,
+    "target": "TARGET"
+  },
+  "coverage_report": {
+    "reactome_gmt": {
+      "dropped_count": 0,
+      "example_dropped_ids": [],
+      "mapped_count": 21,
+      "percent_mapped": 100.0,
+      "raw_gene_count": 21,
+      "source": "reactome_gmt"
+    }
+  },
+  "created_at": "2026-08-24T14:16:57.412911Z",
+  "disease": {
+    "efo_id": "MONDO_0000001",
+    "n_associated_genes": 18,
+    "name": "example disease"
+  },
+  "git_commit": "unknown",
+  "output_artifacts": [
+    {
+      "path": "/home/kubicaj/workspace/agentic-bioinformatics/targets-from-pathways/example_data/stage1_run/gene_sets.parquet",
+      "sha256": "9f6e6d0b7a47bdca972d4f14f9cf9cd2a5e6b9ca28c78c6785020d580f869893"
+    },
+    {
+      "path": "/home/kubicaj/workspace/agentic-bioinformatics/targets-from-pathways/example_data/stage1_run/ot_disease_subset.parquet",
+      "sha256": "10727e900b324669a6ef2a1cb2be1c0c2b29ad5b2ce3e58bc5b29fb7407dd679"
+    },
+    {
+      "path": "/home/kubicaj/workspace/agentic-bioinformatics/targets-from-pathways/example_data/stage1_run/genes.parquet",
+      "sha256": "7be613da80be050b1dc136c2d056e929df6da0967981e730a949127fea6113fe"
+    }
+  ],
+  "resolved_target": {
+    "gene_id": "ENSG00000000001",
+    "input": "TARGET",
+    "symbol": "TARGET"
+  },
+  "run_id": "example0000000001",
+  "scale_report": {
+    "gene_set_size_distribution_after_cap": [
+      {
+        "count": 4,
+        "set_size": 6
+      }
+    ],
+    "gene_set_size_distribution_before_cap": [
+      {
+        "count": 4,
+        "set_size": 6
+      }
+    ],
+    "interaction_counts_by_evidence_type": {},
+    "interaction_counts_by_sign": {},
+    "projected_comembership_edge_count": 0,
+    "sets_retained": 4
+  },
+  "seed": 0,
+  "sources": [
+    {
+      "db": "reactome",
+      "files": [
+        {
+          "bytes": 0,
+          "path": "example_data/fake_reactome.gmt.zip",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "version": "97"
+    },
+    {
+      "db": "opentargets",
+      "files": [
+        {
+          "bytes": 0,
+          "path": "example_data/fake_association.parquet",
+          "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      ],
+      "version": "26.06"
+    }
+  ]
+}

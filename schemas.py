@@ -5,9 +5,13 @@ one of the artifacts defined here — never a raw source file, and never a
 column layout described only in a docstring or comment. Concretely:
 
 - Tabular artifacts (``genes.parquet``, ``gene_sets.parquet``,
-  ``interactions.parquet``, ``ot_disease_subset.parquet``) are pandas
-  DataFrames validated against the ``pandera.DataFrameSchema`` objects below
-  via ``SCHEMA.validate(df)``, on read *and* on write.
+  ``interactions.parquet``, ``ot_disease_subset.parquet``, and Stage 2's
+  ``disease_pathways.tsv``) are pandas DataFrames validated against the
+  ``pandera.DataFrameSchema`` objects below via ``SCHEMA.validate(df)``, on
+  read *and* on write. ``disease_pathways.tsv`` is TSV rather than parquet
+  (it's meant to be eyeballed), but the contract discipline is the same:
+  Stage 3 and Stage 7 read it as ``DiseasePathwaysSchema``, never by
+  re-deriving its column layout from ``gsea_discovery.py``'s source.
 - ``manifest.json`` is validated against the ``Manifest`` pydantic model via
   ``Manifest.model_validate(json.load(f))`` on read and
   ``Manifest.model_dump(mode="json")`` on write.
@@ -51,6 +55,7 @@ __all__ = [
     "GeneSetsSchema",
     "InteractionsSchema",
     "OTAssociationsSchema",
+    "DiseasePathwaysSchema",
     "assert_foreign_key",
     "ResolvedTarget",
     "ResolvedDisease",
@@ -197,6 +202,28 @@ OTAssociationsSchema = DataFrameSchema(
         # GeneSetsSchema.hierarchy_level and InteractionsSchema.confidence
         # above, and the same accepted bool->float64 residual gap.
         "score": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True),
+    },
+    strict=True,
+)
+
+
+DiseasePathwaysSchema = DataFrameSchema(
+    {
+        # Reactome stable ID (or equivalent for a future source_db) — the
+        # join key back to gene_sets.parquet for Stage 3's graph construction.
+        "set_id": Column(str, nullable=False, unique=True),
+        # Human-readable pathway name (gene_sets.set_name), for display.
+        "gene_set": Column(str, nullable=False),
+        "source_db": Column(str, checks=Check.isin(SUPPORTED_SOURCE_DBS), nullable=False),
+        # Nominal GSEA p-value, pre-correction.
+        "pval": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False),
+        # Benjamini-Hochberg FDR, corrected across every pathway actually
+        # tested in this run (see gsea_discovery.py's module docstring) —
+        # not comparable across runs with a different tested-pathway set.
+        "fdr": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False),
+        # Whether this pathway's (collapsed) gene membership includes the
+        # manifest's resolved --target gene.
+        "contains_target": Column(bool, nullable=False),
     },
     strict=True,
 )

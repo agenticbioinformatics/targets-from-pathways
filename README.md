@@ -327,3 +327,74 @@ Sized for a small (2–4 person) mixed bio+CS team on laptop-scale compute.
   biological conclusion is trusted, and the one place small-n results must
   be reported descriptively (e.g. "N of 10 known pairs ranked in top 5%"),
   not as a statistical test.
+
+## Running Stage 2 (`gsea_discovery.py`)
+
+**Setup:** `pip install blitzgsea statsmodels pandas pandera pydantic pyarrow` (or `pip install -r requirements.txt`).
+
+**Run command**, against Stage 1's output for a real (target, disease) pair:
+
+```
+python3 ingest.py --target PTGS2 --disease EFO_0005755 --data-dir ./data --out-dir ./run1
+python3 gsea_discovery.py --manifest ./run1/manifest.json
+```
+
+`gsea_discovery.py` takes no other input — it resolves `gene_sets.parquet`,
+`ot_disease_subset.parquet`, and the target gene entirely from the manifest,
+and writes `disease_pathways.tsv` next to it.
+
+A tiny hand-built example (18 genes, 5 gene sets including one deliberate
+ancestor/child near-duplicate pair and one scattered negative control) is
+checked in under `example_data/` — regenerate it with
+`python3 example_data/build_gsea_example.py`, then:
+
+```
+python3 gsea_discovery.py --manifest example_data/stage1_run/manifest.json
+```
+
+**Expected output** (`example_data/stage1_run/disease_pathways.tsv`,
+columns per `schemas.DiseasePathwaysSchema`; exact `pval`/`fdr` floats jitter
+slightly run-to-run — blitzgsea's internal calibration isn't bit-for-bit
+deterministic even with a fixed seed — but the three pathways returned, their
+order, and `contains_target` are stable):
+
+```
+set_id     gene_set                  source_db  pval       fdr        contains_target
+R-HSA-101  Child Broad Signaling     reactome   ~7e-05     ~3e-04     False
+R-HSA-300  Unrelated Weak Pathway    reactome   ~4e-04     ~9e-04     False
+R-HSA-200  Target Signaling Pathway  reactome   ~8e-04     ~1e-03     True
+```
+
+Log lines confirm the mechanics that matter: `R-HSA-100` ("Ancestor Broad
+Signaling", Jaccard 0.83 against its child `R-HSA-101`) is dropped by the
+collapsing step before testing (`5 sets before, 4 sets after`), and
+`R-HSA-400` ("Scattered Noise Pathway", no coherent enrichment signal) is
+tested but excluded by the FDR filter (`3/4 tested pathways pass`).
+
+**Benchmark holdout** (`--benchmark-holdout-file`, for Stage 7): excludes
+genes from the disease-associated seed set before GSEA runs, so a
+literature-curated resistance-pair gene that happens to overlap Stage 2's
+own evidence doesn't validate itself. Genes are listed one per line
+(`#` comments allowed) and resolved to Ensembl IDs via Stage 1's
+`genes.parquet` — symbol, synonym, or bare Ensembl ID, the same resolution
+`ingest.py` uses for `--target` — never matched directly against
+`ot_disease_subset` (which carries no symbol column at all). Example:
+
+```
+python3 gsea_discovery.py --manifest example_data/stage1_run/manifest.json \
+    --benchmark-holdout-file example_data/benchmark_holdout_example.txt
+```
+
+`example_data/benchmark_holdout_example.txt` holds `OLDG17`, a *synonym*
+(not the approved symbol) for the gene at the core of `R-HSA-300`. Excluding
+it drops `R-HSA-300` to 4 genes — one below blitzgsea's minimum tested-set
+size — so it disappears from `disease_pathways.tsv` entirely (`GSEA tested 3
+pathways`, down from 4) rather than merely losing significance.
+
+`python3 -m pytest tests/test_gsea_discovery.py` runs the unit-level GSEA
+tests (`tests/test_gsea_discovery.py`, 8 tests): a deliberately-enriched
+pathway is returned significant, an individually-significant pathway is
+correctly excluded once BH-FDR is applied across the tested library, non-
+enriched pathways are tested but excluded from output, and a near-duplicate
+ancestor/child pair collapses to the smaller child before GSEA ever sees the
+ancestor.
