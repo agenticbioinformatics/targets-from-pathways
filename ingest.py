@@ -413,11 +413,24 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+# urllib's default User-Agent ("Python-urllib/x.y") is blocked outright by
+# reactome.org's Cloudflare bot protection (403, verified by hand: curl with
+# any User-Agent succeeds, bare urlopen() does not) even though the URL,
+# checksum, and file are otherwise fine. A plain browser-like UA is enough
+# to pass; applied to every request here, not just reactome.org's, since
+# EBI's or Reactome's other hosts could start doing the same at any time.
+_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) targets-from-pathways/ingest.py"
+
+
+def _urlopen(url: str, timeout: float):
+    return urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": _USER_AGENT}), timeout=timeout)
+
+
 def _download_to(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
     try:
-        with urllib.request.urlopen(url, timeout=120) as resp, tmp.open("wb") as f:
+        with _urlopen(url, timeout=120) as resp, tmp.open("wb") as f:
             while True:
                 chunk = resp.read(1 << 20)
                 if not chunk:
@@ -438,7 +451,7 @@ def _list_apache_index(url: str, suffix: str) -> list[tuple[str, int]]:
     to regex without an FTP client.
     """
     try:
-        with urllib.request.urlopen(url, timeout=60) as resp:
+        with _urlopen(url, timeout=60) as resp:
             html = resp.read().decode("utf-8", errors="replace")
     except (urllib.error.URLError, TimeoutError) as e:
         _fail(f"Failed to list {url}: {e}")
