@@ -234,3 +234,172 @@
 **How to run:** `python3 -m pytest` from `v2/` (needs `pyarrow`/`pandas`/
 `pandera`/`pydantic` per `requirements.txt`; no network access required —
 `tests/` never touches the pinned registry).
+
+## Prompt 6
+
+> /hackathon-firstprot Write gsea_discovery.py that takes only the Stage 1
+> --manifest and reads the normalized artifacts it points to — never a raw
+> source file. Retrieve disease-associated genes from
+> ot_disease_subset.parquet using ONLY the genetic_association datatype
+> (not the aggregated/overall score — this matters for avoiding
+> circularity later), and run Gene Set Enrichment Analysis of those genes
+> against the gene_sets.parquet sets (use an existing GSEA library such as
+> blitzgsea, don't reimplement GSEA). Gene sets arrive already size-capped
+> by Stage 1; before testing, additionally collapse near-duplicate sets
+> (Jaccard > 0.7, keeping the smaller/more specific set) because
+> ReactomePathways.gmt is an all-hierarchy-levels file in which ancestor
+> and descendant sets are heavily redundant, which makes
+> Benjamini-Hochberg anticonservative and inflates the significant-pathway
+> count. Apply BH FDR correction across all tested pathways, and output a
+> TSV of disease-relevant pathways with p-value, FDR, gene set, and
+> source_db, filtered by user-specified --pval-threshold and
+> --fdr-threshold CLI args (defaults 0.05 and 0.1). Also compute the set
+> of pathways containing the --target gene from the manifest and include
+> it in the output (a contains_target boolean column). Log the count of
+> sets tested before and after collapsing.
+>
+> Correcting for annotation bias is an open decision — see "Open decision
+> — correcting Stage 2 for annotation bias" in README.md. BH-FDR alone is
+> option C of three, chosen as a placeholder. Well-studied genes carry
+> both more Open Targets evidence and more Reactome annotation, so
+> enrichment is inflated systematically and the significant-pathway count
+> will likely be large (v1 returned 250). Structure the code so a
+> per-pathway specificity score can be added as an extra column and filter
+> without reshaping the output. Do not resolve this decision yourself.
+
+**Changes:**
+- Created `gsea_discovery.py` (Stage 2): reads only `--manifest`, resolving
+  `gene_sets.parquet`/`ot_disease_subset.parquet` via
+  `manifest.output_artifacts` (falling back to a path alongside
+  `manifest.json` if the stored path isn't valid from the current cwd) —
+  never a raw source file. Builds the GSEA ranking signature from
+  `ot_disease_subset`'s `genetic_association` rows only (max score per gene
+  across datasources, never the aggregated/overall score), collapses
+  near-duplicate gene sets (Jaccard > 0.7, inverted-gene-index greedy pass,
+  smallest-first so the more specific set is always kept) before calling
+  `blitzgsea.gsea` for preranked GSEA — BH-FDR comes from blitzgsea's own
+  `statsmodels`-backed correction rather than being reimplemented. Filters
+  on `--pval-threshold`/`--fdr-threshold` (both required, AND-combined),
+  adds `contains_target`, writes `disease_pathways.tsv`. `run_gsea` returns
+  every tested pathway's stats unfiltered specifically so a future
+  specificity-score column can slot in before `filter_results` without
+  reshaping either function — per the open-decision instruction, that
+  score itself was not added.
+- Built a hand-crafted, schema-conformant example
+  (`example_data/build_gsea_example.py` → `example_data/stage1_run/`, 18
+  genes / 5 pathways) rather than downloading real data, since real Stage 1
+  runs need network access. Iterated on the synthetic gene scores/pathway
+  membership by actually running the script until it demonstrably exercised
+  the ancestor/child near-duplicate collapse, a genetic_association-only
+  decoy row (proving the aggregated score isn't used), and a real
+  threshold-excluded "scattered" pathway.
+- Self-review (Phase 6) caught and fixed: a stray no-op column rename left
+  over from drafting, a `run_gsea` return-type annotation that said
+  `pd.DataFrame` but actually returned a tuple, and unrounded
+  scientific-notation floats in the TSV (rounded only at write time, not in
+  the filtering logic); added a short comment explaining the
+  one-directional (non-expression) GSEA signature design choice.
+- Documented setup/run/expected-output in a new README.md "Running Stage 2"
+  section.
+- Verified end-to-end against the example data (`python3 gsea_discovery.py
+  --manifest example_data/stage1_run/manifest.json`).
+
+## Prompt 7
+
+> Add a pytest test for gsea_discovery.py using a small synthetic gene set
+> fixture (e.g. 20 genes, 5 pathways, with a pathway you construct to be
+> deliberately enriched) that verifies: the deliberately-enriched pathway
+> is returned with p-value below threshold, FDR correction is actually
+> being applied (test with a fixture where an individually-significant
+> pathway becomes non-significant after correction), pathways not meeting
+> threshold are excluded from output, and that two near-identical gene
+> sets (Jaccard > 0.7) are collapsed to one before testing.
+
+**Changes:**
+- Added `tests/test_gsea_discovery.py` (8 tests), calling
+  `gsea_discovery.py`'s functions directly on hand-built DataFrames — no
+  manifest/parquet round-trip needed for unit-level GSEA logic.
+- Grew the fixture to 25 genes / 9 pathways (past the suggested 20/5) after
+  hitting two real obstacles discovered by actually running the code: a
+  20-gene signature triggers a `ZeroDivisionError` inside blitzgsea's own
+  calibration (an anchor gene-set-size coincides with the full signature
+  length), and a middle-ranked cluster needs several "noise" pathways
+  padding the tested library before Benjamini-Hochberg has enough multiple-
+  testing burden to actually flip a borderline pathway's significance.
+  Tuned gene-score bands and cluster placement empirically (repeated real
+  `blitzgsea` runs, not hand-derived math) until: `strong_pathway` is
+  unambiguously significant; `borderline_pathway` is individually
+  significant (p < 0.05) but excluded once BH-FDR corrects across the full
+  tested library (fdr > 0.1); 6 scattered noise pathways are tested but
+  excluded; `dup_ancestor`/`dup_child` (Jaccard 0.833) collapse to the
+  smaller child, confirmed absent even from the *unfiltered* result
+  (collapsed before testing, not merely filtered out afterward).
+- Discovered and documented that blitzgsea's seeded output is not
+  bit-for-bit deterministic across runs (multiprocessing-pool jitter,
+  confirmed via 5 repeated runs of the same fixture) — chose fixture
+  margins wide enough to hold regardless, and wrote every assertion as a
+  threshold/inequality check rather than an exact-float pin.
+- Added a bonus test for `build_signature()`'s `genetic_association`-only
+  filtering (a decoy `affected_pathway` row must be ignored).
+- Verified: `python3 -m pytest` → 64 passed, stable across 5 repeated runs.
+
+## Prompt 8
+
+> /hackathon-firstprot Modify gsea_discovery.py to write its pathway list
+> as a stable, documented TSV schema, and add a --benchmark-holdout-file
+> optional CLI arg: a list of genes (resolved to Ensembl IDs via Stage 1's
+> genes table, not matched on symbol) to exclude from the
+> disease-associated seed gene set before running GSEA. This will be used
+> by Stage 7's benchmark validation to prevent circularity when known
+> resistance-pair genes overlap with disease seed genes.
+
+**Changes:**
+- Added `schemas.DiseasePathwaysSchema` (`set_id`, `gene_set`, `source_db`,
+  `pval`, `fdr`, `contains_target`) to `schemas.py`, matching the project's
+  existing pandera-artifact-contract convention; `gsea_discovery.py` now
+  derives `OUTPUT_COLUMNS` from the schema itself (single source of truth
+  for column set *and* order) and validates `disease_pathways.tsv` against
+  it immediately before writing.
+- Added `--benchmark-holdout-file`: resolves gene symbols/synonyms/Ensembl
+  IDs (one per line, `#` comments allowed) via Stage 1's `genes.parquet`,
+  reusing `ingest.py`'s own `resolve_target`/`_build_symbol_index` rather
+  than any new resolution logic, and excludes resolved genes from
+  `ot_disease_subset` before `build_signature` runs; `genes.parquet` is
+  only loaded when the flag is actually passed. Unresolvable entries fail
+  loudly, matching the project's established failure-mode discipline.
+- Extended `example_data/build_gsea_example.py` to also emit
+  `genes.parquet` (with a deliberate synonym case, `OLDG17`) and added
+  `example_data/benchmark_holdout_example.txt`; verified end-to-end that
+  the holdout demonstrably drops a pathway below blitzgsea's minimum
+  tested-set size rather than merely losing significance.
+- Self-review caught and fixed a real gap: a missing
+  `--benchmark-holdout-file` path previously raised a raw
+  `FileNotFoundError` traceback instead of a loud, well-worded failure.
+- Also caught, while re-verifying, that the README's "Expected output"
+  section (written in Prompt 6) hardcoded one run's exact p-values, which
+  jitter run-to-run (the same blitzgsea nondeterminism documented in Prompt
+  7) — fixed the README to show approximate magnitudes and state explicitly
+  what actually is stable (which pathways, their order, `contains_target`).
+- Verified: `python3 -m pytest` → 64 passed, unaffected by the changes.
+
+## Prompt 9
+
+> commit this
+
+**Changes:**
+- Reviewed `git status`/`git diff`, confirmed `example_data/stage1_run/`'s
+  generated artifacts are intentionally committed (same convention already
+  established for `tests/fixtures/`), and committed `README.md`,
+  `schemas.py`, `gsea_discovery.py`, `example_data/`, and
+  `tests/test_gsea_discovery.py` as commit `966ae89`.
+
+## Prompt 10
+
+> create or update a text file called "prompt_history" with my prompts
+> (including this one) and a summary of changes associated with each
+> prompt
+
+**Changes:**
+- Appended Prompts 6-10 to this file, covering `gsea_discovery.py`'s
+  initial implementation, its pytest suite, the TSV-schema/
+  `--benchmark-holdout-file` follow-up, the commit, and this update.
