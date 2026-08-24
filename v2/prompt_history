@@ -1,0 +1,236 @@
+## Prompt 1
+
+> /hackathon-firstprot read the context from README.md. Write schemas.py
+> defining the inter-stage data contracts for this pipeline as pydantic
+> models (for the JSON manifest) and pandera DataFrameSchemas (for the
+> tabular artifacts). Every later stage must validate its inputs on read and
+> its outputs on write against these schemas — prose comments describing
+> column names are not sufficient and have repeatedly failed on projects of
+> this shape. Define at minimum: GenesSchema, GeneSetsSchema,
+> InteractionsSchema, OTAssociationsSchema, Manifest [full field lists as
+> specified in README.md/PROMPTS.md Stage 0]. Note in the module docstring
+> that source_db is retained as a column even though only reactome is
+> emitted in this version... Do not add KEGG, WikiPathways or OmniPath
+> support now. Use code-improvement-advisor for code reviewing and
+> improvement.
+
+**Changes:**
+- Read `README.md` and `PROMPTS.md` (Stage 0 spec) for the exact schema requirements.
+- Created `schemas.py`: pandera `DataFrameSchema`s for `GenesSchema`, `GeneSetsSchema`,
+  `InteractionsSchema`, `OTAssociationsSchema` (Ensembl gene-ID regex on every gene
+  column, `source_db`/`sign`/`evidence_type` vocab checks, `score`/`confidence` range
+  checks, composite `unique=["set_id","gene_id"]`), plus pydantic v2 models for the
+  `Manifest` (nested `ResolvedTarget`, `ResolvedDisease`, `Source`, `SourceFile`,
+  `OutputArtifact`, `CoverageEntry`, `ScaleReport`) and an `assert_foreign_key` helper
+  for cross-table FK checks pandera can't express. Module docstring documents the
+  `source_db`/future-adapter-seam decision as instructed.
+- Created `test_schemas.py` (pytest) asserting each schema rejects malformed input
+  (missing column, wrong dtype, out-of-vocabulary value, HGNC-symbol-as-gene_id — the
+  real v1 `GRB2-1` bug class) as well as accepting valid fixtures.
+- Added `pandas` to `requirements.txt`'s Stage 0 block (needed directly by
+  `schemas.py`/`test_schemas.py`, not just transitively via pandera); `pytest` was
+  already listed under Testing.
+- Caught and fixed a real bug during self-testing: schema-wide `coerce=True` was
+  silently coercing a garbage-string `directed` column to `True` instead of raising.
+  Rescoped `coerce=True` to only the three numeric nullable columns that legitimately
+  need it (`hierarchy_level`, `confidence`, `score`); everything else stayed strict.
+- Ran the code-improvement-advisor agent on both files. It found a narrower residual
+  instance of the same coercion trap (bool→float silently passing `confidence`/`score`
+  range checks) and, judging a fix too complex for a case that can't occur with current
+  data sources, documented it in a comment and pinned the current behavior with a test
+  instead. It also added cross-field consistency validators to `CoverageEntry`
+  (`percent_mapped` and `dropped_count` must agree with `raw_gene_count`/`mapped_count`)
+  and ~25 additional tests (strict-mode extra-column rejection per schema,
+  `assert_foreign_key` coverage, coercion-path tests, empty-dataframe acceptance).
+- Verified: `python3 -m pytest test_schemas.py -v` → 42 passed.
+
+## Prompt 2
+
+> create or update a text file called "prompt_history" with my prompts
+> (including this one) and a summary of changes associated with each prompt
+
+**Changes:**
+- Created this `prompt_history` file, logging Prompt 1 (schemas.py) and this prompt.
+
+## Prompt 3
+
+> Add a pytest test asserting each schema rejects a deliberately malformed
+> frame (wrong dtype, missing column, sign value of 2, a gene_id that looks
+> like an HGNC symbol rather than an Ensembl ID) with a clear error naming
+> the offending column.
+
+**Changes:**
+- Audited `test_schemas.py` against this requirement per schema and found gaps: not
+  every one of the four `DataFrameSchema`s had both a "wrong dtype" test and a
+  "missing column" test (the HGNC-gene_id and sign=2 cases were already fully
+  covered from Prompt 1).
+- Added 5 tests to close the gaps: `test_genes_rejects_wrong_dtype_biotype`,
+  `test_gene_sets_rejects_missing_column`, `test_gene_sets_rejects_wrong_dtype_set_name`,
+  `test_interactions_rejects_missing_column`, `test_ot_associations_rejects_wrong_dtype_datatype_id`.
+  Every schema now has a test for each of: wrong dtype, missing column, and (for
+  `InteractionsSchema`, the only one with a `sign` column) sign=2, plus the
+  Ensembl-gene_id check already present everywhere.
+- Verified: `python3 -m pytest test_schemas.py -v` → 47 passed.
+
+## Prompt 4
+
+> Write a standalone Python module ingest.py that resolves, canonicalizes and
+> normalizes all source data for the pipeline, validating every output
+> against schemas.py (Stage 0). [full spec: CLI args including --target,
+> --disease, --data-dir, --out-dir, --pathway-db, --no-download, --seed,
+> --min/--max-set-size, --fi-curated-only, --fi-min-score,
+> --allow-low-coverage; version-pinned acquisition with sha256 verification;
+> Ensembl gene ID canonicalization off the OT target parquet; disease
+> subsetting via pyarrow predicate pushdown; gene_sets/interactions
+> normalization honoring --fi-curated-only/--fi-min-score; coverage_report.json
+> and scale_report.json including a projected Stage 3 edge count; loud,
+> non-zero-exit failures for unresolved target/disease/low coverage] as
+> specified in README.md's "Open decisions"/"Open research" sections.
+
+**Changes:**
+- Before writing any code, verified every URL this module would hardcode
+  against the live services (not assumed from the v1 README, which was
+  explicitly flagged as unconfirmed): confirmed OT 26.06's
+  `ftp.ebi.ac.uk`/`ftp://` and `https://` directory listings for
+  `target/`, `association_by_datasource_indirect/`, and `disease/`;
+  confirmed Reactome numbered-release URLs *do* exist
+  (`https://download.reactome.org/97/...`), resolving one of README.md's
+  open research questions; downloaded and byte-diffed
+  `Ensembl2Reactome.txt` against `Ensembl2Reactome_PE_All_Levels.txt` to
+  confirm the former is not PE-level (the exact `GRB2-1` bug class) —
+  discovered it's ENSG/ENSP/ENST-mixed for human, not uniformly ENSG;
+  downloaded and cross-tabulated the real FI file
+  (`FIsInGene_04142025_with_annotations.txt`, 272,622 rows) to recover its
+  actual 5-column schema and the exact 9-value `Direction` grammar (a 3x3
+  left-cap/right-cap combination), rather than assuming the schema README.md
+  flagged as unverified; discovered OT 26.06's disease table is
+  MONDO-primary, not EFO-primary (README.md's own `EFO_0005755` worked
+  example isn't a primary id in 26.06 at all).
+- Created `ingest.py`: a pinned-registry acquisition layer (sha256+size for
+  the four small single files; a runtime-discovered local lockfile for the
+  two multi-GB Spark-partitioned OT directories, since their part-file UUIDs
+  can't be known ahead of time) with a `--no-download` path that prints
+  obtain-instructions and exits non-zero rather than guessing; Ensembl gene
+  ID canonicalization off the OT target parquet (the ID authority) with
+  approved-symbol-then-synonym resolution and ambiguous-symbol detection
+  (kept unmapped rather than guessed); `ReactomePathways.gmt` ->
+  `gene_sets.parquet`; a single swappable adapter function
+  (`_load_fi_interactions`) parsing the FI file's real Direction grammar
+  into signed/directed edges, honoring `--fi-curated-only`/`--fi-min-score`;
+  `Ensembl2Reactome.txt` used only as an independent coverage cross-check
+  (not merged into gene_sets, to avoid an unattributable many-to-one guess —
+  reasoning documented in the module docstring); disease resolution with an
+  EFO-id-via-dbXRefs fallback for the MONDO-primary shift; pyarrow
+  predicate-pushdown disease subsetting; `coverage_report.json` /
+  `scale_report.json` (including the projected Stage 3 co-membership edge
+  count) and `manifest.json`; loud, non-zero-exit failures for an
+  unresolvable target (with fuzzy symbol suggestions), an unresolvable
+  disease, an implausibly gene-sparse disease, and <90% mapping coverage,
+  all overridable except target/disease resolution.
+- Made one small, deliberate `schemas.py` change beyond ingest.py itself:
+  `Source.db` was restricted to `SUPPORTED_SOURCE_DBS` (`{"reactome"}`),
+  which blocked recording Open Targets' own acquisition provenance in the
+  manifest even though the task explicitly requires it. Added a separate
+  `SUPPORTED_PROVENANCE_DBS` constant (`SUPPORTED_SOURCE_DBS | {"opentargets"}`)
+  scoped to `Source.db` only — `GeneSetsSchema`/`InteractionsSchema.source_db`
+  are untouched, so this doesn't relax the "reactome-only pathway curation"
+  constraint, only the acquisition-provenance one. Added
+  `test_manifest_accepts_opentargets_source_db` to cover it.
+- Ran the full pipeline for real against live data (PTGS2 / MONDO_0008383
+  "rheumatoid arthritis", the README's own PTGS2/rheumatic-disease sanity
+  check, ported to 26.06's MONDO-primary id) — not a synthetic fixture. This
+  caught and fixed a real bug: `pyarrow`'s `to_pandas()` returns list<struct>
+  columns as `numpy.ndarray`, and `arr or []` raises `ValueError` on a
+  multi-element array (ambiguous truth value) rather than doing the intended
+  None-check. Also caught, via manually re-validating the written
+  `genes.parquet` against `GenesSchema` with a bare `pd.read_parquet` (not
+  just the in-process DataFrame Stage 1 itself validates before writing),
+  that a parquet round-trip turns `list[str]` cells into `numpy.ndarray`,
+  which `GenesSchema`'s `_is_list_of_str` rejected — would have broken
+  "validate on read" for every stage after Stage 1. Fixed in `schemas.py`
+  (accept `ndarray` alongside `list`) with a new regression test
+  (`test_genes_accepts_synonyms_as_ndarray`), not worked around in ingest.py.
+- Verified end-to-end against live data: resolved PTGS2 -> `ENSG00000073756`;
+  resolved `MONDO_0008383` "rheumatoid arthritis" (8184 associated genes);
+  6 output artifacts (`genes.parquet` 78,691 genes; `gene_sets.parquet`
+  1,663 retained sets; `interactions.parquet` 208,631 curated edges;
+  `ot_disease_subset.parquet`); coverage 96.46% (GMT), 99.4% (FI), 89.85%
+  (Ensembl2Reactome cross-check — correctly triggers the 90% floor without
+  `--allow-low-coverage`, confirming the loud-failure path); projected
+  Stage 3 co-membership edge count 2,963,812 at default size caps (the
+  number Stage 2/3 will need to reckon with). Confirmed manifest determinism
+  (byte-identical modulo `created_at` across two identical runs) and full
+  offline re-run correctness via `--no-download` against the now-populated
+  `--data-dir`. Confirmed loud, correctly-worded failures for an unresolvable
+  target (with real fuzzy suggestions: PTGS2/PTGS1/PTGIS/PTGES/PTGDS),
+  an unresolvable disease id, a gene-sparse disease (`EFO_0000287` "biopsy
+  number", 0 genetic_association genes), and a missing `--no-download`
+  data-dir (prints the exact `curl` command, sha256, and size). Confirmed
+  `--fi-curated-only`/`--no-fi-curated-only`/`--fi-min-score` compose
+  correctly. `python3 -m pytest test_schemas.py -v` → 49 passed.
+- Added `numpy` to `requirements.txt`'s Stage 0 block (now a direct
+  `schemas.py` import, not just transitive via pandas/pandera).
+
+## Prompt 5
+
+> /hackathon-firstprot Add pytest tests for ingest.py using tiny fixture
+> files under tests/fixtures/ (a handful of fake genes, pathways and
+> interactions). Cover exactly three things, and skip broader coverage
+> until the pipeline runs end to end: identifier mapping (clean symbol,
+> deprecated/synonym symbol, unmappable symbol counted in
+> coverage_report.json), schema conformance (every emitted artifact
+> validates against its Stage 0 schema; a source file with a corrupt row
+> fails loudly rather than being silently skipped), and manifest
+> determinism (two runs over identical inputs produce byte-identical
+> manifests apart from created_at/run_id; every artifact sha256 in the
+> manifest matches the file on disk).
+
+**Changes:**
+- Created `tests/fixtures/`: a tiny synthetic gene universe (TP53 clean;
+  PTGS2 with synonym "COX2"; FAKEGENE123 present in the GMT/FI fixtures but
+  absent from the target fixture, the unmappable case) as hand-written
+  Reactome-format text (`ReactomePathways.gmt.zip`,
+  `FIsInGene_test_with_annotations.txt.zip`, `Ensembl2Reactome.txt` —
+  zipped where the real pinned sources are zipped, so extraction is
+  exercised too) plus three tiny OT-schema-accurate parquet files
+  (`target.parquet`, `disease.parquet`, `association.parquet`) generated by
+  a small, re-runnable `build_fixtures.py` and committed alongside it.
+- Created `tests/conftest.py`: monkeypatches ingest.py's two acquisition
+  entry points (`_ensure_pinned_file`, `_ensure_directory_source`) to serve
+  the fixtures instead of the network/real registry — everything
+  downstream (extraction, mapping, gene_sets/interactions construction,
+  coverage/scale reporting, schema validation, manifest writing) runs
+  unmodified. A `overrides` param lets one specific source be swapped for a
+  deliberately corrupt file while every other source stays the normal
+  fixture, for the corrupt-row tests.
+- Created `tests/test_ingest_identifier_mapping.py`,
+  `test_ingest_schema_conformance.py`, `test_ingest_manifest_determinism.py`
+  covering exactly the three requested areas (7 tests total).
+- Ran the suite for real before treating it as done (per this skill's Phase
+  5), which caught two real problems, not just fixture-setup mistakes:
+  - `Python 3.9` doesn't accept `dict | None` without
+    `from __future__ import annotations` — a straight syntax bug, fixed in
+    `tests/conftest.py`.
+  - The malformed-FI-row test initially passed for the *wrong* reason: a
+    non-zipped bad-FI fixture raised `zipfile.BadZipFile` before ever
+    reaching row-parsing at all. Fixing that (wrapping the bad row in a
+    proper single-member zip, matching the real registry format) surfaced
+    a genuine gap in `ingest.py` itself: pandas' C parser does **not**
+    raise on a short/ragged row — it silently pads missing trailing fields
+    with `NaN`, which then misses every `_FI_DIRECTION_CODES` key and gets
+    dropped with only a logged warning, not a hard failure — exactly the
+    "silently skipped" failure mode Stage 1 is supposed to prevent. Fixed
+    in `ingest.py`'s `_load_fi_interactions`: an explicit null-check across
+    the 5 required FI columns right after `read_csv`, `_fail()`-ing with
+    the offending row before any processing, rather than letting a
+    malformed row survive as silent `NaN`-driven attrition. Manually
+    verified both corrupt-row tests raise for the intended reason (by
+    running them outside pytest with logging enabled and reading the
+    actual error message), not an incidental crash elsewhere.
+- Verified: `python3 -m pytest` (both `test_schemas.py` at repo root and
+  the new `tests/` directory together) → 56 passed. `tests/__pycache__` is
+  already covered by the existing `*cache*` `.gitignore` rule.
+
+**How to run:** `python3 -m pytest` from `v2/` (needs `pyarrow`/`pandas`/
+`pandera`/`pydantic` per `requirements.txt`; no network access required —
+`tests/` never touches the pinned registry).

@@ -1,0 +1,4 @@
+ENSG00000141510	R-HSA-TEST01	https://reactome.org/PathwayBrowser/#/R-HSA-TEST01	Test Pathway A	TAS	Homo sapiens
+ENSP00000269305	R-HSA-TEST01	https://reactome.org/PathwayBrowser/#/R-HSA-TEST01	Test Pathway A	TAS	Homo sapiens
+ENSG00000000000	R-HSA-TEST99	https://reactome.org/PathwayBrowser/#/R-HSA-TEST99	Unknown Pathway	TAS	Homo sapiens
+ENSMUSG00000001	R-MMU-TEST01	https://reactome.org/PathwayBrowser/#/R-MMU-TEST01	Mouse pathway	TAS	Mus musculus

@@ -1,6 +1,8 @@
 # Stage 0 — shared schemas (inter-stage data contracts)
 pydantic>=2.0
 pandera
+pandas
+numpy
 
 # Stage 1 — ingest & canonicalize (download, parquet I/O, ID mapping)
 pyarrow
