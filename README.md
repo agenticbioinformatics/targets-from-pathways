@@ -398,3 +398,97 @@ correctly excluded once BH-FDR is applied across the tested library, non-
 enriched pathways are tested but excluded from output, and a near-duplicate
 ancestor/child pair collapses to the smaller child before GSEA ever sees the
 ancestor.
+
+## Running Stage 3 (`build_graph.py`)
+
+**Setup:** `pip install networkx scipy pandas pandera pydantic pyarrow` (or `pip install -r requirements.txt`).
+
+**Run command**, after Stage 1 and Stage 2 have produced `manifest.json`/`disease_pathways.tsv`:
+
+```
+python3 build_graph.py --manifest ./run1/manifest.json
+```
+
+Reads `gene_sets.parquet` and `interactions.parquet` via the manifest, and
+`disease_pathways.tsv` alongside it by default (override with
+`--disease-pathways`). Writes `graph_weight.npz`, `graph_sign.npz`,
+`graph_gene_index.json`, and `graph_metadata.json` next to the manifest —
+not GraphML; see the module docstring for why.
+
+Against the checked-in example (regenerate with
+`python3 example_data/build_gsea_example.py` if needed):
+
+```
+python3 build_graph.py --manifest example_data/stage1_run/manifest.json
+```
+
+**Expected output** (log lines):
+
+```
+INFO build_graph: Pathway union: 3 disease-relevant + 2 target-containing = 4 unique pathways (1 overlap both).
+INFO build_graph: Co-membership: 4 pathways contributed edges (of 4 in the union; ...), inducing 68 unordered gene pairs (136 directed edges).
+INFO build_graph: Interactions: 2 rows in scope (both genes in the pathway union) added/updated as edges; 1 row(s) out of scope dropped (...); 0 duplicate (...) pair(s) collapsed ...
+INFO build_graph: Pathway-based gene-gene graph: 17 nodes, 136 directed edges.
+```
+
+The one dropped interaction row (`G12 -> TARGET`) is deliberate: `G12`
+belongs only to `R-HSA-100`, the redundant ancestor pathway Stage 2's
+collapsing excluded from the union — proof that interaction edges really
+are scoped to the pathway-gene pool, not added genome-wide.
+
+`python3 -m pytest tests/test_build_graph.py` runs the unit-level graph
+tests (4 tests): the exact directed/signed edge list (with `source_db`
+tags) for a hand-built pathway + interaction fixture, the co-membership
+weight formula for both a small and a large (overlapping) pathway, and that
+a gene alone in its own pathway survives as an isolated node.
+
+## Running Stage 4 (`genetic_evidence_weights.py`)
+
+**Setup:** same as Stage 3, plus `numpy` (already required transitively).
+
+**Run command**, after Stage 3 has produced the graph artifacts:
+
+```
+python3 genetic_evidence_weights.py --manifest ./run1/manifest.json
+```
+
+Reads `ot_disease_subset.parquet` via the manifest and Stage 3's graph
+artifacts alongside it by default (override with `--graph-dir`/`--out-dir`).
+`--datatypes` (default `genetic_association,known_drug`) is an *inclusion*
+list — `affected_pathway` and any literature/pathway-derived datatype are
+excluded simply by not being named, which matters concretely: OT 26.06 maps
+its own `reactome` evidence datasource to `affected_pathway` (see
+`ingest.py`'s `_DATASOURCE_TO_DATATYPE`), so including it would let
+Reactome-derived evidence weight a graph whose topology already *is*
+Reactome pathway structure.
+
+Writes **exactly Stage 3's four filenames**, not a parallel set, so
+`score_candidates.py` (Stage 5) can point `--graph` at either a Stage 3 or
+a Stage 4 directory and load it through the same code path:
+`graph_weight.npz` is *replaced* with the genetic-evidence-derived edge
+weight (same sparsity pattern as Stage 3's structural weight — no edge
+added or removed, only re-weighted); `graph_sign.npz`/`graph_gene_index.json`
+are copied through unchanged; `graph_metadata.json` is extended (not
+replaced) with a `genetic_evidence_score` gene->score mapping. Plus a
+separate, human-facing `gene_weights.tsv` that Stage 5 never reads. See the
+attribute-name comment at the top of `genetic_evidence_weights.py` for the
+exact contract.
+
+Against the checked-in example:
+
+```
+python3 genetic_evidence_weights.py --manifest example_data/stage1_run/manifest.json
+```
+
+**Expected output** (`example_data/stage1_run/gene_weights.tsv`, top rows):
+
+```
+gene_id           genetic_evidence_score
+ENSG00000000002   0.98
+ENSG00000000003   0.95
+ENSG00000000004   0.92
+```
+
+`--edge-weight-mode product` (default `avg`) changes only the values written
+into `graph_weight.npz`; e.g. the target-`ENSG...002` edge is
+`avg(0.60, 0.98) = 0.79` by default or `0.60 * 0.98 = 0.588` with `product`.

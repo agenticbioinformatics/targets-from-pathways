@@ -1,0 +1,65 @@
+{
+  "created_at": "2026-08-24T15:14:28.523880+00:00",
+  "disease": {
+    "efo_id": "MONDO_0000001",
+    "n_associated_genes": 18,
+    "name": "example disease"
+  },
+  "genetic_evidence_score": {
+    "ENSG00000000001": 0.6,
+    "ENSG00000000002": 0.98,
+    "ENSG00000000003": 0.95,
+    "ENSG00000000004": 0.92,
+    "ENSG00000000005": 0.89,
+    "ENSG00000000006": 0.86,
+    "ENSG00000000007": 0.83,
+    "ENSG00000000008": 0.8,
+    "ENSG00000000009": 0.77,
+    "ENSG00000000010": 0.74,
+    "ENSG00000000011": 0.71,
+    "ENSG00000000013": 0.45,
+    "ENSG00000000017": 0.05,
+    "ENSG00000000018": 0.04,
+    "ENSG00000000019": 0.03,
+    "ENSG00000000020": 0.02,
+    "ENSG00000000021": 0.06
+  },
+  "n_comembership_unordered_pairs": 68,
+  "n_disease_pathways": 3,
+  "n_edges": 136,
+  "n_interaction_duplicate_pairs_collapsed": 0,
+  "n_interaction_edges_added": 2,
+  "n_interaction_edges_out_of_scope": 1,
+  "n_nodes": 17,
+  "n_pathways_union": 4,
+  "n_target_pathways": 2,
+  "reactome_sources": [
+    {
+      "db": "reactome",
+      "files": [
+        {
+          "bytes": 0,
+          "path": "example_data/fake_reactome.gmt.zip",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      ],
+      "version": "97"
+    }
+  ],
+  "resolved_target": {
+    "gene_id": "ENSG00000000001",
+    "input": "TARGET",
+    "symbol": "TARGET"
+  },
+  "seed": 0,
+  "stage4_genetic_evidence": {
+    "datatypes": [
+      "genetic_association",
+      "known_drug"
+    ],
+    "edge_weight_mode": "avg",
+    "n_edges_weighted": 136,
+    "n_genes_total": 17,
+    "n_genes_with_evidence": 17
+  }
+}

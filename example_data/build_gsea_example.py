@@ -1,11 +1,11 @@
 """One-off generator for a tiny, hand-designed Stage 1 output directory used
-to exercise gsea_discovery.py end to end (see README.md's Stage 2 run
-instructions). Not run by any test suite — re-run manually if the example
-needs to change.
+to exercise gsea_discovery.py, build_graph.py, and genetic_evidence_weights.py
+end to end (see README.md's Stage 2/3/4 run instructions). Not run by any
+test suite — re-run manually if the example needs to change.
 
-Writes example_data/stage1_run/{gene_sets,ot_disease_subset}.parquet and
-manifest.json, validated against schemas.py exactly like ingest.py's real
-output, so gsea_discovery.py exercises the identical code path it uses on a
+Writes example_data/stage1_run/{gene_sets,ot_disease_subset,interactions}.parquet
+and manifest.json, validated against schemas.py exactly like ingest.py's real
+output, so downstream stages exercise the identical code path they use on a
 real Stage 1 run.
 
 Gene universe (all fake ENSG ids, 17 genes total):
@@ -46,6 +46,16 @@ symbol "TARGET1") to exercise --benchmark-holdout-file, which resolves
 holdout entries via this table. G17's synonym "OLDG17" is deliberately not
 its approved symbol, to exercise the synonym-resolution path a real
 literature-curated benchmark file might need.
+
+Also writes interactions.parquet, for build_graph.py (Stage 3) and
+genetic_evidence_weights.py (Stage 4):
+- TARGET -> G2 (sign=+1, confidence=0.9): both genes are in the pathway
+  union (R-HSA-200), so this overrides that pair's co-membership sign.
+- G4 -> G9 (sign=-1, confidence=0.6): also both in the union (R-HSA-101).
+- G12 -> TARGET (sign=+1, confidence=0.99): G12 is a member of R-HSA-100
+  only, which is excluded from Stage 3's pathway union entirely (it's the
+  redundant ancestor Stage 2's collapsing drops) — this row must be
+  dropped as out of scope, not silently included.
 """
 
 from __future__ import annotations
@@ -64,6 +74,7 @@ from schemas import (  # noqa: E402
     GeneSetsSchema,
     GeneSetSizeBucket,
     GenesSchema,
+    InteractionsSchema,
     Manifest,
     OTAssociationsSchema,
     OutputArtifact,
@@ -167,6 +178,21 @@ def build_ot_disease_subset() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def build_interactions() -> pd.DataFrame:
+    rows = [
+        {"gene_a": TARGET, "gene_b": G[2], "directed": True, "sign": 1, "source_db": "reactome",
+         "source_version": "04142025", "evidence_type": "curated", "confidence": 0.9},
+        {"gene_a": G[4], "gene_b": G[9], "directed": True, "sign": -1, "source_db": "reactome",
+         "source_version": "04142025", "evidence_type": "curated", "confidence": 0.6},
+        # Out of scope for Stage 3: G12 belongs only to R-HSA-100, the
+        # ancestor pathway excluded from the union — this row must be
+        # dropped, not silently included.
+        {"gene_a": G[12], "gene_b": TARGET, "directed": True, "sign": 1, "source_db": "reactome",
+         "source_version": "04142025", "evidence_type": "curated", "confidence": 0.99},
+    ]
+    return pd.DataFrame(rows)
+
+
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -181,6 +207,10 @@ def main() -> None:
     genes_df = GenesSchema.validate(build_genes())
     genes_path = OUT_DIR / "genes.parquet"
     genes_df.to_parquet(genes_path, index=False)
+
+    interactions_df = InteractionsSchema.validate(build_interactions())
+    interactions_path = OUT_DIR / "interactions.parquet"
+    interactions_df.to_parquet(interactions_path, index=False)
 
     def artifact(path: Path) -> OutputArtifact:
         return OutputArtifact(path=str(path), sha256=_sha256_bytes(path.read_bytes()))
@@ -207,7 +237,9 @@ def main() -> None:
             ),
         ],
         cli_parameters={"target": "TARGET", "disease": DISEASE_ID, "min_set_size": 1, "max_set_size": 200},
-        output_artifacts=[artifact(gene_sets_path), artifact(ot_subset_path), artifact(genes_path)],
+        output_artifacts=[
+            artifact(gene_sets_path), artifact(ot_subset_path), artifact(genes_path), artifact(interactions_path),
+        ],
         coverage_report={
             "reactome_gmt": CoverageEntry(
                 source="reactome_gmt", raw_gene_count=21, mapped_count=21, percent_mapped=100.0, dropped_count=0

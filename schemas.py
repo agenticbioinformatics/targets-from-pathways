@@ -56,6 +56,7 @@ __all__ = [
     "InteractionsSchema",
     "OTAssociationsSchema",
     "DiseasePathwaysSchema",
+    "GeneWeightsSchema",
     "assert_foreign_key",
     "ResolvedTarget",
     "ResolvedDisease",
@@ -224,6 +225,24 @@ DiseasePathwaysSchema = DataFrameSchema(
         # Whether this pathway's (collapsed) gene membership includes the
         # manifest's resolved --target gene.
         "contains_target": Column(bool, nullable=False),
+    },
+    strict=True,
+)
+
+
+GeneWeightsSchema = DataFrameSchema(
+    {
+        "gene_id": Column(
+            str,
+            checks=Check.str_matches(ENSEMBL_GENE_ID_PATTERN.pattern),
+            unique=True,
+            nullable=False,
+        ),
+        # Non-pathway-datatype Open Targets evidence (see
+        # genetic_evidence_weights.py's module docstring) — 0.0, not null,
+        # for a gene with no matching evidence, so every graph node gets a
+        # row here.
+        "genetic_evidence_score": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False),
     },
     strict=True,
 )

@@ -15,7 +15,7 @@
       "source": "reactome_gmt"
     }
   },
-  "created_at": "2026-08-24T14:16:57.412911Z",
+  "created_at": "2026-08-24T15:14:27.312484Z",
   "disease": {
     "efo_id": "MONDO_0000001",
     "n_associated_genes": 18,
@@ -34,6 +34,10 @@
     {
       "path": "/home/kubicaj/workspace/agentic-bioinformatics/targets-from-pathways/example_data/stage1_run/genes.parquet",
       "sha256": "7be613da80be050b1dc136c2d056e929df6da0967981e730a949127fea6113fe"
+    },
+    {
+      "path": "/home/kubicaj/workspace/agentic-bioinformatics/targets-from-pathways/example_data/stage1_run/interactions.parquet",
+      "sha256": "b9a530c992acbeb3d0eabb1dce4a1aa256df4d5bcd687fc253ac30fa468adae7"
     }
   ],
   "resolved_target": {
