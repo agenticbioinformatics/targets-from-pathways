@@ -66,7 +66,7 @@ prioritization.
 | 2. Disease-pathway discovery | GSEA (FDR-corrected) of disease-associated genes against Reactome gene sets, over size-capped and redundancy-collapsed sets → disease-relevant pathway list. | H1 |
 | 3. Pathway-based gene-gene graph construction | Build a **directed, signed** pathway-based gene-gene graph (`networkx.DiGraph`) from the union of disease-relevant and target-relevant pathway co-membership — with co-membership edges down-weighted by pathway size — plus directional, positive/negative (activating/inhibiting) relation edges from Stage 1's normalized Reactome functional-interaction table; DB versions and seed carried from the manifest. | H1, H2 |
 | 4. Genetic-evidence weighting | Compute Open Targets evidence restricted to non-pathway-derived datatypes (e.g. `genetic_association`, `known_drug`, explicitly excluding `affected_pathway`/literature-pathway sources) and map the resulting scores onto the Stage 3 graph as **node weights and edge weights** — so genetic evidence directly informs Stage 5's scoring rather than only re-ranking its output after the fact, while preserving orthogonality with Stages 2–3. | H4 |
-| 5. Candidate scoring | Swappable `--method`: topology score (co-membership / shortest path / branch-convergence, direction- and weight-aware), random-walk-with-restart (RWR), or backtrack-free walk (BFW, a non-backtracking RWR variant, via [GBA-centrality](https://github.com/jedrzejkubica/GBA-centrality)) — all from the target node, all able to consume Stage 4's node/edge weights and Stage 3's edge directions/signs. | H1, H2, H3 |
+| 5. Candidate scoring | `--method` defaults to **topology score only** (co-membership / shortest path / branch-convergence, direction- and weight-aware) — the cheapest, deterministic method, run for every candidate by default. Random-walk-with-restart (RWR) and backtrack-free walk (BFW, a non-backtracking RWR variant, via [GBA-centrality](https://github.com/jedrzejkubica/GBA-centrality)) are opt-in via `--method` (e.g. `--method topology,rwr,bfw`), not run unless requested. All three score from the target node and are able to consume Stage 4's node/edge weights and Stage 3's edge directions/signs. | H1, H2, H3 |
 | 6. Contextual annotation & filtering | Attach Open Targets tractability bucket and safety flags; compute a configurable composite score. No tissue-expression filtering — the method stays strictly pathway- and association-evidence-based. | H5, H6 |
 | 7. Benchmark validation | Score a small literature-curated set of known resistance/compensation gene pairs (held out of Stage 2's seed genes); report descriptive rank/percentile recovery against a random background, not a significance test. | H8 |
 | 8. Output/report | Ranked table (per-candidate scores, evidence trace, tractability/safety) plus a web UI: target + disease in, ranked list out. | Deliverable |
@@ -179,6 +179,17 @@ infeasible graph is caught on Day 1 morning rather than on Day 2 evening.
 Its outputs are two database-agnostic tables (`gene_sets`, `interactions`)
 plus a canonical `genes` table, a disease-subset association table, and a
 manifest; downstream stages read only these, never raw source files.
+
+### Plan update 4 (user-directed)
+
+- **Stage 5 (candidate scoring):** `--method` now defaults to topology
+  score only; RWR and BFW are opt-in, not run by default. Topology is
+  deterministic and cheap (no permutations, no walk simulation), so it's
+  the right always-on baseline; RWR and BFW are heavier (RWR needs a
+  converged stationary distribution, BFW needs GBA-centrality's walk
+  simulation) and are requested explicitly via `--method` when a
+  diffusion-based comparison is actually wanted, rather than computed on
+  every run whether or not anything downstream uses them.
 
 ## Open decisions
 

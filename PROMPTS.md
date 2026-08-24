@@ -314,9 +314,13 @@ beyond this repo.
 
 **Implement:**
 > Write `score_candidates.py` that loads a graph (optionally weighted, from
-> Stage 3 or Stage 4) and target node, and supports `--method topology`,
-> `--method rwr`, and `--method bfw` (default: run all three, output as
-> separate columns). Topology method: shortest-path distance to the target
+> Stage 3 or Stage 4) and target node, and supports `--method` as a
+> comma-separated list drawn from `{topology, rwr, bfw}`, **defaulting to
+> `topology` only** — RWR and BFW are opt-in (e.g. `--method
+> topology,rwr,bfw` or `--method rwr`), never run unless explicitly
+> requested, since they're materially more expensive (a converged
+> stationary distribution / a walk simulation) than the deterministic
+> topology method. Topology method: shortest-path distance to the target
 > node and co-membership count, using edge weights if present. RWR method:
 > personalized PageRank / random-walk-with-restart (via `networkx.pagerank`
 > or an existing RWR library) personalized on the target node, using
@@ -327,18 +331,21 @@ beyond this repo.
 > package) rather than reimplementing non-backtracking walk logic; check
 > its README for the expected graph input format and adapt Stage 3/4's
 > graph export if needed. Use the fixed seed from the graph metadata for
-> any stochastic step. Output a ranked TSV: gene, topology_score, rwr_score,
-> bfw_score.
+> any stochastic step. Output a ranked TSV with a `gene` column and a
+> `topology_score` column always present, plus `rwr_score`/`bfw_score`
+> columns only when those methods were also requested.
 
 **Test:**
 > Add a pytest test on a small synthetic graph containing both a short
 > cycle and a longer chain (backtrack-free walks differ most from RWR when
 > short cycles are present) where you can hand-compute expected
-> shortest-path distances; assert `score_candidates.py`'s topology output
-> matches exactly, that `rwr_score` and `bfw_score` are both produced, and
-> that they differ on the cyclic portion of the fixture in the expected
-> direction (BFW should not artificially inflate a node reachable only by
-> immediate back-and-forth on a single edge).
+> shortest-path distances; assert that a default (no `--method`) run
+> produces only `topology_score`, matching the hand-computed values
+> exactly, with no `rwr_score`/`bfw_score` columns at all; then assert that
+> running with `--method topology,rwr,bfw` produces all three, and that
+> `rwr_score`/`bfw_score` differ on the cyclic portion of the fixture in
+> the expected direction (BFW should not artificially inflate a node
+> reachable only by immediate back-and-forth on a single edge).
 
 **Wire to next stage:**
 > Confirm `score_candidates.py`'s output TSV uses a `gene` column that
