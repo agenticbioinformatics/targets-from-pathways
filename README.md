@@ -494,7 +494,7 @@ ancestor.
 **Run command**, after Stage 1 and Stage 2 have produced `manifest.json`/`disease_pathways.tsv`:
 
 ```
-python3 pipeline/stage3_build_graph.py --manifest ./run1/manifest.json
+python3 pipeline/stage3_build_graph.py --manifest test_out/manifest.json
 ```
 
 Reads `gene_sets.parquet` and `interactions.parquet` via the manifest, and
@@ -537,7 +537,7 @@ a gene alone in its own pathway survives as an isolated node.
 **Run command**, after Stage 3 has produced the graph artifacts:
 
 ```
-python3 pipeline/stage4_genetic_evidence_weights.py --manifest ./run1/manifest.json
+python3 pipeline/stage4_genetic_evidence_weights.py --manifest test_out/manifest.json
 ```
 
 Reads `ot_disease_subset.parquet` via the manifest and Stage 3's graph
