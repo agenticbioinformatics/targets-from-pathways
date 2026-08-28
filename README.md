@@ -820,8 +820,11 @@ python3 pipeline/run_pipeline.py --target NOD2 --disease MONDO_0005265 \
 ```
 
 Each stage runs as its own subprocess (the same CLI as its "Running Stage
-N" section above), so a stage failure surfaces its own error and stops the
-run non-zero. `--report` additionally writes `run1/report.html` at the end.
+N" section above). If one exits non-zero, `run_pipeline.py` prints which
+stage failed, its exit code and the exact command, and stops the run
+non-zero — the stage's own message (e.g. Stage 1's "Could not resolve
+`--target 'FOO'`. Did you mean: …?") is right above it, not buried under a
+traceback. `--report` additionally writes `run1/report.html` at the end.
 
 Offline, against the checked-in synthetic Stage 1 output (no real Open
 Targets / Reactome data needed) — this regenerates Stages 2–6 in place:
@@ -862,6 +865,15 @@ Genes are displayed by HGNC symbol; the Ensembl gene ID stays the internal
 key (its own column, and the anchor id for each detail block). Symbols are
 resolved from `genes.parquet` at render time only.
 
+Only `manifest.json` and `candidates_annotated.tsv` are required; every
+other artifact is optional. A partial run directory still produces a
+report — missing trace inputs (`gene_sets.parquet`, `interactions.parquet`,
+`ot_disease_subset.parquet`, …) show that section as unavailable, a
+Stage-3-only run (no Stage 4) just drops the `rwr`/`genetic ev.` columns,
+no `genes.parquet` falls the symbol column back to Ensembl ids, and no
+benchmark summary shows a "not run yet" note — a header line lists whatever
+was missing.
+
 **Expected output** (`example_data/example_run/report.html`, top of the
 ranked table — same ordering as Stage 6's `candidates_annotated.tsv`):
 
@@ -878,10 +890,14 @@ Expanding `GENE04` shows: shared pathways *Target Signaling Pathway* and
 `GENE04 → GENE09` (inhibiting, curated, confidence 0.60).
 
 `python3 -m pytest tests/test_stage7_report.py tests/test_run_pipeline.py`
-runs the tests (8): `evidence_trace`'s shared-pathway / graph-scoping /
+runs the tests (11): `evidence_trace`'s shared-pathway / graph-scoping /
 datatype logic on a hand-built run, the `feeds` flag going false when Stage
 4 did not run, the `benchmark_summary` real→example→none fallback,
 `build_report` producing a self-contained symbol-labelled HTML with one
-detail block per candidate and the benchmark panel, and a `run_pipeline
---from-manifest --report` smoke test that Stages 2–6 chain and produce
-every expected artifact.
+detail block per candidate and the benchmark panel, a partial run
+directory (only `manifest.json` + `candidates_annotated.tsv`) still
+rendering with the optional columns/trace sections marked unavailable, a
+`run_pipeline --from-manifest --report` smoke test that Stages 2–6 chain
+and produce every expected artifact, and a stage-failure producing a
+helpful "which stage / which command / exit code" message rather than a
+traceback.

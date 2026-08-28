@@ -36,12 +36,19 @@ def _fail(msg: str) -> None:
     sys.exit(1)
 
 
-def _run_stage(script: str, args: list, *, python_exe: str) -> None:
+def _run_stage(label: str, script: str, args: list, *, python_exe: str) -> None:
     cmd = [python_exe, str(PIPELINE_DIR / script), *(str(a) for a in args)]
-    logger.info("→ %s", " ".join(cmd))
+    logger.info("%s → %s", label, " ".join(cmd))
+    # stdout/stderr are NOT captured — the stage streams its own progress and,
+    # on failure, its own error (e.g. Stage 1's "Could not resolve --target
+    # 'FOO'. Did you mean: ...?") straight to the console.
     result = subprocess.run(cmd)
     if result.returncode != 0:
-        _fail(f"{script} exited with code {result.returncode} — pipeline stopped.")
+        _fail(
+            f"{label} [{script}] failed with exit code {result.returncode}. "
+            f"See its output above for the cause (e.g. an unresolved --target/--disease "
+            f"prints Stage 1's suggestions).\n  command: {' '.join(cmd)}"
+        )
 
 
 def run_pipeline(
@@ -74,6 +81,7 @@ def run_pipeline(
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         _run_stage(
+            "Stage 1 (ingest)",
             "stage1_ingest.py",
             ["--target", target, "--disease", disease, "--data-dir", data_dir, "--out-dir", out_dir],
             python_exe=python_exe,
@@ -81,18 +89,19 @@ def run_pipeline(
         manifest = out_dir / "manifest.json"
         run_dir = out_dir
 
-    _run_stage("stage2_gsea_discovery.py", ["--manifest", manifest], python_exe=python_exe)
-    _run_stage("stage3_build_graph.py", ["--manifest", manifest], python_exe=python_exe)
-    _run_stage("stage4_genetic_evidence_weights.py", ["--manifest", manifest], python_exe=python_exe)
-    _run_stage(
-        "stage5_score_candidates.py",
-        ["--graph-dir", run_dir, "--method", method],
-        python_exe=python_exe,
-    )
+    _run_stage("Stage 2 (disease-pathway discovery)", "stage2_gsea_discovery.py",
+               ["--manifest", manifest], python_exe=python_exe)
+    _run_stage("Stage 3 (graph construction)", "stage3_build_graph.py",
+               ["--manifest", manifest], python_exe=python_exe)
+    _run_stage("Stage 4 (genetic-evidence weighting)", "stage4_genetic_evidence_weights.py",
+               ["--manifest", manifest], python_exe=python_exe)
+    _run_stage("Stage 5 (candidate scoring)", "stage5_score_candidates.py",
+               ["--graph-dir", run_dir, "--method", method], python_exe=python_exe)
     stage6_args = ["--manifest", manifest]
     if weights:
         stage6_args += ["--weights", weights]
-    _run_stage("stage6_annotate_context.py", stage6_args, python_exe=python_exe)
+    _run_stage("Stage 6 (contextual annotation)", "stage6_annotate_context.py",
+               stage6_args, python_exe=python_exe)
 
     annotated = run_dir / "candidates_annotated.tsv"
     if not annotated.exists():

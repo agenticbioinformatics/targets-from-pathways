@@ -4,17 +4,23 @@ Reads a run directory holding the Stage 1-6 artifacts and writes ONE
 self-contained, interactive HTML file (no server, no external assets, no
 JS/CSS dependencies). Open it in a browser or hand it to a teammate.
 
-Run directory contents used (all produced by earlier stages):
+Run directory contents. Only the two **required** artifacts must be
+present; every other one is optional — a missing one just narrows the
+report (a header note says which), it never fails:
 
-    manifest.json               Stage 1  — target/disease/versions
-    genes.parquet               Stage 1  — Ensembl -> HGNC symbol (display only)
-    gene_sets.parquet           Stage 1  — pathway membership (evidence trace)
-    interactions.parquet        Stage 1  — signed edges (evidence trace)
-    ot_disease_subset.parquet   Stage 1  — OT datatypes/scores (evidence trace)
-    disease_pathways.tsv        Stage 2  — the disease-relevant pathway list
-    graph_gene_index.json       Stage 3  — which genes are in the graph
-    graph_metadata.json         Stage 3/4 — seed, which datatypes Stage 4 admitted
-    candidates_annotated.tsv    Stage 6  — the ranked table + composite trace
+    manifest.json               Stage 1  — target/disease/versions    [required]
+    candidates_annotated.tsv    Stage 6  — the ranked table           [required]
+    genes.parquet               Stage 1  — Ensembl -> HGNC symbol (else labels fall back to Ensembl ids)
+    gene_sets.parquet           Stage 1  — pathway membership (shared-pathways trace)
+    interactions.parquet        Stage 1  — signed edges (interactions trace)
+    ot_disease_subset.parquet   Stage 1  — OT datatypes/scores (datatypes trace)
+    disease_pathways.tsv        Stage 2  — disease-relevant pathway list (widens the pathway union)
+    graph_gene_index.json       Stage 3  — graph node set (scopes the interactions trace)
+    graph_metadata.json         Stage 3/4 — Stage-4-ran flag, admitted datatypes
+
+A Stage-3-only run (Stage 4 skipped) simply has no ``rwr_score`` /
+``genetic_evidence_score`` columns in ``candidates_annotated.tsv`` — those
+columns are then omitted from the table rather than crashing it.
 
 Genes are shown by **HGNC symbol**; the Ensembl gene ID stays the key
 (its own column, and the anchor id for each candidate's detail block).
@@ -60,23 +66,51 @@ def _fail(msg: str) -> None:
 
 
 def load_run(run_dir: Path) -> dict:
+    """Load a run directory. Only ``manifest.json`` and
+    ``candidates_annotated.tsv`` are required; every other artifact is
+    optional — a missing one just narrows what the report can show (the
+    ``missing`` list records which), rather than failing."""
     run_dir = Path(run_dir)
 
     def _need(name: str) -> Path:
         p = run_dir / name
         if not p.exists():
-            _fail(f"{name} missing from run directory {run_dir} — has the pipeline finished?")
+            _fail(
+                f"{name} missing from {run_dir} — this is a required Stage 1/6 artifact; "
+                "has the pipeline run?"
+            )
         return p
 
-    manifest = json.loads(_need("manifest.json").read_text())
-    graph_meta = json.loads(_need("graph_metadata.json").read_text())
-    graph_index = set(json.loads(_need("graph_gene_index.json").read_text()))
+    missing: list[str] = []
 
+    def _opt_json(name: str):
+        p = run_dir / name
+        if not p.exists():
+            missing.append(name)
+            return None
+        return json.loads(p.read_text())
+
+    def _opt_parquet(name: str):
+        p = run_dir / name
+        if not p.exists():
+            missing.append(name)
+            return None
+        return pd.read_parquet(p)
+
+    def _opt_tsv(name: str):
+        p = run_dir / name
+        if not p.exists():
+            missing.append(name)
+            return None
+        return pd.read_csv(p, sep="\t")
+
+    manifest = json.loads(_need("manifest.json").read_text())
     annotated = pd.read_csv(_need("candidates_annotated.tsv"), sep="\t")
     AnnotatedCandidatesSchema.validate(annotated)
 
-    genes = pd.read_parquet(_need("genes.parquet"))
-    symbols = dict(zip(genes["gene_id"], genes["symbol"]))
+    graph_meta = _opt_json("graph_metadata.json") or {}
+    graph_index_raw = _opt_json("graph_gene_index.json")
+    genes = _opt_parquet("genes.parquet")
 
     admitted = list(
         graph_meta.get("stage4_genetic_evidence", {}).get("datatypes", _DEFAULT_ADMITTED_DATATYPES)
@@ -86,15 +120,16 @@ def load_run(run_dir: Path) -> dict:
         "run_dir": run_dir,
         "manifest": manifest,
         "graph_meta": graph_meta,
-        "graph_index": graph_index,
+        "graph_index": set(graph_index_raw) if graph_index_raw is not None else None,
         "annotated": annotated,
-        "symbols": symbols,
+        "symbols": dict(zip(genes["gene_id"], genes["symbol"])) if genes is not None else {},
         "admitted_datatypes": set(admitted),
-        "gene_sets": pd.read_parquet(_need("gene_sets.parquet")),
-        "interactions": pd.read_parquet(_need("interactions.parquet")),
-        "ot": pd.read_parquet(_need("ot_disease_subset.parquet")),
-        "disease_pathways": pd.read_csv(_need("disease_pathways.tsv"), sep="\t"),
+        "gene_sets": _opt_parquet("gene_sets.parquet"),
+        "interactions": _opt_parquet("interactions.parquet"),
+        "ot": _opt_parquet("ot_disease_subset.parquet"),
+        "disease_pathways": _opt_tsv("disease_pathways.tsv"),
         "stage4_ran": "stage4_genetic_evidence" in graph_meta,
+        "missing": missing,
     }
 
 
@@ -108,55 +143,74 @@ def _sym(gene_id: str, symbols: dict) -> str:
 
 
 def evidence_trace(gene_id: str, run: dict) -> dict:
+    """Assemble one candidate's trace from whichever Stage 1-3 artifacts the
+    run directory actually holds. A missing artifact sets its
+    ``*_available`` flag to False (the report then says so) rather than
+    raising."""
     target_id = run["manifest"]["resolved_target"]["gene_id"]
-    gs = run["gene_sets"]
     symbols = run["symbols"]
-
-    set_name = dict(zip(gs["set_id"], gs["set_name"]))
-    target_sets = set(gs.loc[gs["gene_id"] == target_id, "set_id"])
-    disease_sets = set(run["disease_pathways"]["set_id"])
-    union_sets = disease_sets | target_sets  # the Stage 3 pathway union
-    cand_sets = set(gs.loc[gs["gene_id"] == gene_id, "set_id"]) & union_sets
-
-    shared = sorted((set_name.get(s, s) for s in cand_sets & target_sets), key=str.lower)
-    member_only = sorted((set_name.get(s, s) for s in cand_sets - target_sets), key=str.lower)
-
+    gs = run["gene_sets"]
+    dp = run["disease_pathways"]
     ot = run["ot"]
-    rows = ot[ot["gene_id"] == gene_id]
-    datatypes = []
-    for dt, grp in rows.groupby("datatype_id"):
-        datatypes.append(
-            {
-                "datatype": str(dt),
-                "score": float(grp["score"].max()),
-                "datasources": sorted(str(x) for x in grp["datasource_id"].unique()),
-                # "feeds" only means something when Stage 4 actually ran
-                "feeds": run["stage4_ran"] and str(dt) in run["admitted_datatypes"],
-            }
-        )
-    datatypes.sort(key=lambda d: (not d["feeds"], -d["score"]))
-
     it = run["interactions"]
-    touching = it[(it["gene_a"] == gene_id) | (it["gene_b"] == gene_id)]
-    interactions = []
-    for r in touching.itertuples(index=False):
-        other = r.gene_b if r.gene_a == gene_id else r.gene_a
-        if other not in run["graph_index"]:
-            continue  # dropped by Stage 3's pathway-pool scoping — not in the graph
-        interactions.append(
-            {
-                "a": _sym(r.gene_a, symbols),
-                "b": _sym(r.gene_b, symbols),
-                "directed": bool(r.directed),
-                "sign": _SIGN_LABEL.get(int(r.sign), str(r.sign)),
-                "evidence_type": str(r.evidence_type),
-                "confidence": None if pd.isna(r.confidence) else float(r.confidence),
-                "to_target": other == target_id,
-            }
-        )
+    graph_index = run["graph_index"]
 
-    return {"shared_pathways": shared, "member_pathways": member_only,
-            "datatypes": datatypes, "interactions": interactions}
+    shared: list[str] = []
+    member_only: list[str] = []
+    if gs is not None:
+        set_name = dict(zip(gs["set_id"], gs["set_name"]))
+        target_sets = set(gs.loc[gs["gene_id"] == target_id, "set_id"])
+        disease_sets = set(dp["set_id"]) if dp is not None else set()
+        union_sets = disease_sets | target_sets  # the Stage 3 pathway union
+        cand_sets = set(gs.loc[gs["gene_id"] == gene_id, "set_id"]) & union_sets
+        shared = sorted((set_name.get(s, s) for s in cand_sets & target_sets), key=str.lower)
+        member_only = sorted((set_name.get(s, s) for s in cand_sets - target_sets), key=str.lower)
+
+    datatypes = []
+    if ot is not None:
+        for dt, grp in ot[ot["gene_id"] == gene_id].groupby("datatype_id"):
+            datatypes.append(
+                {
+                    "datatype": str(dt),
+                    "score": float(grp["score"].max()),
+                    "datasources": sorted(str(x) for x in grp["datasource_id"].unique()),
+                    # "feeds" only means something when Stage 4 actually ran
+                    "feeds": run["stage4_ran"] and str(dt) in run["admitted_datatypes"],
+                }
+            )
+        datatypes.sort(key=lambda d: (not d["feeds"], -d["score"]))
+
+    interactions = []
+    if it is not None:
+        touching = it[(it["gene_a"] == gene_id) | (it["gene_b"] == gene_id)]
+        for r in touching.itertuples(index=False):
+            other = r.gene_b if r.gene_a == gene_id else r.gene_a
+            # without graph_gene_index.json we can't apply Stage 3's
+            # pathway-pool scoping, so show every touching interaction
+            if graph_index is not None and other not in graph_index:
+                continue
+            interactions.append(
+                {
+                    "a": _sym(r.gene_a, symbols),
+                    "b": _sym(r.gene_b, symbols),
+                    "directed": bool(r.directed),
+                    "sign": _SIGN_LABEL.get(int(r.sign), str(r.sign)),
+                    "evidence_type": str(r.evidence_type),
+                    "confidence": None if pd.isna(r.confidence) else float(r.confidence),
+                    "to_target": other == target_id,
+                }
+            )
+
+    return {
+        "shared_pathways": shared,
+        "member_pathways": member_only,
+        "datatypes": datatypes,
+        "interactions": interactions,
+        "pathways_available": gs is not None,
+        "datatypes_available": ot is not None,
+        "interactions_available": it is not None,
+        "interactions_unscoped": it is not None and graph_index is None,
+    }
 
 
 # ==========================================================================
@@ -250,7 +304,9 @@ def _trace_html(gene_id: str, sym: str, row, tr: dict) -> str:
     ]
 
     parts.append('<p class="k">Shared pathways with the target</p>')
-    if tr["shared_pathways"]:
+    if not tr["pathways_available"]:
+        parts.append('<p class="none">gene_sets.parquet not in the run directory</p>')
+    elif tr["shared_pathways"]:
         parts.append("<ul>" + "".join(f"<li>{_e(n)}</li>" for n in tr["shared_pathways"]) + "</ul>")
     else:
         parts.append('<p class="none">none in the Stage 3 pathway union</p>')
@@ -260,7 +316,9 @@ def _trace_html(gene_id: str, sym: str, row, tr: dict) -> str:
         parts.append("<ul>" + "".join(f"<li>{_e(n)}</li>" for n in tr["member_pathways"]) + "</ul>")
 
     parts.append('<p class="k">Open Targets evidence datatypes</p>')
-    if tr["datatypes"]:
+    if not tr["datatypes_available"]:
+        parts.append('<p class="none">ot_disease_subset.parquet not in the run directory</p>')
+    elif tr["datatypes"]:
         lis = []
         for d in tr["datatypes"]:
             badge = '<span class="badge">feeds genetic-evidence score</span>' if d["feeds"] else ""
@@ -270,8 +328,11 @@ def _trace_html(gene_id: str, sym: str, row, tr: dict) -> str:
     else:
         parts.append('<p class="none">no Open Targets association rows for this gene in this disease</p>')
 
-    parts.append('<p class="k">Interactions in the graph</p>')
-    if tr["interactions"]:
+    label = "Interactions touching this gene" if tr["interactions_unscoped"] else "Interactions in the graph"
+    parts.append(f'<p class="k">{label}</p>')
+    if not tr["interactions_available"]:
+        parts.append('<p class="none">interactions.parquet not in the run directory</p>')
+    elif tr["interactions"]:
         lis = []
         for it in tr["interactions"]:
             arrow = "&rarr;" if it["directed"] else "&mdash;"
@@ -296,7 +357,12 @@ def render_html(run: dict, bench_text: str | None, bench_label: str) -> str:
     tgt = m["resolved_target"]
     dis = m["disease"]
     versions = ", ".join(f"{s['db']} {s['version']}" for s in m.get("sources", []))
-    graph_kind = "Stage 4 (genetic-evidence-weighted)" if run["stage4_ran"] else "Stage 3 (structural)"
+    if run["stage4_ran"]:
+        graph_kind = "Stage 4 (genetic-evidence-weighted)"
+    elif run["graph_meta"]:
+        graph_kind = "Stage 3 (structural)"
+    else:
+        graph_kind = "unknown (no graph_metadata.json)"
 
     have_rwr = "rwr_score" in df.columns
     have_gen = "genetic_evidence_score" in df.columns
@@ -361,6 +427,12 @@ def render_html(run: dict, bench_text: str | None, bench_label: str) -> str:
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     tbody_html = "\n".join(body_rows)
     details_html = "\n".join(details)
+    missing_note = (
+        f'<p class="warn">Partial run: {_e(", ".join(run["missing"]))} not in the run directory — '
+        "the affected columns / trace sections are shown as unavailable below.</p>"
+        if run["missing"]
+        else ""
+    )
 
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -376,6 +448,7 @@ Disease <b>{_e(dis['name'])}</b> <span class=ens>{_e(dis['efo_id'])}</span> &mid
 {len(df)} candidates &middot; seed {_e(m.get('seed'))} &middot; {_e(versions)} &middot;
 graph: {_e(graph_kind)} &middot; generated {generated}
 </p>
+{missing_note}
 <p class="lead">
 <code>composite_score</code> is a weighted average of the normalised components; each
 candidate's <i>breakdown</i> below shows every component's weighted contribution

@@ -145,3 +145,54 @@ def test_build_report_is_self_contained_and_symbol_labelled(tmp_path):
     # benchmark panel embedded (the example placeholder, clearly labelled)
     assert "Benchmark validation" in html
     assert "EXAMPLE" in html
+
+
+# --------------------------------------------------------------------------
+# graceful degradation: missing optional artifacts
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not (EXAMPLE_RUN / "candidates_annotated.tsv").exists(),
+    reason="example_data/example_run not populated",
+)
+def test_partial_run_dir_degrades_gracefully(tmp_path):
+    """Only manifest.json + candidates_annotated.tsv present, and the table
+    lacks rwr_score / genetic_evidence_score (a Stage-3-only run). The
+    report still renders: those columns are omitted, every trace section
+    says which artifact is missing, and a header note lists them."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "manifest.json").write_text((EXAMPLE_RUN / "manifest.json").read_text())
+    ann = pd.read_csv(EXAMPLE_RUN / "candidates_annotated.tsv", sep="\t").drop(
+        columns=["rwr_score", "genetic_evidence_score"]
+    )
+    ann.to_csv(run_dir / "candidates_annotated.tsv", sep="\t", index=False)
+
+    html = rep.build_report(run_dir, run_dir / "report.html").read_text()
+
+    thead = html.split("<thead>", 1)[1].split("</thead>", 1)[0]
+    assert ">rwr<" not in thead and "genetic ev." not in thead   # optional columns dropped
+    assert ">composite<" in thead and ">topology<" in thead      # required ones stay
+    assert html.count("<details ") == len(ann)                   # every candidate still rendered
+
+    assert "Partial run:" in html
+    for artifact in ("gene_sets.parquet", "interactions.parquet", "ot_disease_subset.parquet"):
+        assert f"{artifact} not in the run directory" in html
+
+    assert "http://" not in html and "https://" not in html      # still self-contained
+
+
+def test_load_run_requires_only_manifest_and_annotated(tmp_path):
+    """A directory with neither required artifact fails loudly; with both,
+    it loads (every other artifact optional)."""
+    with pytest.raises(SystemExit):
+        rep.load_run(tmp_path)
+
+    (tmp_path / "manifest.json").write_text((EXAMPLE_RUN / "manifest.json").read_text())
+    (tmp_path / "candidates_annotated.tsv").write_text(
+        (EXAMPLE_RUN / "candidates_annotated.tsv").read_text()
+    )
+    run = rep.load_run(tmp_path)
+    assert run["gene_sets"] is None and run["graph_index"] is None
+    assert "gene_sets.parquet" in run["missing"]

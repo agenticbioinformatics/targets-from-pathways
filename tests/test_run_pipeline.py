@@ -61,3 +61,20 @@ def test_from_manifest_chains_stages_and_writes_report(tmp_path):
 def test_missing_required_args_exits():
     with pytest.raises(SystemExit):
         run_pipeline.main(["--target", "PTGS2"])  # no --disease/--data-dir/--out-dir, no --from-manifest
+
+
+def test_stage_failure_names_the_stage_and_command(tmp_path, caplog):
+    """A stage exiting non-zero -> a helpful ERROR line (which stage, its
+    command, "see output above") and exit code 1, not a bare traceback."""
+    (tmp_path / "manifest.json").write_text('{"not": "a valid manifest"}')
+
+    with caplog.at_level("ERROR"):
+        with pytest.raises(SystemExit) as exc:
+            run_pipeline.main(["--from-manifest", str(tmp_path / "manifest.json")])
+
+    assert exc.value.code == 1
+    msg = "\n".join(r.message for r in caplog.records)
+    assert "Stage 2" in msg
+    assert "stage2_gsea_discovery.py" in msg
+    assert "exit code 1" in msg
+    assert "command:" in msg
