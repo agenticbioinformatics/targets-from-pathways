@@ -17,7 +17,7 @@ pinned, not assumed from the v1 README (which used `current/` and was
 explicitly flagged in README.md's "Open research" section as unconfirmed):
 
 - ``https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/26.06/output/``
-  returns HTTP 200 and lists ``target/``, ``association_by_datasource_indirect/``,
+  returns HTTP 200 and lists ``target/``, ``association_by_datasource_direct/``,
   ``disease/``, etc., each stamped 2026-06-2x. The plain ftp:// scheme
   (``ftp://ftp.ebi.ac.uk/pub/databases/opentargets/platform/26.06/output/target/``)
   was independently confirmed to list the same three part-files; https:// is
@@ -115,7 +115,7 @@ the rest split across the 8 directed/signed codes.
 Open Targets disease.parquet — added beyond the prompt's literal source list
 --------------------------------------------------------------------------
 The task text names exactly two OT 26.06 tables to pin (``target`` and
-``association_by_datasource_indirect``). stage0_schemas.py's ``ResolvedDisease``
+``association_by_datasource_direct``). stage0_schemas.py's ``ResolvedDisease``
 (already fixed, Stage 0) requires a human-readable ``name``, which neither of
 those two tables carries (association rows only carry ``diseaseId``). OT's
 ``disease/disease.parquet`` is a single ~7MB file (not a multi-GB Spark
@@ -136,8 +136,12 @@ warns about). ``resolve_disease_id`` below therefore checks ``dbXRefs`` (in
 resolves instead of spuriously failing with "disease cannot be resolved".
 
 --------------------------------------------------------------------------
-Open Targets association_by_datasource_indirect real schema
+Open Targets association_by_datasource_direct real schema
 --------------------------------------------------------------------------
+``association_by_datasource_direct`` carries the same columns as its
+``_indirect`` sibling — the two differ only in whether disease-ontology
+descendants are folded in (direct = the exact disease term only) — so the
+schema notes below, inspected on the ``_indirect`` table, apply unchanged.
 Columns (inspected directly): ``diseaseId, targetId, aggregationType,
 aggregationValue, associationScore, evidenceCount, timeseries,
 currentNovelty``. ``aggregationType`` is always the literal string
@@ -146,11 +150,13 @@ this, ingest fails loudly rather than silently mis-tagging datatypes);
 ``aggregationValue`` holds the actual datasource id (e.g. ``"reactome"``,
 ``"eva"``, ``"gwas_credible_sets"``). There is no ``datatype_id`` column
 directly, so ``_DATASOURCE_TO_DATATYPE`` below (sourced from
-https://platform-docs.opentargets.org/evidence) maps each of the 20
-datasource ids actually observed in 26.06 to its OT datatype. An
-unrecognized ``aggregationValue`` raises rather than being silently dropped
-or mis-bucketed, since Stage 4's non-pathway-datatype restriction (README.md,
-Stage 4) depends on this mapping being complete and correct.
+https://platform-docs.opentargets.org/evidence) maps each observed
+datasource id to its OT datatype; it was built against the ~20 datasource
+ids seen in 26.06's ``_indirect`` table, and ``direct`` is a subset of
+those. An unrecognized ``aggregationValue`` raises rather than being
+silently dropped or mis-bucketed, since Stage 4's non-pathway-datatype
+restriction (README.md, Stage 4) depends on this mapping being complete and
+correct.
 
 --------------------------------------------------------------------------
 Interaction source open decision (README.md, "What counts as pathway
@@ -219,14 +225,15 @@ REACTOME_FI_VERSION = "04142025"
 _OT_BASE = f"https://ftp.ebi.ac.uk/pub/databases/opentargets/platform/{OPENTARGETS_VERSION}/output"
 _REACTOME_BASE = f"https://download.reactome.org/{REACTOME_VERSION}"
 
-# The OT target/association_by_datasource_indirect directories are Spark
+# The OT target/association_by_datasource_direct directories are Spark
 # output: each part filename embeds a write-time-random UUID
 # (e.g. "part-00000-810593a9-...-c000.snappy.parquet") that cannot be known
-# ahead of time without already having listed the directory, and
-# association_by_datasource_indirect alone is ~3.3GB across 43 parts —
-# genuinely multi-gigabyte, which is exactly why --no-download exists (for
-# constrained/offline environments where fetching that much data per run
-# isn't viable). A literal `PinnedFile(url, sha256, size)` per part file
+# ahead of time without already having listed the directory, and the
+# association table runs to multiple gigabytes across dozens of part files
+# (its ``_indirect`` sibling was measured at ~3.3GB / 43 parts in 26.06;
+# ``direct`` is smaller but still multi-part) — which is exactly why
+# --no-download exists (for constrained/offline environments where fetching
+# that much data per run isn't viable). A literal `PinnedFile(url, sha256, size)` per part file
 # would therefore either be wrong (guessed ahead of time) or stale (pinned
 # to one release snapshot's UUIDs, breaking if OT ever regenerates the same
 # version number with different part boundaries). Instead, DirectorySource
@@ -283,13 +290,13 @@ DIRECTORY_SOURCES: dict[str, DirectorySource] = {
         url=f"{_OT_BASE}/target/",
         dest=f"opentargets/{OPENTARGETS_VERSION}/target",
     ),
-    "opentargets_association_by_datasource_indirect": DirectorySource(
-        url=f"{_OT_BASE}/association_by_datasource_indirect/",
-        dest=f"opentargets/{OPENTARGETS_VERSION}/association_by_datasource_indirect",
+    "opentargets_association_by_datasource_direct": DirectorySource(
+        url=f"{_OT_BASE}/association_by_datasource_direct/",
+        dest=f"opentargets/{OPENTARGETS_VERSION}/association_by_datasource_direct",
     ),
 }
 
-# OT datasourceId (association_by_datasource_indirect.aggregationValue) ->
+# OT datasourceId (association_by_datasource_direct.aggregationValue) ->
 # OT datatypeId, sourced from https://platform-docs.opentargets.org/evidence
 # and cross-checked against the 20 distinct aggregationValue strings actually
 # observed in 26.06 (see module docstring). Any datasource not listed here
@@ -925,7 +932,7 @@ def load_disease_association_subset(assoc_paths: list[Path], disease_id: str) ->
     bad_agg = set(df["aggregationType"]) - {"datasourceId"}
     if bad_agg:
         _fail(
-            f"association_by_datasource_indirect.aggregationType contained unexpected "
+            f"association_by_datasource_direct.aggregationType contained unexpected "
             f"value(s) {sorted(bad_agg)} (expected only 'datasourceId'); refusing to "
             f"guess a datatype mapping."
         )
@@ -1054,7 +1061,7 @@ def run_ingest(args: argparse.Namespace) -> Manifest:
     disease_parquet = _ensure_pinned_file("opentargets_disease", data_dir, args.no_download)
     target_paths = _ensure_directory_source("opentargets_target", data_dir, args.no_download)
     assoc_paths = _ensure_directory_source(
-        "opentargets_association_by_datasource_indirect", data_dir, args.no_download
+        "opentargets_association_by_datasource_direct", data_dir, args.no_download
     )
 
     gmt_path = _extract_single_member(gmt_zip)
