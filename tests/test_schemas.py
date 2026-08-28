@@ -1,6 +1,6 @@
 """Tests that stage0_schemas.py rejects malformed data as loudly as it accepts valid data.
 
-Per Stage 0 of PROMPTS.md: each schema must reject a deliberately malformed
+Per Stage 0 of development/PROMPTS.md: each schema must reject a deliberately malformed
 frame (wrong dtype, missing column, an out-of-vocabulary value, and a
 gene_id that looks like an HGNC symbol rather than an Ensembl ID) with a
 clear error naming the offending column.

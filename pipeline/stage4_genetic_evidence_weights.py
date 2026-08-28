@@ -119,8 +119,10 @@ EDGE_WEIGHT_MODES = ("avg", "product")
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="stage4_genetic_evidence_weights.py",
-        description="Stage 4: genetic-evidence node/edge weighting over Stage 3's pathway-based "
-        "gene-gene graph.",
+        description="Stage 4 — genetic-evidence weighting. Scores each graph gene from non-pathway-derived "
+        "Open Targets datatypes (--datatypes) and rewrites graph_weight.npz with edge weights "
+        "derived from those scores; extends graph_metadata.json and writes gene_weights.tsv. "
+        "Output filenames match Stage 3's, so Stage 5 loads either directory the same way.",
     )
     p.add_argument("--manifest", required=True, type=Path, help="Path to Stage 1's manifest.json.")
     p.add_argument(

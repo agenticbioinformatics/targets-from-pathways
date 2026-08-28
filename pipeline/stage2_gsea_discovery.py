@@ -90,7 +90,10 @@ OUTPUT_COLUMNS = list(DiseasePathwaysSchema.columns)
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="stage2_gsea_discovery.py",
-        description="Stage 2: GSEA disease-pathway discovery over a Stage 1 manifest.",
+        description="Stage 2 — disease-pathway discovery. FDR-corrected GSEA of the disease's "
+        "genetic-association genes against Reactome gene sets (size-capped, redundancy-collapsed). "
+        "Reads gene_sets.parquet + ot_disease_subset.parquet via --manifest; writes "
+        "disease_pathways.tsv next to it.",
     )
     p.add_argument("--manifest", required=True, type=Path, help="Path to Stage 1's manifest.json.")
     p.add_argument("--pval-threshold", type=float, default=0.05, help="Nominal p-value cutoff.")

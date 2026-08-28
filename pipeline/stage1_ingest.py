@@ -365,12 +365,16 @@ _FI_DIRECTION_CODES: dict[str, list[tuple[bool, int]]] = {
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="stage1_ingest.py",
-        description="Stage 1: resolve, canonicalize, and normalize source data.",
+        description="Stage 1 — ingest & canonicalize. Downloads (or reads from --data-dir) the "
+        "version-pinned Open Targets / Reactome sources, canonicalises every gene id to Ensembl, "
+        "subsets OT associations to --disease, and writes genes/gene_sets/interactions/"
+        "ot_disease_subset parquet + coverage_report.json + scale_report.json + manifest.json "
+        "into --out-dir. Every later stage reads only these, via manifest.json.",
     )
-    p.add_argument("--target", required=True, help="Gene symbol or Ensembl gene ID.")
-    p.add_argument("--disease", required=True, help="EFO (or other OT-recognized ontology) disease ID.")
-    p.add_argument("--data-dir", required=True, type=Path, help="Source cache directory.")
-    p.add_argument("--out-dir", required=True, type=Path, help="Run artifact output directory.")
+    p.add_argument("--target", required=True, help="Target gene: HGNC symbol or Ensembl gene ID.")
+    p.add_argument("--disease", required=True, help="Disease: EFO / MONDO / other OT-recognized ontology ID.")
+    p.add_argument("--data-dir", required=True, type=Path, help="Source cache directory (downloads land here).")
+    p.add_argument("--out-dir", required=True, type=Path, help="Directory to write this run's Stage 1 artifacts.")
     p.add_argument(
         "--pathway-db",
         choices=sorted(SUPPORTED_SOURCE_DBS),
@@ -379,9 +383,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "the flag is kept so its value flows into the source_db column.",
     )
     p.add_argument("--no-download", action="store_true", help="Never fetch from the network; --data-dir must already be populated.")
-    p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--min-set-size", type=int, default=10)
-    p.add_argument("--max-set-size", type=int, default=200)
+    p.add_argument("--seed", type=int, default=0, help="Random seed, recorded in the manifest and carried to later stages (default: 0).")
+    p.add_argument("--min-set-size", type=int, default=10, help="Drop Reactome gene sets smaller than this before Stage 2 (default: 10).")
+    p.add_argument("--max-set-size", type=int, default=200, help="Drop Reactome gene sets larger than this before Stage 2 (default: 200).")
     p.add_argument(
         "--fi-curated-only",
         action=argparse.BooleanOptionalAction,

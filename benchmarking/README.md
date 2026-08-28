@@ -1,6 +1,6 @@
 # Benchmark validation
 
-> Ground-truth check for the [Target Rescue via Pathways](../README.md)
+> Ground-truth check for the [Targets from Pathways](../README.md)
 > pipeline. Pulled out of the main pipeline into its own module: it *drives*
 > the pipeline (Stages 1–6) rather than being a stage of it, it has its own
 > human-curated input file, and its results must be read differently from

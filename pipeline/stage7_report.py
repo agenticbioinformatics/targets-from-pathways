@@ -493,7 +493,10 @@ def build_report(run_dir: Path, out_path: Path, *, benchmark_dir: Path | None = 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="stage7_report.py",
-        description="Render a self-contained interactive HTML report from a finished pipeline run.",
+        description="Stage 7 — output/report. Turns a finished run directory (manifest.json + "
+        "candidates_annotated.tsv required; other artifacts optional) into ONE self-contained "
+        "interactive HTML file: sortable ranked table, click-to-expand evidence trace per "
+        "candidate, and a static benchmark-validation panel. No server, no external assets.",
     )
     p.add_argument(
         "--run-dir",

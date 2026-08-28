@@ -1,7 +1,7 @@
 # Implementation Prompts
 
 Ready-to-use prompts for an agentic coding assistant, organized by pipeline
-stage and matched to the Day 1/2/3 plan in README.md. Each prompt is
+stage and matched to the Day 1/2/3 plan in ../README.md. Each prompt is
 self-contained — hand it to a fresh agent session with no other context
 beyond this repo.
 
@@ -384,31 +384,38 @@ beyond this repo.
 ## Day 3
 
 > Benchmark validation is now its own module — see
-> [`benchmarking/PROMPTS.md`](benchmarking/PROMPTS.md) for its
+> [`benchmarking/PROMPTS.md`](../benchmarking/PROMPTS.md) for its
 > implementation prompt. It runs on Day 3 alongside Stage 7 below.
 
-### Stage 7 — Output/report + web UI
+### Stage 7 — Output/report
 
 **Implement:**
 > Write a small pipeline orchestrator `run_pipeline.py` that chains Stages
-> 1-6 given `--target` and `--disease`, and a minimal web app (e.g. Flask or
-> Streamlit) with a form for target + disease, running `run_pipeline.py` and
-> displaying the ranked candidate table (composite score, topology, RWR,
-> genetic evidence, tractability, safety) plus, for each candidate on
-> click/expand, the evidence trace (which shared pathways, which datatypes,
-> which interactions contributed). Display genes by HGNC symbol while
+> 1-6 given `--target` and `--disease` (running each stage as its own
+> subprocess), plus a `--from-manifest` mode that skips Stage 1 and starts
+> from an existing Stage 1 output directory. Then write `stage7_report.py`
+> that turns a finished run directory into **one self-contained interactive
+> HTML file** (no server, no web framework, no external assets — standard
+> library templating only): a header (target/disease/versions/seed), a
+> client-side sortable ranked candidate table (composite score, topology,
+> RWR, genetic evidence, tractability, safety) and, for each candidate on
+> click/expand, the evidence trace — which shared pathways, which Open
+> Targets datatypes (with the ones feeding the genetic-evidence score
+> flagged), which interaction edges. Display genes by HGNC symbol while
 > keeping Ensembl gene IDs as the internal key — resolve symbols via Stage
 > 1's `genes` table at render time only. Include the benchmark validation
-> summary (from `benchmarking/`) as a static "validation" panel/page in the
-> app, not recomputed per request.
+> summary (from `benchmarking/`) as a static panel, embedded from a text
+> file, not recomputed.
 
 **Test:**
-> Write an integration test that runs `run_pipeline.py` end-to-end on the
-> PTGS2 / rheumatic disease (EFO_0005755) example from the original
-> project's README, and asserts the output is non-empty, PTGS2 itself
-> appears in the pathway data, and the pipeline completes within a
-> reasonable time budget (e.g. under 5 minutes) — this is a smoke test, not
-> a correctness check on rankings.
+> Unit-test `stage7_report.py`'s trace assembly (shared pathways, graph
+> scoping of interactions, datatype flags) and its benchmark-summary
+> fallback on hand-built inputs; exercise `build_report` end-to-end on the
+> checked-in synthetic run and assert the HTML is self-contained (no
+> external URLs), symbol-labelled, and has one detail block per candidate.
+> Add a `run_pipeline.py --from-manifest --report` smoke test that Stages
+> 2-6 + the report chain through and produce every expected artifact — a
+> "does it wire up" check, not a correctness check on rankings.
 
 ---
 
@@ -426,13 +433,28 @@ beyond this repo.
 > the suite — it is what catches a schema break on Day 3 morning.
 
 **Documentation:**
-> Update `README.md` in this directory with a "How to run" section showing
-> the exact CLI invocation chain for a full run (mirroring the original
-> project's README style), and add a `--help` docstring to every stage
-> script's argparse setup so the CLI is self-documenting.
+> Give `README.md` at the repo root a short **Quick start** section only —
+> install, the one-command `run_pipeline.py` invocation, the offline demo,
+> and a per-stage table with a two-sentence description of each step. Move
+> the detailed per-stage user guide (setup / run command / expected output
+> / flags / tests) into `docs/README.md`, and include there the exact
+> stage-by-stage CLI invocation chain for a full run. Add a `description`
+> and per-argument `help` to every stage script's `argparse` setup so
+> `python3 pipeline/<script> --help` is self-documenting.
 
-**Demo/web app polish:**
-> Add basic input validation and error messages to the web app from Stage 7
-> (e.g. clear message if the EFO ID or target gene isn't found in the
-> loaded data, instead of a stack trace), and a loading indicator while
-> `run_pipeline.py` executes, since a full run may take up to a few minutes.
+**Development docs:**
+> Create a `development/` directory holding the artifacts of how this
+> pipeline was built: this `PROMPTS.md`, the `prompt_history` session log,
+> and a `README.md` describing the development process (schema-first,
+> one-script-per-stage, per-stage tests, the plan updates, the renames).
+> Add `development/hackathon-pipeline-dev/SKILL.md` — an agentic skill
+> capturing the transferable lessons from building it.
+
+**Demo polish:**
+> Make `run_pipeline.py` fail helpfully — if a stage exits non-zero, print
+> which stage and its command, not a bare traceback; if `--target` /
+> `--disease` don't resolve in Stage 1, surface Stage 1's own suggestion
+> message. In `stage7_report.py`, degrade gracefully when an optional
+> artifact is missing (e.g. a Stage-3-only run with no `rwr_score` /
+> `genetic_evidence_score` — omit those columns rather than crash) and when
+> no benchmark summary exists (show a "not run yet" note, not an error).

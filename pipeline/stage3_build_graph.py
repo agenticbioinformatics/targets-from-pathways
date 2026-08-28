@@ -124,8 +124,11 @@ logger = logging.getLogger("build_graph")
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="stage3_build_graph.py",
-        description="Stage 3: pathway-based gene-gene graph construction over a Stage 1 manifest "
-        "and Stage 2's disease-relevant pathway list.",
+        description="Stage 3 — pathway-based gene-gene graph. Builds a directed, signed networkx graph "
+        "from the union of disease-relevant and target-containing pathways (co-membership edges + "
+        "Reactome functional-interaction edges). Reads gene_sets/interactions via --manifest and "
+        "disease_pathways.tsv alongside it; writes graph_weight.npz / graph_sign.npz / "
+        "graph_gene_index.json / graph_metadata.json.",
     )
     p.add_argument("--manifest", required=True, type=Path, help="Path to Stage 1's manifest.json.")
     p.add_argument(

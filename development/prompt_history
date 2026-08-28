@@ -722,3 +722,55 @@
   they are not pipeline scripts.
 - `python3 -m pytest` -> 71 passed. Smoke-tested all four stage scripts'
   `--help` and re-ran the `example_data/` generator through Stages 2-4.
+
+## Prompt 23 — docs split, --help, development/ + dev skill
+
+> /hackathon-cleanup: Give README.md a "Quick start" section (how to run
+> each step, two sentences each); create docs/ with the detailed per-step
+> user guide + the full CLI invocation chain; add a --help description to
+> every stage script's argparse; create development/ holding PROMPTS,
+> prompt_history and a README about the dev process, plus
+> development/hackathon-pipeline-dev/SKILL.md — an agentic skill about what
+> was learned. (Skill later asked to be generic to any bioinformatics
+> pipeline given a problem + pipeline description.)
+
+Note: prompt_history was not maintained between Prompt 22 and here. The
+intervening work (Stage 3-7 implementation, benchmark split into
+benchmarking/, the score_candidates/annotate_context renames,
+example_data/stage1_run -> example_run, Stage 8 -> Stage 7, log trimming,
+the end-to-end test) is recorded in the git history and in README.md's
+numbered "Plan update" sections.
+
+**Changes:**
+- `README.md`: replaced the eight "Running Stage 0-7" sections (~510 lines)
+  with a compact **Quick start** — install, one-command `run_pipeline.py`,
+  offline demo, a 7-row per-stage table (two-sentence descriptions), the
+  manual stage-by-stage command chain, and pointers to docs/, benchmarking/,
+  development/. The plan content (Introduction, Pipeline overview, Plan
+  updates, Open decisions, Development plan, Testing steps) is unchanged.
+- New `docs/README.md`: the detailed per-stage reference, moved verbatim
+  from README.md's old "Running Stage N" sections, prefixed with a
+  "Full run — the CLI invocation chain" section (one-command + manual +
+  offline). `benchmarking/` links rewritten to `../benchmarking/`.
+- `pipeline/stage1_ingest.py`: added `help=` to `--seed` / `--min-set-size`
+  / `--max-set-size` (the only args repo-wide without it). Enriched the
+  `argparse` `description` on stages 1-7 to name each stage's input(s) and
+  output file(s), so `python3 pipeline/<script> --help` is self-documenting.
+- `PROMPTS.md` -> `development/PROMPTS.md`, `prompt_history` ->
+  `development/prompt_history` (git mv). Fixed the garbled
+  "Documentation:" prompt and the stray loose line; added a "Development
+  docs:" prompt; rewrote relative links (`../README.md`,
+  `../benchmarking/PROMPTS.md`).
+- New `development/README.md`: how the pipeline was built (plan-first,
+  schema-first, one-script-per-stage, synthetic example, test-as-you-go,
+  six plan updates, late bulk renames).
+- New `development/hackathon-pipeline-dev/SKILL.md`: an agentic skill —
+  eight generic patterns for turning a problem statement + pipeline
+  description into a modular, reproducible, tested bioinformatics pipeline
+  (any input data / databases). Deliberately free of this project's
+  specifics.
+- Stale doc refs fixed: `tests/test_schemas.py` and
+  `pipeline/stage6_annotate_context.py` docstrings (`PROMPTS.md` ->
+  `development/PROMPTS.md`; "Stage 8" -> "Stage 7 report").
+- `python3 -m pytest` -> 100 passed. All eight stage scripts' `--help`
+  render.

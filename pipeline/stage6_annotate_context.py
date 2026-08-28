@@ -91,9 +91,8 @@ What the trace does **not** carry, by design:
 - *which shared pathways / interactions* put a candidate near the target —
   that provenance is not in this stage's inputs (Stage 5 collapses the
   graph to scores), and re-deriving Stage 3's pathway union here would
-  duplicate it. It is Stage 8's drill-down, assembled from
-  ``gene_sets.parquet`` / ``interactions.parquet`` at render time (see
-  PROMPTS.md Stage 8).
+  duplicate it. The Stage 7 report assembles it from ``gene_sets.parquet``
+  / ``interactions.parquet`` at render time.
 - *which Open Targets datatype* produced ``genetic_evidence_score`` — Stage
   4 records only the final score; surfacing the winning datatype is a
   Stage 4 follow-up.
@@ -156,8 +155,10 @@ _CLINICAL_TRACTABILITY_IDS = {
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="stage6_annotate_context.py",
-        description="Stage 6: attach Open Targets tractability/safety to Stage 5's candidates "
-        "and compute a configurable composite score.",
+        description="Stage 6 — contextual annotation. Joins an Open Targets tractability bucket and a "
+        "safety flag onto Stage 5's candidates and computes a configurable weighted composite_score "
+        "(--weights). Reads candidate_scores.tsv + graph_metadata.json + the OT target parquet "
+        "(via --manifest); writes candidates_annotated.tsv. No tissue-expression data is used.",
     )
     p.add_argument("--manifest", required=True, type=Path, help="Path to Stage 1's manifest.json.")
     p.add_argument(
