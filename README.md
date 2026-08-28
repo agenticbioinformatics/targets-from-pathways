@@ -655,6 +655,17 @@ behaviour the example is built to show. On the **Stage 3** graph (run
 `topology`-only ranking instead leads with `ENSG...002`, the target's
 direct interaction partner (`TARGET -> G2`, confidence 0.9).
 
+The `gene` column is an **Ensembl gene ID** — the project's one canonical
+identifier (Decision 2), copied verbatim from `graph_gene_index.json`, not
+mapped. It is the same namespace as `genes.gene_id`,
+`ot_disease_subset.gene_id` and Stage 4's `genetic_evidence_score` keys, so
+Stage 6 joins `candidate_scores.gene` directly onto Open Targets
+tractability/safety with no ID-mapping step; `CandidateScoresSchema`'s
+`^ENSG\d{11}$` check (plus an explicit guard in `run()`) makes a namespace
+slip fail loudly rather than silently drop rows on the join. HGNC symbols
+are a display-time lookup (`genes.parquet`) in Stages 6/8, never written
+here.
+
 `python3 -m pytest tests/test_score_candidates.py` runs the unit-level
 tests (10 tests): hand-computed `topology_score` values on a small
 cycle+chain graph (both at the function level and end-to-end through a

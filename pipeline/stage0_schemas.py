@@ -252,7 +252,11 @@ GeneWeightsSchema = DataFrameSchema(
 CandidateScoresSchema = DataFrameSchema(
     {
         # Ensembl gene ID of a candidate alternative target — every non-target
-        # node of the Stage 3/4 graph gets exactly one row.
+        # node of the Stage 3/4 graph gets exactly one row. Same identifier
+        # namespace as GenesSchema.gene_id / OTAssociationsSchema.gene_id
+        # (all Open-Targets-canonicalised in Stage 1), so Stage 6 joins this
+        # column straight onto Open Targets annotation with no ID mapping;
+        # the pattern check here is what makes a namespace slip fail loudly.
         "gene": Column(
             str,
             checks=Check.str_matches(ENSEMBL_GENE_ID_PATTERN.pattern),

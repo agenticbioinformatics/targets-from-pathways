@@ -52,10 +52,26 @@ and removed from scope — see README.md plan update 5.
 
 **Output** — ``candidate_scores.tsv`` (or ``--out``), validated against
 ``schemas.CandidateScoresSchema``: one row per non-target graph node,
-columns ``gene`` (Ensembl gene ID, matching the graph index and the Open
-Targets convention, so Stage 6 joins on it directly) and ``topology_score``
-always, plus ``rwr_score`` only when ``rwr`` was in ``--method``. Rows are
-ranked by ``rwr_score`` when present, else ``topology_score``, descending.
+columns ``gene`` and ``topology_score`` always, plus ``rwr_score`` only
+when ``rwr`` was in ``--method``. Rows are ranked by ``rwr_score`` when
+present, else ``topology_score``, descending.
+
+**Wiring to Stage 6 — the ``gene`` column is an Ensembl gene ID**, the
+project's single canonical identifier (README.md Decision 2). It is not
+mapped or transformed here: it is copied verbatim from
+``graph_gene_index.json``, whose entries Stage 3 already constrained to
+``^ENSG\\d{11}$`` (``build_graph.validate_gene_index``) from
+Ensembl-keyed ``gene_sets.parquet`` / ``interactions.parquet``. Stage 5
+re-checks the format on load and ``CandidateScoresSchema`` re-checks it on
+write, so a stray symbol or Reactome physical-entity ID fails loudly rather
+than silently failing to join. This is the same namespace as
+``ot_disease_subset.gene_id``, ``genes.gene_id`` and
+``graph_metadata.json``'s ``genetic_evidence_score`` keys — all
+Open-Targets-canonicalised in Stage 1 — so Stage 6 joins
+``candidate_scores.gene`` straight onto Open Targets tractability/safety
+and the Stage 4 evidence scores with no ID-mapping step. Human-readable
+HGNC symbols are resolved from ``genes.parquet`` only at display time
+(Stages 6/8), never written into this file.
 """
 
 from __future__ import annotations
