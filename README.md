@@ -11,7 +11,9 @@
 
 ```
 python3 example_data/build_gsea_example.py
+```
 
+```
 python3 pipeline/run_pipeline.py --from-manifest example_data/example_run/manifest.json --report
 ```
 
@@ -39,7 +41,7 @@ small (5–15 cases), and no other data types beyon pathways. It is meant to com
 evidence for target prioritisation.
 
 
-### Pipeline, step by step
+### Pipeline, stage by stage
 
 Each stage is a standalone script (`python3 pipeline/<script> --help`);
 each reads the previous stage's output from the run directory.
@@ -67,21 +69,40 @@ Reactome 97 sources into `--data-dir` (a few GB; cached afterwards). The
 report is written to `out/report.html`.
 
 
-**Manual step-by-step run** (or use `run_pipeline.py` to automatically run all stages):
+**Manual stage-by-stage run** (or use `run_pipeline.py` to automatically run all stages):
 
+#### Stage 1: Ingesting data
 ```
 python3 pipeline/stage1_ingest.py --target NOD2 --disease MONDO_0005265 --data-dir data/ --out-dir out/
+```
 
+#### Stage 2: Running GSEA
+```
 python3 pipeline/stage2_gsea_discovery.py           --manifest out/manifest.json
+```
 
+#### Stage 3: Building a graph
+```
 python3 pipeline/stage3_build_graph.py              --manifest out/manifest.json
+```
 
+#### Stage 4: Calculating graph weights
+```
 python3 pipeline/stage4_genetic_evidence_weights.py --manifest out/manifest.json
+```
 
+#### Stage 5: Scoring candidates
+```
 python3 pipeline/stage5_score_candidates.py         --graph-dir out/ --method topology,rwr
+```
 
+#### Stage 6: Annotating candidates
+```
 python3 pipeline/stage6_annotate_context.py         --manifest out/manifest.json
+```
 
+#### Stage 7: HTML reporting
+```
 python3 pipeline/stage7_report.py                   --run-dir out/
 ```
 
