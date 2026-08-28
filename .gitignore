@@ -1,10 +1,2 @@
 .vscode
-*__pycache__*
-
-data/
-
-network_propagation/multixrank
-
-validation/*
-!validation/not_working_targets.ipynb
-!validation/new_candidates.ipynb
+*cache*
