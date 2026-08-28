@@ -29,7 +29,7 @@ _PINNED_FIXTURES = {
 }
 _DIRECTORY_FIXTURES = {
     "opentargets_target": [FIXTURES_DIR / "opentargets" / "target.parquet"],
-    "opentargets_association_by_datasource_indirect": [FIXTURES_DIR / "opentargets" / "association.parquet"],
+    "opentargets_association_by_datasource_direct": [FIXTURES_DIR / "opentargets" / "association.parquet"],
 }
 
 

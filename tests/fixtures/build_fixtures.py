@@ -3,7 +3,7 @@
 Not run by the test suite itself (the parquet files it writes are committed
 alongside the hand-written Reactome text fixtures) — re-run this manually if
 the fixture gene universe needs to change. Column layouts mirror the real OT
-26.06 `target`, `disease`, and `association_by_datasource_indirect` parquet
+26.06 `target`, `disease`, and `association_by_datasource_direct` parquet
 schemas exactly (verified against the live files; see stage1_ingest.py's module
 docstring), just with a handful of rows/genes instead of the real ~80k/3.3GB.
 
