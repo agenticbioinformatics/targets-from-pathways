@@ -371,7 +371,7 @@ valid one.
 gene and a disease ID, nothing upstream):
 
 ```
-python3 pipeline/stage1_ingest.py --target PTGS2 --disease EFO_0005755 --data-dir ./data --out-dir ./run1
+python3 pipeline/stage1_ingest.py --target NOD2 --disease MONDO_0005265 --data-dir ./test_data --out-dir ./test_out
 ```
 
 On the first run this downloads the version-pinned source files (Open
@@ -424,8 +424,7 @@ which patch the acquisition layer to serve the tiny fixtures under
 **Run command**, against Stage 1's output for a real (target, disease) pair:
 
 ```
-python3 pipeline/stage1_ingest.py --target PTGS2 --disease EFO_0005755 --data-dir ./data --out-dir ./run1
-python3 pipeline/stage2_gsea_discovery.py --manifest ./run1/manifest.json
+python3 pipeline/stage2_gsea_discovery.py --manifest test_out/manifest.json
 ```
 
 `pipeline/stage2_gsea_discovery.py` takes no other input — it resolves `gene_sets.parquet`,
