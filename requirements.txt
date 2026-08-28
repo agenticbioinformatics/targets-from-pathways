@@ -20,11 +20,10 @@ scipy
 pandas
 pyarrow
 
-# Stage 5 — candidate scoring (topology, RWR, backtrack-free walk)
+# Stage 5 — candidate scoring (topology + random-walk-with-restart)
 networkx
 numpy
-# GBA-centrality (backtrack-free walk / non-backtracking RWR) is a standalone
-# tool, not on PyPI — see "Non-pip dependencies" below.
+scipy
 
 # Stage 6 — contextual annotation & filtering
 pandas
@@ -41,9 +40,6 @@ streamlit
 pytest
 
 # Non-pip dependencies:
-# - GBA-centrality (Stage 5, backtrack-free walk / non-backtracking RWR):
-#   standalone tool, not distributed via PyPI. Install per instructions at
-#   https://github.com/jedrzejkubica/GBA-centrality
 # - Flask is a documented alternative to Streamlit for Stage 8's web UI
 #   (README/PROMPTS.md leave this an open choice); if Flask is picked instead,
 #   swap the `streamlit` line above for `flask`.

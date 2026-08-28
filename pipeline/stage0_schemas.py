@@ -57,6 +57,7 @@ __all__ = [
     "OTAssociationsSchema",
     "DiseasePathwaysSchema",
     "GeneWeightsSchema",
+    "CandidateScoresSchema",
     "assert_foreign_key",
     "ResolvedTarget",
     "ResolvedDisease",
@@ -243,6 +244,33 @@ GeneWeightsSchema = DataFrameSchema(
         # for a gene with no matching evidence, so every graph node gets a
         # row here.
         "genetic_evidence_score": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False),
+    },
+    strict=True,
+)
+
+
+CandidateScoresSchema = DataFrameSchema(
+    {
+        # Ensembl gene ID of a candidate alternative target — every non-target
+        # node of the Stage 3/4 graph gets exactly one row.
+        "gene": Column(
+            str,
+            checks=Check.str_matches(ENSEMBL_GENE_ID_PATTERN.pattern),
+            unique=True,
+            nullable=False,
+        ),
+        # Direction- and weight-aware topology proximity to the target
+        # (higher = closer); 0.0 for a node the target cannot reach. Always
+        # present — topology is Stage 5's always-on method.
+        "topology_score": Column(
+            float, checks=Check.greater_than_or_equal_to(0.0), nullable=False, coerce=True
+        ),
+        # Personalised random-walk-with-restart stationary probability,
+        # restart on the target. Present only when Stage 5 was run with
+        # `rwr` in --method (hence required=False); a probability in [0, 1].
+        "rwr_score": Column(
+            float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True, required=False
+        ),
     },
     strict=True,
 )

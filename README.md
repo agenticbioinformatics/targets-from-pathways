@@ -15,10 +15,10 @@ public, disease-independent map of how genes functionally relate to a target,
 so our core research question is whether pathway topology alone — without
 patient-specific omics — can provide a credible, orthogonal line of evidence
 for alternative-target discovery. We sharpen this beyond simple pathway
-overlap by adding network-diffusion (physics-inspired) propagation models —
-standard random-walk-with-restart and a backtrack-free (non-backtracking)
-walk variant — alongside topological distance, and by explicitly
-cross-validating pathway evidence against independent, non-pathway-derived
+overlap by adding a network-diffusion (physics-inspired) propagation model —
+standard random-walk-with-restart — alongside topological distance, and by
+explicitly cross-validating pathway evidence against independent,
+non-pathway-derived
 genetic evidence to avoid circular reasoning — a rigor gap the original
 project's own scoring formula did not address. The tool uses only public
 data: Open Targets Platform for disease-target genetic associations,
@@ -41,7 +41,7 @@ stages — cross-database comparison is a documented stretch goal rather than
 core scope. What's novel here relative to the original project is the
 explicit orthogonality discipline (excluding pathway-derived Open Targets
 evidence from the weighting step), the directed/signed graph representation,
-the backtrack-free walk scoring method, end-to-end identifier
+end-to-end identifier
 canonicalisation with mapping-coverage reporting, and the addition of a
 literature-curated benchmark of known clinical resistance mechanisms (e.g.
 EGFR→MET) to sanity-check the method against ground truth before trusting
@@ -66,7 +66,7 @@ prioritization.
 | 2. Disease-pathway discovery | GSEA (FDR-corrected) of disease-associated genes against Reactome gene sets, over size-capped and redundancy-collapsed sets → disease-relevant pathway list. | H1 |
 | 3. Pathway-based gene-gene graph construction | Build a **directed, signed** pathway-based gene-gene graph (`networkx.DiGraph`) from the union of disease-relevant and target-relevant pathway co-membership — with co-membership edges down-weighted by pathway size — plus directional, positive/negative (activating/inhibiting) relation edges from Stage 1's normalized Reactome functional-interaction table; DB versions and seed carried from the manifest. | H1, H2 |
 | 4. Genetic-evidence weighting | Compute Open Targets evidence restricted to non-pathway-derived datatypes (e.g. `genetic_association`, `known_drug`, explicitly excluding `affected_pathway`/literature-pathway sources) and map the resulting scores onto the Stage 3 graph as **node weights and edge weights** — so genetic evidence directly informs Stage 5's scoring rather than only re-ranking its output after the fact, while preserving orthogonality with Stages 2–3. | H4 |
-| 5. Candidate scoring | `--method` defaults to **topology score only** (co-membership / shortest path / branch-convergence, direction- and weight-aware) — the cheapest, deterministic method, run for every candidate by default. Random-walk-with-restart (RWR) and backtrack-free walk (BFW, a non-backtracking RWR variant, via [GBA-centrality](https://github.com/jedrzejkubica/GBA-centrality)) are opt-in via `--method` (e.g. `--method topology,rwr,bfw`), not run unless requested. All three score from the target node and are able to consume Stage 4's node/edge weights and Stage 3's edge directions/signs. | H1, H2, H3 |
+| 5. Candidate scoring | `--method` defaults to **topology score only** (co-membership / shortest path / branch-convergence, direction- and weight-aware) — the cheapest, deterministic method, run for every candidate by default. Random-walk-with-restart (RWR) is opt-in via `--method` (e.g. `--method topology,rwr`), not run unless requested. Both score from the target node and are able to consume Stage 4's node/edge weights and Stage 3's edge directions/signs. | H1, H2 |
 | 6. Contextual annotation & filtering | Attach Open Targets tractability bucket and safety flags; compute a configurable composite score. No tissue-expression filtering — the method stays strictly pathway- and association-evidence-based. | H5, H6 |
 | 7. Benchmark validation | Score a small literature-curated set of known resistance/compensation gene pairs (held out of Stage 2's seed genes); report descriptive rank/percentile recovery against a random background, not a significance test. | H8 |
 | 8. Output/report | Ranked table (per-candidate scores, evidence trace, tractability/safety) plus a web UI: target + disease in, ranked list out. | Deliverable |
@@ -74,7 +74,11 @@ prioritization.
 Hypotheses H9 (target-modality generalization) and H10 (disease-context
 expression weighting) were evaluated and explicitly dropped from hackathon
 scope — H10 was removed entirely (not kept as an optional filter) per the
-first plan update below. H7 (cross-pathway-DB consensus) was briefly
+first plan update below. H3 (backtrack-free / non-backtracking walk beats
+standard RWR) was in scope through plan update 4, then dropped in plan
+update 5: Stage 5 now ships topology + standard RWR only, with no
+non-backtracking-walk variant and no external walk-simulation dependency.
+H7 (cross-pathway-DB consensus) was briefly
 promoted into core scope, then returned to **stretch goal** status in plan
 update 3: the hackathon build runs Reactome only, but Stage 1's normalized
 `source_db`-tagged tables keep the seam open so a second curation can be
@@ -101,7 +105,8 @@ added later as one adapter.
   [GBA-centrality](https://github.com/jedrzejkubica/GBA-centrality) tool
   rather than reimplementing non-backtracking walk logic — consistent with
   the earlier review requirement to reuse existing libraries for graph
-  algorithms.
+  algorithms. *(Reversed by plan update 5 — BFW and the GBA-centrality
+  dependency were removed from scope.)*
 - **Stage 4 (was "genetic-evidence integration"), reordered ahead of
   candidate scoring:** changed from post-hoc re-ranking of Stage 5's output
   to computing node weights (and optional edge weights) from Open Targets
@@ -189,7 +194,22 @@ manifest; downstream stages read only these, never raw source files.
   converged stationary distribution, BFW needs GBA-centrality's walk
   simulation) and are requested explicitly via `--method` when a
   diffusion-based comparison is actually wanted, rather than computed on
-  every run whether or not anything downstream uses them.
+  every run whether or not anything downstream uses them. *(Superseded in
+  part by plan update 5 — BFW was subsequently removed; the
+  topology-default / opt-in split still applies to RWR.)*
+
+### Plan update 5 (user-directed)
+
+- **Stage 5 (candidate scoring):** backtrack-free walk (BFW /
+  non-backtracking RWR) and its external
+  [GBA-centrality](https://github.com/jedrzejkubica/GBA-centrality)
+  dependency are **removed from scope entirely**, reversing the Stage 5
+  bullet in "Plan update (user-directed, post-review)". GBA-centrality
+  needs a compiled C extension and its own git submodule, a build step out
+  of proportion to a hackathon prototype and a third scoring method the
+  core hypotheses (H1/H2) don't require. Stage 5 ships **topology (default)
+  + standard RWR (opt-in)** only; `--method` accepts `topology`, `rwr`, or
+  `topology,rwr`. H3 is dropped (see the hypotheses note above).
 
 ## Open decisions
 
@@ -303,7 +323,7 @@ Sized for a small (2–4 person) mixed bio+CS team on laptop-scale compute.
 
 **Day 2 — Weighting and scoring**
 - Stage 4 (genetic-evidence node/edge weighting, non-pathway datatypes only)
-- Stage 5 (topology + RWR + BFW candidate scoring, all weight-aware)
+- Stage 5 (topology + RWR candidate scoring, both weight-aware)
 - Stage 6 (tractability + safety annotation, composite score)
 - Milestone: full ranked, annotated candidate list on a real example (e.g.
   rheumatic disease / PTGS2, reusing the original project's example as a
@@ -580,3 +600,65 @@ ENSG00000000004   0.92
 `--edge-weight-mode product` (default `avg`) changes only the values written
 into `graph_weight.npz`; e.g. the target-`ENSG...002` edge is
 `avg(0.60, 0.98) = 0.79` by default or `0.60 * 0.98 = 0.588` with `product`.
+
+## Running Stage 5 (`pipeline/score_candidates.py`)
+
+**Setup:** `pip install networkx scipy numpy pandas pandera pydantic` (or `pip install -r requirements.txt`).
+
+**Run command**, against a Stage 3 *or* Stage 4 graph directory (the two
+share one format — see Stage 4 above):
+
+```
+python3 pipeline/score_candidates.py --graph-dir test_out/
+```
+
+`--graph-dir` is the only required argument: it reads `graph_weight.npz`,
+`graph_sign.npz`, `graph_gene_index.json` and `graph_metadata.json` from
+there, takes the target node from the metadata's `resolved_target.gene_id`
+(override with `--target`), and writes `candidate_scores.tsv` alongside
+(override with `--out`).
+
+`--method` is a comma-separated subset of `{topology, rwr}`, **default
+`topology`**. `topology_score` is always emitted; `rwr_score` appears only
+when `rwr` is requested (`--method topology,rwr` or `--method rwr`). RWR
+knobs: `--restart-prob` (default 0.5; PageRank `alpha = 1 - restart_prob`)
+and `--node-weight-mix` (default 0.5 — on a Stage 4 graph, extra restart
+mass spread over genes by `genetic_evidence_score`; the target always keeps
+the largest share, so 0.5 leaves it ~2/3 of the restart mass; ignored on a
+Stage 3 graph).
+
+Against the checked-in example (after Stages 1–4 have run, so
+`example_data/stage1_run/` holds a **Stage 4** graph):
+
+```
+python3 pipeline/score_candidates.py --graph-dir example_data/stage1_run --method topology,rwr
+```
+
+**Expected output** (`example_data/stage1_run/candidate_scores.tsv`, top
+rows; columns per `schemas.CandidateScoresSchema`, ranked by `rwr_score`
+since `rwr` was requested — else by `topology_score`):
+
+```
+gene             topology_score  rwr_score
+ENSG00000000004  3.4545          0.0769
+ENSG00000000002  2.6480          0.0717
+ENSG00000000003  2.6197          0.0703
+ENSG00000000009  3.2522          0.0688
+ENSG00000000005  2.5616          0.0675
+```
+
+The five weak "unrelated pathway" genes (`ENSG...017`–`021`) land at the
+bottom with scores near zero — they reach the target only by long paths and
+share none of its pathway neighbourhood, which is the negative-control
+behaviour the example is built to show. On the **Stage 3** graph (run
+`stage3_build_graph.py` but not `stage4_...` into the directory) the default
+`topology`-only ranking instead leads with `ENSG...002`, the target's
+direct interaction partner (`TARGET -> G2`, confidence 0.9).
+
+`python3 -m pytest tests/test_score_candidates.py` runs the unit-level
+tests (8 tests): hand-computed `topology_score` values on a small
+cycle+chain graph, an isolated node scoring 0, RWR being a valid
+sub-distribution that favours the target's neighbours, the node-weight
+blend pulling mass toward a high-evidence gene, and the output-column
+contract (`topology_score` always, `rwr_score` only when requested, target
+row excluded, unknown `--method` exits non-zero).

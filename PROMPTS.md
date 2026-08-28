@@ -264,7 +264,7 @@ beyond this repo.
 > Ensure `build_graph.py` outputs the target gene's node ID explicitly
 > alongside the graph file (a small sidecar JSON with `target_node`,
 > `graph_path`, `index_path` and `source_dbs`), since Stage 4's weighting
-> and Stage 5's scoring methods (topology, RWR, BFW) all need to know which
+> and Stage 5's scoring methods (topology, RWR) all need to know which
 > node is the source without re-deriving it.
 
 ---
@@ -310,42 +310,39 @@ beyond this repo.
 > interchangeably via the same `--graph` argument. Document the node/edge
 > weight attribute names as a comment at the top of the script.
 
-### Stage 5 — Candidate scoring (topology, RWR, BFW)
+### Stage 5 — Candidate scoring (topology, RWR)
 
 **Implement:**
 > Write `score_candidates.py` that loads a graph (optionally weighted, from
 > Stage 3 or Stage 4) and target node, and supports `--method` as a
-> comma-separated list drawn from `{topology, rwr, bfw}`, **defaulting to
-> `topology` only** — RWR and BFW are opt-in (e.g. `--method
-> topology,rwr,bfw` or `--method rwr`), never run unless explicitly
-> requested, since they're materially more expensive (a converged
-> stationary distribution / a walk simulation) than the deterministic
-> topology method. Topology method: shortest-path distance to the target
-> node and co-membership count, using edge weights if present. RWR method:
-> personalized PageRank / random-walk-with-restart (via `networkx.pagerank`
-> or an existing RWR library) personalized on the target node, using
-> node/edge weights if present — do not hand-roll this algorithm. BFW
-> method: backtrack-free walk (non-backtracking random-walk-with-restart)
-> — use the existing [GBA-centrality](https://github.com/jedrzejkubica/GBA-centrality)
-> tool (add it as a dependency, e.g. git submodule or local pip-installable
-> package) rather than reimplementing non-backtracking walk logic; check
-> its README for the expected graph input format and adapt Stage 3/4's
-> graph export if needed. Use the fixed seed from the graph metadata for
-> any stochastic step. Output a ranked TSV with a `gene` column and a
-> `topology_score` column always present, plus `rwr_score`/`bfw_score`
-> columns only when those methods were also requested.
+> comma-separated list drawn from `{topology, rwr}`, **defaulting to
+> `topology` only** — RWR is opt-in (e.g. `--method topology,rwr` or
+> `--method rwr`), never run unless explicitly requested, since it's
+> materially more expensive (a converged stationary distribution) than the
+> deterministic topology method. Topology method: shortest-path distance to
+> the target node and co-membership count, using edge weights if present.
+> RWR method: personalized PageRank / random-walk-with-restart (via
+> `networkx.pagerank` or an existing RWR library) personalized on the
+> target node, using node/edge weights if present — do not hand-roll this
+> algorithm. Use the fixed seed from the graph metadata for any stochastic
+> step. Output a ranked TSV with a `gene` column and a `topology_score`
+> column always present, plus an `rwr_score` column only when that method
+> was also requested.
+>
+> (Backtrack-free walk / non-backtracking RWR via GBA-centrality was
+> considered as a third method and dropped — see README.md plan update 5:
+> it needs a compiled C extension and its own submodule, out of proportion
+> to a hackathon prototype, and the core hypotheses don't require it.)
 
 **Test:**
 > Add a pytest test on a small synthetic graph containing both a short
-> cycle and a longer chain (backtrack-free walks differ most from RWR when
-> short cycles are present) where you can hand-compute expected
+> cycle and a longer chain where you can hand-compute expected
 > shortest-path distances; assert that a default (no `--method`) run
 > produces only `topology_score`, matching the hand-computed values
-> exactly, with no `rwr_score`/`bfw_score` columns at all; then assert that
-> running with `--method topology,rwr,bfw` produces all three, and that
-> `rwr_score`/`bfw_score` differ on the cyclic portion of the fixture in
-> the expected direction (BFW should not artificially inflate a node
-> reachable only by immediate back-and-forth on a single edge).
+> exactly, with no `rwr_score` column at all; then assert that running with
+> `--method topology,rwr` produces both columns, that `rwr_score` is a
+> valid probability distribution (non-negative, sums to ~1), and that the
+> target's own graph neighbours outrank far-away chain nodes.
 
 **Wire to next stage:**
 > Confirm `score_candidates.py`'s output TSV uses a `gene` column that
@@ -361,7 +358,7 @@ beyond this repo.
 > joins in, per gene, an Open Targets tractability bucket and a safety flag
 > (from Open Targets safety data), computing a `composite_score` as a
 > configurable weighted sum (`--weights` CLI arg, e.g.
-> `topology:0.2,rwr:0.2,bfw:0.2,genetic_evidence:0.2,tractability:0.1,safety:0.1`,
+> `topology:0.3,rwr:0.3,genetic_evidence:0.2,tractability:0.1,safety:0.1`,
 > with sane documented defaults). Document that safety data has sparse
 > coverage and genes with no safety annotation should not be penalized as
 > if they were confirmed safe (flag them as `safety: unknown`, not
@@ -424,7 +421,7 @@ beyond this repo.
 > 1-6 given `--target` and `--disease`, and a minimal web app (e.g. Flask or
 > Streamlit) with a form for target + disease, running `run_pipeline.py` and
 > displaying the ranked candidate table (composite score, topology, RWR,
-> BFW, genetic evidence, tractability, safety) plus, for each candidate on
+> genetic evidence, tractability, safety) plus, for each candidate on
 > click/expand, the evidence trace (which shared pathways, which datatypes,
 > which interactions contributed). Display genes by HGNC symbol while
 > keeping Ensembl gene IDs as the internal key — resolve symbols via Stage
