@@ -1,0 +1,19 @@
+EXAMPLE benchmark summary — SYNTHETIC numbers, NOT a real validation run.
+
+This file exists only so the report's "Benchmark validation" panel has
+something to render before benchmark_validate.py has been written and run.
+Replace it with a real benchmarking/benchmark_summary.txt produced by
+benchmarking/benchmark_validate.py once benchmarking/resistance_pairs.tsv
+is curated (see benchmarking/README.md).
+
+Benchmark:  8 literature-curated resistance / compensation pairs
+Holdout:    each pair's alternative_target excluded from Stage 2 seed genes
+Background: degree-matched random genes from the same graph
+
+  known pairs with alternative_target ranked in top  1% :  2 / 8
+  known pairs with alternative_target ranked in top  5% :  5 / 8
+  known pairs with alternative_target ranked in top 10% :  6 / 8
+  median percentile of alternative_target               :  3.4%
+
+Reported descriptively (n < 20) — no p-value is computed against this
+benchmark. See benchmarking/README.md.

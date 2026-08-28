@@ -47,8 +47,9 @@ literature-curated benchmark of known clinical resistance mechanisms (e.g.
 EGFR→MET) to sanity-check the method against ground truth before trusting
 its output (the benchmark is its own module — see `benchmarking/`). The
 expected deliverable is
-a small web app: a researcher enters a target and a disease and gets back a
-ranked, evidence-annotated list of candidate alternative targets. Known
+a one-command pipeline run plus a single self-contained interactive HTML
+report: a ranked, evidence-annotated list of candidate alternative targets
+for a given target and disease. Known
 limitations going in: single-database (Reactome) coverage and curation bias,
 uncorrected in this version because no second curation is run; sparse
 Open Targets safety annotation coverage for many genes, a benchmark set small
@@ -69,7 +70,7 @@ prioritization.
 | 4. Genetic-evidence weighting | Compute Open Targets evidence restricted to non-pathway-derived datatypes (e.g. `genetic_association`, `known_drug`, explicitly excluding `affected_pathway`/literature-pathway sources) and map the resulting scores onto the Stage 3 graph as **node weights and edge weights** — so genetic evidence directly informs Stage 5's scoring rather than only re-ranking its output after the fact, while preserving orthogonality with Stages 2–3. | H4 |
 | 5. Candidate scoring | `--method` defaults to **topology score only** (co-membership / shortest path / branch-convergence, direction- and weight-aware) — the cheapest, deterministic method, run for every candidate by default. Random-walk-with-restart (RWR) is opt-in via `--method` (e.g. `--method topology,rwr`), not run unless requested. Both score from the target node and are able to consume Stage 4's node/edge weights and Stage 3's edge directions/signs. | H1, H2 |
 | 6. Contextual annotation & filtering | Attach Open Targets tractability bucket and safety flags; compute a configurable composite score. No tissue-expression filtering — the method stays strictly pathway- and association-evidence-based. | H5, H6 |
-| 7. Output/report | Ranked table (per-candidate scores, evidence trace, tractability/safety) plus a web UI: target + disease in, ranked list out. | Deliverable |
+| 7. Output/report | `run_pipeline.py` chains Stages 1–6 for a (target, disease); `stage7_report.py` renders the run as one self-contained interactive HTML report — sortable ranked table (composite / topology / RWR / genetic-evidence / tractability / safety), click-to-expand evidence trace per candidate, and a static benchmark-validation panel. | Deliverable |
 
 **Benchmark validation** — scoring a small literature-curated set of known
 resistance/compensation gene pairs (held out of Stage 2's seed genes) and
@@ -795,3 +796,84 @@ when `rwr`/`genetic_evidence` data is absent, and — the case the spec
 calls out — a gene with an empty `safetyLiabilities` list and a gene absent
 from the `target` parquet both coming out `unknown` rather than defaulting
 to a numeric or `safe` value, in `build_annotations` and end-to-end.
+
+## Running Stage 7 (`pipeline/run_pipeline.py` + `pipeline/stage7_report.py`)
+
+**Setup:** `pip install pandas pyarrow pandera pydantic` (or `pip install -r requirements.txt`).
+No web framework — `stage7_report.py` writes one self-contained HTML file
+using only the standard library for templating.
+
+**Orchestrator** — `run_pipeline.py` chains Stages 1–6 for one
+(target, disease):
+
+```
+python3 pipeline/run_pipeline.py --target NOD2 --disease MONDO_0005265 \
+    --data-dir test_data/ --out-dir test_out/ --report
+```
+
+Each stage runs as its own subprocess (the same CLI as its "Running Stage
+N" section above), so a stage failure surfaces its own error and stops the
+run non-zero. `--report` additionally writes `run1/report.html` at the end.
+
+Offline, against the checked-in synthetic Stage 1 output (no real Open
+Targets / Reactome data needed) — this regenerates Stages 2–6 in place:
+
+```
+python3 pipeline/run_pipeline.py --from-manifest example_data/example_run/manifest.json --report
+```
+
+**Report only** — `stage7_report.py` turns a finished run directory into
+the HTML report without re-running anything:
+
+```
+python3 pipeline/stage7_report.py --run-dir test_out/
+```
+
+**What the report contains** (single file, opens in any browser):
+
+- header — target (HGNC symbol + Ensembl), disease, seed, Reactome / Open
+  Targets versions, whether the graph is Stage 3 (structural) or Stage 4
+  (genetic-evidence-weighted);
+- a **sortable** ranked table — `symbol`, `gene` (Ensembl), `composite`,
+  `topology`, `rwr`, `genetic ev.`, `tractability`, `safety` (click a
+  header to sort; `rwr`/`genetic ev.` columns appear only if those stages
+  ran);
+- a **click-to-expand evidence trace** per candidate — its
+  `composite_breakdown` + weights, the pathways it shares with the target
+  (and the disease-relevant pathways it is merely a member of), its Open
+  Targets datatypes + scores (with the ones feeding `genetic_evidence_score`
+  flagged), and the signed interaction edges touching it (interactions to
+  non-graph genes are omitted, matching Stage 3's scoping);
+- a **static** "Benchmark validation" panel — the text of
+  `benchmarking/benchmark_summary.txt`, or, until that exists,
+  `benchmarking/benchmark_summary.example.txt` shown with a clear
+  "EXAMPLE — not a real validation run" label. Never recomputed here; see
+  [`benchmarking/`](benchmarking/README.md).
+
+Genes are displayed by HGNC symbol; the Ensembl gene ID stays the internal
+key (its own column, and the anchor id for each detail block). Symbols are
+resolved from `genes.parquet` at render time only.
+
+**Expected output** (`example_data/example_run/report.html`, top of the
+ranked table — same ordering as Stage 6's `candidates_annotated.tsv`):
+
+```
+#  symbol  gene             composite  topology  rwr     genetic ev.  tractability  safety
+1  GENE04  ENSG00000000004  0.834      3.455     0.0769  0.920        discovery     has_liabilities
+2  GENE02  ENSG00000000002  0.805      2.648     0.0717  0.980        clinical      has_liabilities
+3  GENE03  ENSG00000000003  0.790      2.620     0.0703  0.950        discovery     unknown
+```
+
+Expanding `GENE04` shows: shared pathways *Target Signaling Pathway* and
+*Scattered Noise Pathway*; also a member of *Child Broad Signaling*;
+`genetic_association` = 0.92 (feeds the genetic-evidence score); interaction
+`GENE04 → GENE09` (inhibiting, curated, confidence 0.60).
+
+`python3 -m pytest tests/test_stage7_report.py tests/test_run_pipeline.py`
+runs the tests (8): `evidence_trace`'s shared-pathway / graph-scoping /
+datatype logic on a hand-built run, the `feeds` flag going false when Stage
+4 did not run, the `benchmark_summary` real→example→none fallback,
+`build_report` producing a self-contained symbol-labelled HTML with one
+detail block per candidate and the benchmark panel, and a `run_pipeline
+--from-manifest --report` smoke test that Stages 2–6 chain and produce
+every expected artifact.

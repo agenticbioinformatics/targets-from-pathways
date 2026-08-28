@@ -29,18 +29,16 @@ scipy
 pandas
 pyarrow
 
-# Stage 7 — benchmark validation
+# Stage 7 — output/report (pipeline/run_pipeline.py orchestrator +
+# pipeline/stage7_report.py, which writes a single self-contained HTML file
+# using only the standard library for templating — no web framework)
+pandas
+pyarrow
+
+# Benchmark validation (see benchmarking/) — its own module, not a pipeline stage
 pandas
 numpy
 scipy
 
-# Stage 8 — output/report + web UI
-streamlit
-
 # Testing (all stages)
 pytest
-
-# Non-pip dependencies:
-# - Flask is a documented alternative to Streamlit for Stage 8's web UI
-#   (README/PROMPTS.md leave this an open choice); if Flask is picked instead,
-#   swap the `streamlit` line above for `flask`.
