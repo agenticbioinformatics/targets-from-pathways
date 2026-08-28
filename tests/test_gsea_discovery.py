@@ -1,9 +1,9 @@
-"""pytest tests for gsea_discovery.py (Stage 2: GSEA disease-pathway discovery).
+"""pytest tests for stage2_gsea_discovery.py (Stage 2: GSEA disease-pathway discovery).
 
 Everything here is a synthetic, hand-built DataFrame — no manifest.json or
-parquet round-trip — calling gsea_discovery.py's functions directly.
+parquet round-trip — calling stage2_gsea_discovery.py's functions directly.
 Resolving artifacts out of a real manifest is Stage 1 plumbing, already
-covered by tests/test_ingest_*.py and gsea_discovery.py's own
+covered by tests/test_ingest_*.py and stage2_gsea_discovery.py's own
 ``_resolve_artifact_path``; what needs covering here is the GSEA/statistics
 logic itself.
 
@@ -40,7 +40,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-import gsea_discovery as gd
+import stage2_gsea_discovery as gd
 
 PVAL_THRESHOLD = 0.05
 FDR_THRESHOLD = 0.1
@@ -90,7 +90,7 @@ def _all_gene_sets() -> pd.DataFrame:
 
 
 def _signature() -> pd.DataFrame:
-    """Build the ranking signature the same way gsea_discovery.py does in
+    """Build the ranking signature the same way stage2_gsea_discovery.py does in
     production: via build_signature() over an ot_disease_subset-shaped
     DataFrame, not a hand-built (gene, score) table directly."""
     ot_disease_subset = pd.DataFrame(

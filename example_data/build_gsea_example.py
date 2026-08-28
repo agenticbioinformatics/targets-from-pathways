@@ -1,10 +1,10 @@
 """One-off generator for a tiny, hand-designed Stage 1 output directory used
-to exercise gsea_discovery.py, build_graph.py, and genetic_evidence_weights.py
+to exercise stage2_gsea_discovery.py, stage3_build_graph.py, and stage4_genetic_evidence_weights.py
 end to end (see README.md's Stage 2/3/4 run instructions). Not run by any
 test suite — re-run manually if the example needs to change.
 
 Writes example_data/stage1_run/{gene_sets,ot_disease_subset,interactions}.parquet
-and manifest.json, validated against schemas.py exactly like ingest.py's real
+and manifest.json, validated against stage0_schemas.py exactly like stage1_ingest.py's real
 output, so downstream stages exercise the identical code path they use on a
 real Stage 1 run.
 
@@ -36,7 +36,7 @@ Gene sets (mimicking a Reactome ancestor/descendant hierarchy pair):
   tested pathway.
 
 One gene (G11) additionally carries a high-scoring *affected_pathway*-datatype
-row (not genetic_association) — a deliberate decoy: if gsea_discovery.py
+row (not genetic_association) — a deliberate decoy: if stage2_gsea_discovery.py
 mistakenly used the aggregated/overall score instead of genetic_association
 alone, G11 would rank far higher than its genetic_association score of 0.71
 implies.
@@ -47,8 +47,8 @@ holdout entries via this table. G17's synonym "OLDG17" is deliberately not
 its approved symbol, to exercise the synonym-resolution path a real
 literature-curated benchmark file might need.
 
-Also writes interactions.parquet, for build_graph.py (Stage 3) and
-genetic_evidence_weights.py (Stage 4):
+Also writes interactions.parquet, for stage3_build_graph.py (Stage 3) and
+stage4_genetic_evidence_weights.py (Stage 4):
 - TARGET -> G2 (sign=+1, confidence=0.9): both genes are in the pathway
   union (R-HSA-200), so this overrides that pair's co-membership sign.
 - G4 -> G9 (sign=-1, confidence=0.6): also both in the union (R-HSA-101).
@@ -68,8 +68,8 @@ from pathlib import Path
 
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from schemas import (  # noqa: E402
+sys.path.insert(0, str(Path(__file__).parent.parent / "pipeline"))
+from stage0_schemas import (  # noqa: E402
     CoverageEntry,
     GeneSetsSchema,
     GeneSetSizeBucket,
@@ -164,7 +164,7 @@ def build_ot_disease_subset() -> pd.DataFrame:
         for gene_id, score in genetic_scores.items()
     ]
     # Decoy: G11's aggregated/affected_pathway-datatype evidence is much
-    # stronger than its genetic_association score. gsea_discovery.py must
+    # stronger than its genetic_association score. stage2_gsea_discovery.py must
     # ignore this row when building the ranking signature.
     rows.append(
         {

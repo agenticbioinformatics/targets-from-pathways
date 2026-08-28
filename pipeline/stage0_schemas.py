@@ -11,7 +11,7 @@ column layout described only in a docstring or comment. Concretely:
   read *and* on write. ``disease_pathways.tsv`` is TSV rather than parquet
   (it's meant to be eyeballed), but the contract discipline is the same:
   Stage 3 and Stage 7 read it as ``DiseasePathwaysSchema``, never by
-  re-deriving its column layout from ``gsea_discovery.py``'s source.
+  re-deriving its column layout from ``stage2_gsea_discovery.py``'s source.
 - ``manifest.json`` is validated against the ``Manifest`` pydantic model via
   ``Manifest.model_validate(json.load(f))`` on read and
   ``Manifest.model_dump(mode="json")`` on write.
@@ -101,7 +101,7 @@ def _is_list_of_str(series: pd.Series) -> pd.Series:
     # A DataFrame built in-process holds Python `list`; one that has round-
     # tripped through parquet (pyarrow's LIST type -> pandas) comes back as
     # `numpy.ndarray` of the same `str` elements, not `list` — verified
-    # against a real genes.parquet written by ingest.py and re-read with a
+    # against a real genes.parquet written by stage1_ingest.py and re-read with a
     # bare `pd.read_parquet`. Both container types are accepted here so
     # "validate on read" (module docstring) doesn't spuriously fail for
     # every stage after Stage 1; a bare string (the real malformed case this
@@ -219,7 +219,7 @@ DiseasePathwaysSchema = DataFrameSchema(
         # Nominal GSEA p-value, pre-correction.
         "pval": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False),
         # Benjamini-Hochberg FDR, corrected across every pathway actually
-        # tested in this run (see gsea_discovery.py's module docstring) —
+        # tested in this run (see stage2_gsea_discovery.py's module docstring) —
         # not comparable across runs with a different tested-pathway set.
         "fdr": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False),
         # Whether this pathway's (collapsed) gene membership includes the
@@ -239,7 +239,7 @@ GeneWeightsSchema = DataFrameSchema(
             nullable=False,
         ),
         # Non-pathway-datatype Open Targets evidence (see
-        # genetic_evidence_weights.py's module docstring) — 0.0, not null,
+        # stage4_genetic_evidence_weights.py's module docstring) — 0.0, not null,
         # for a gene with no matching evidence, so every graph node gets a
         # row here.
         "genetic_evidence_score": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False),

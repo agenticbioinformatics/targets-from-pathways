@@ -687,3 +687,38 @@
   User-Agent fix, Stage 3 (`build_graph.py`) and its tests, Stage 4
   (`genetic_evidence_weights.py`), its tests, and its interchangeable-
   serialization-format redesign, the intervening commits, and this update.
+
+## Prompt 22
+
+> rename pipeline scripts, add stage 1,2,3... etc at the beginning of each
+> file, according to README. put all pipeline scripts in a new directory
+> called "pipeline/"
+
+**Changes:**
+- Created `pipeline/` and `git mv`'d the five stage scripts into it with a
+  `stageN_` prefix taken from the README pipeline overview:
+  `schemas.py` -> `pipeline/stage0_schemas.py` (README "Stage 0"),
+  `ingest.py` -> `pipeline/stage1_ingest.py`,
+  `gsea_discovery.py` -> `pipeline/stage2_gsea_discovery.py`,
+  `build_graph.py` -> `pipeline/stage3_build_graph.py`,
+  `genetic_evidence_weights.py` -> `pipeline/stage4_genetic_evidence_weights.py`.
+- Updated the inter-stage imports accordingly (`from schemas import` ->
+  `from stage0_schemas import`, `from ingest import` -> `from
+  stage1_ingest import`). Running scripts as `python3 pipeline/stageN_*.py`
+  still works because Python puts the script's own dir on `sys.path`.
+- `tests/conftest.py` now inserts `pipeline/` (not the repo root) on
+  `sys.path` and imports `stage1_ingest as ingest`; every test module's
+  import line updated to the new module names. Moved the one stray
+  root-level test, `test_schemas.py`, into `tests/` so it picks up that
+  conftest.
+- Rewrote every remaining `*.py` filename mention in docstrings, comments,
+  `argparse` `prog=`/help strings, error hints ("run build_graph.py
+  first?"), the `_USER_AGENT` string, `example_data/build_gsea_example.py`,
+  and README's "Running Stage 2/3/4" command blocks and prose to the new
+  `pipeline/stageN_*.py` names. Logger names (`getLogger("ingest")` etc.)
+  left unchanged — they are not filenames and README's expected-output log
+  samples depend on them.
+- Test/reference file names (`tests/test_build_graph.py`, ...) left as-is;
+  they are not pipeline scripts.
+- `python3 -m pytest` -> 71 passed. Smoke-tested all four stage scripts'
+  `--help` and re-ran the `example_data/` generator through Stages 2-4.

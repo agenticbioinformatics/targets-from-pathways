@@ -6,7 +6,7 @@ place gene identifiers are mapped: it is a pure function of (CLI args,
 the pinned registry below, the bytes at --data-dir) producing genes.parquet,
 gene_sets.parquet, interactions.parquet, ot_disease_subset.parquet,
 coverage_report.json, scale_report.json, and manifest.json, each validated
-against schemas.py on write. No hidden global state: every fact this module
+against stage0_schemas.py on write. No hidden global state: every fact this module
 needs either lives in the registry below or arrives via CLI/--data-dir.
 
 --------------------------------------------------------------------------
@@ -115,7 +115,7 @@ the rest split across the 8 directed/signed codes.
 Open Targets disease.parquet — added beyond the prompt's literal source list
 --------------------------------------------------------------------------
 The task text names exactly two OT 26.06 tables to pin (``target`` and
-``association_by_datasource_indirect``). schemas.py's ``ResolvedDisease``
+``association_by_datasource_indirect``). stage0_schemas.py's ``ResolvedDisease``
 (already fixed, Stage 0) requires a human-readable ``name``, which neither of
 those two tables carries (association rows only carry ``diseaseId``). OT's
 ``disease/disease.parquet`` is a single ~7MB file (not a multi-GB Spark
@@ -188,7 +188,7 @@ import pyarrow.dataset as pa_ds
 import pyarrow.compute as pa_compute
 import pyarrow.parquet as pa_parquet
 
-from schemas import (
+from stage0_schemas import (
     ENSEMBL_GENE_ID_PATTERN,
     GeneSetSizeBucket,
     GeneSetsSchema,
@@ -357,7 +357,7 @@ _FI_DIRECTION_CODES: dict[str, list[tuple[bool, int]]] = {
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="ingest.py",
+        prog="stage1_ingest.py",
         description="Stage 1: resolve, canonicalize, and normalize source data.",
     )
     p.add_argument("--target", required=True, help="Gene symbol or Ensembl gene ID.")
@@ -419,7 +419,7 @@ def _sha256_file(path: Path) -> str:
 # checksum, and file are otherwise fine. A plain browser-like UA is enough
 # to pass; applied to every request here, not just reactome.org's, since
 # EBI's or Reactome's other hosts could start doing the same at any time.
-_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) targets-from-pathways/ingest.py"
+_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) targets-from-pathways/stage1_ingest.py"
 
 
 def _urlopen(url: str, timeout: float):

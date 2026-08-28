@@ -1,7 +1,7 @@
-"""Shared fixtures for ingest.py's test suite.
+"""Shared fixtures for stage1_ingest.py's test suite.
 
 The tests never touch the network or the real pinned registry: they patch
-ingest.py's two acquisition entry points (`_ensure_pinned_file`,
+stage1_ingest.py's two acquisition entry points (`_ensure_pinned_file`,
 `_ensure_directory_source`) to hand back the tiny committed fixtures under
 tests/fixtures/ instead. Everything downstream of acquisition — extraction,
 identifier mapping, gene_sets/interactions construction, coverage/scale
@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-import ingest  # noqa: E402
+sys.path.insert(0, str(Path(__file__).parent.parent / "pipeline"))
+import stage1_ingest as ingest  # noqa: E402
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -65,13 +65,13 @@ def _make_fake_ensure_directory_source(overrides: dict | None = None):
 
 @pytest.fixture
 def patched_acquisition(monkeypatch, tmp_path):
-    """Redirect ingest.py's acquisition layer at the tiny fixtures."""
+    """Redirect stage1_ingest.py's acquisition layer at the tiny fixtures."""
     monkeypatch.setattr(ingest, "_ensure_pinned_file", _make_fake_ensure_pinned_file(tmp_path))
     monkeypatch.setattr(ingest, "_ensure_directory_source", _make_fake_ensure_directory_source())
 
 
 def make_args(out_dir: Path, data_dir: Path, **overrides) -> argparse.Namespace:
-    """Build an ingest.py CLI Namespace without going through argv parsing."""
+    """Build an stage1_ingest.py CLI Namespace without going through argv parsing."""
     defaults = dict(
         target="TP53",
         disease="EFO_9000001",

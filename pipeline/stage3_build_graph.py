@@ -19,7 +19,7 @@ file, and never by re-deriving anything Stage 1/2 already computed:
   against ``schemas.DiseasePathwaysSchema``. Stage 2 doesn't register this
   file as a manifest output artifact (it isn't part of Stage 1's contract),
   so it defaults to sitting alongside ``manifest.json`` — where
-  ``gsea_discovery.py`` writes it — with an explicit override for when
+  ``stage2_gsea_discovery.py`` writes it — with an explicit override for when
   it doesn't.
 
 Two edges sources, both added to one ``networkx.DiGraph``:
@@ -105,7 +105,7 @@ import networkx as nx
 import pandas as pd
 import scipy.sparse as sp
 
-from schemas import (
+from stage0_schemas import (
     DiseasePathwaysSchema,
     ENSEMBL_GENE_ID_PATTERN,
     GeneSetsSchema,
@@ -123,7 +123,7 @@ logger = logging.getLogger("build_graph")
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="build_graph.py",
+        prog="stage3_build_graph.py",
         description="Stage 3: pathway-based gene-gene graph construction over a Stage 1 manifest "
         "and Stage 2's disease-relevant pathway list.",
     )
@@ -133,7 +133,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Path to Stage 2's disease_pathways.tsv. Defaults to alongside --manifest, where "
-        "gsea_discovery.py writes it.",
+        "stage2_gsea_discovery.py writes it.",
     )
     p.add_argument(
         "--out-dir",
@@ -198,7 +198,7 @@ def load_interactions(manifest: Manifest, manifest_path: Path) -> pd.DataFrame:
 
 def load_disease_pathways(path: Path) -> pd.DataFrame:
     if not path.exists():
-        _fail(f"--disease-pathways {path} does not exist (run gsea_discovery.py first?).")
+        _fail(f"--disease-pathways {path} does not exist (run stage2_gsea_discovery.py first?).")
     return DiseasePathwaysSchema.validate(pd.read_csv(path, sep="\t"))
 
 

@@ -286,7 +286,7 @@ to answer the last three directly.
 Sized for a small (2–4 person) mixed bio+CS team on laptop-scale compute.
 
 **Day 1 — Core graph pipeline**
-- Stage 0 (`schemas.py`: the inter-stage table contracts, written once and
+- Stage 0 (`pipeline/stage0_schemas.py`: the inter-stage table contracts, written once and
   validated on read *and* write by every stage — ~45 min, and the single
   highest-leverage hour of the three days)
 - Stage 1 (ingest & canonicalize: pinned download, Ensembl canonicalisation,
@@ -339,18 +339,18 @@ Sized for a small (2–4 person) mixed bio+CS team on laptop-scale compute.
   be reported descriptively (e.g. "N of 10 known pairs ranked in top 5%"),
   not as a statistical test.
 
-## Running Stage 2 (`gsea_discovery.py`)
+## Running Stage 2 (`pipeline/stage2_gsea_discovery.py`)
 
 **Setup:** `pip install blitzgsea statsmodels pandas pandera pydantic pyarrow` (or `pip install -r requirements.txt`).
 
 **Run command**, against Stage 1's output for a real (target, disease) pair:
 
 ```
-python3 ingest.py --target PTGS2 --disease EFO_0005755 --data-dir ./data --out-dir ./run1
-python3 gsea_discovery.py --manifest ./run1/manifest.json
+python3 pipeline/stage1_ingest.py --target PTGS2 --disease EFO_0005755 --data-dir ./data --out-dir ./run1
+python3 pipeline/stage2_gsea_discovery.py --manifest ./run1/manifest.json
 ```
 
-`gsea_discovery.py` takes no other input — it resolves `gene_sets.parquet`,
+`pipeline/stage2_gsea_discovery.py` takes no other input — it resolves `gene_sets.parquet`,
 `ot_disease_subset.parquet`, and the target gene entirely from the manifest,
 and writes `disease_pathways.tsv` next to it.
 
@@ -360,7 +360,7 @@ checked in under `example_data/` — regenerate it with
 `python3 example_data/build_gsea_example.py`, then:
 
 ```
-python3 gsea_discovery.py --manifest example_data/stage1_run/manifest.json
+python3 pipeline/stage2_gsea_discovery.py --manifest example_data/stage1_run/manifest.json
 ```
 
 **Expected output** (`example_data/stage1_run/disease_pathways.tsv`,
@@ -388,11 +388,11 @@ literature-curated resistance-pair gene that happens to overlap Stage 2's
 own evidence doesn't validate itself. Genes are listed one per line
 (`#` comments allowed) and resolved to Ensembl IDs via Stage 1's
 `genes.parquet` — symbol, synonym, or bare Ensembl ID, the same resolution
-`ingest.py` uses for `--target` — never matched directly against
+`pipeline/stage1_ingest.py` uses for `--target` — never matched directly against
 `ot_disease_subset` (which carries no symbol column at all). Example:
 
 ```
-python3 gsea_discovery.py --manifest example_data/stage1_run/manifest.json \
+python3 pipeline/stage2_gsea_discovery.py --manifest example_data/stage1_run/manifest.json \
     --benchmark-holdout-file example_data/benchmark_holdout_example.txt
 ```
 
@@ -410,14 +410,14 @@ enriched pathways are tested but excluded from output, and a near-duplicate
 ancestor/child pair collapses to the smaller child before GSEA ever sees the
 ancestor.
 
-## Running Stage 3 (`build_graph.py`)
+## Running Stage 3 (`pipeline/stage3_build_graph.py`)
 
 **Setup:** `pip install networkx scipy pandas pandera pydantic pyarrow` (or `pip install -r requirements.txt`).
 
 **Run command**, after Stage 1 and Stage 2 have produced `manifest.json`/`disease_pathways.tsv`:
 
 ```
-python3 build_graph.py --manifest ./run1/manifest.json
+python3 pipeline/stage3_build_graph.py --manifest ./run1/manifest.json
 ```
 
 Reads `gene_sets.parquet` and `interactions.parquet` via the manifest, and
@@ -430,7 +430,7 @@ Against the checked-in example (regenerate with
 `python3 example_data/build_gsea_example.py` if needed):
 
 ```
-python3 build_graph.py --manifest example_data/stage1_run/manifest.json
+python3 pipeline/stage3_build_graph.py --manifest example_data/stage1_run/manifest.json
 ```
 
 **Expected output** (log lines):
@@ -453,14 +453,14 @@ tags) for a hand-built pathway + interaction fixture, the co-membership
 weight formula for both a small and a large (overlapping) pathway, and that
 a gene alone in its own pathway survives as an isolated node.
 
-## Running Stage 4 (`genetic_evidence_weights.py`)
+## Running Stage 4 (`pipeline/stage4_genetic_evidence_weights.py`)
 
 **Setup:** same as Stage 3, plus `numpy` (already required transitively).
 
 **Run command**, after Stage 3 has produced the graph artifacts:
 
 ```
-python3 genetic_evidence_weights.py --manifest ./run1/manifest.json
+python3 pipeline/stage4_genetic_evidence_weights.py --manifest ./run1/manifest.json
 ```
 
 Reads `ot_disease_subset.parquet` via the manifest and Stage 3's graph
@@ -469,7 +469,7 @@ artifacts alongside it by default (override with `--graph-dir`/`--out-dir`).
 list — `affected_pathway` and any literature/pathway-derived datatype are
 excluded simply by not being named, which matters concretely: OT 26.06 maps
 its own `reactome` evidence datasource to `affected_pathway` (see
-`ingest.py`'s `_DATASOURCE_TO_DATATYPE`), so including it would let
+`pipeline/stage1_ingest.py`'s `_DATASOURCE_TO_DATATYPE`), so including it would let
 Reactome-derived evidence weight a graph whose topology already *is*
 Reactome pathway structure.
 
@@ -482,13 +482,13 @@ added or removed, only re-weighted); `graph_sign.npz`/`graph_gene_index.json`
 are copied through unchanged; `graph_metadata.json` is extended (not
 replaced) with a `genetic_evidence_score` gene->score mapping. Plus a
 separate, human-facing `gene_weights.tsv` that Stage 5 never reads. See the
-attribute-name comment at the top of `genetic_evidence_weights.py` for the
+attribute-name comment at the top of `pipeline/stage4_genetic_evidence_weights.py` for the
 exact contract.
 
 Against the checked-in example:
 
 ```
-python3 genetic_evidence_weights.py --manifest example_data/stage1_run/manifest.json
+python3 pipeline/stage4_genetic_evidence_weights.py --manifest example_data/stage1_run/manifest.json
 ```
 
 **Expected output** (`example_data/stage1_run/gene_weights.tsv`, top rows):

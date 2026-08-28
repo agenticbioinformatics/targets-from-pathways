@@ -4,7 +4,7 @@ Consumes only a Stage 1 manifest (``--manifest``): resolves the
 ``gene_sets.parquet`` and ``ot_disease_subset.parquet`` artifacts it points
 to, and the resolved target gene, from the manifest. Never opens a raw
 source file — everything it needs was already normalized and canonicalized
-by ``ingest.py``.
+by ``stage1_ingest.py``.
 
 Two design choices are load-bearing for the pipeline's orthogonality
 discipline (README.md, "Correcting Stage 2 for annotation bias" and Iter-2
@@ -48,7 +48,7 @@ otherwise a benchmark gene's presence in a discovered pathway would be
 circular (of course a seed gene's own pathway looks disease-relevant). The
 holdout file lists genes one per line (``#`` comments and blank lines
 skipped) and is resolved to Ensembl gene IDs via Stage 1's genes.parquet —
-via the exact same ``resolve_target``/symbol-index logic ``ingest.py`` uses
+via the exact same ``resolve_target``/symbol-index logic ``stage1_ingest.py`` uses
 for ``--target`` — never by string-matching against ``ot_disease_subset``,
 which carries no symbol column to match against in the first place.
 """
@@ -65,8 +65,8 @@ from pathlib import Path
 import blitzgsea as blitz
 import pandas as pd
 
-from ingest import _build_symbol_index, resolve_target
-from schemas import DiseasePathwaysSchema, GeneSetsSchema, GenesSchema, Manifest, OTAssociationsSchema
+from stage1_ingest import _build_symbol_index, resolve_target
+from stage0_schemas import DiseasePathwaysSchema, GeneSetsSchema, GenesSchema, Manifest, OTAssociationsSchema
 
 logger = logging.getLogger("gsea_discovery")
 
@@ -89,7 +89,7 @@ OUTPUT_COLUMNS = list(DiseasePathwaysSchema.columns)
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="gsea_discovery.py",
+        prog="stage2_gsea_discovery.py",
         description="Stage 2: GSEA disease-pathway discovery over a Stage 1 manifest.",
     )
     p.add_argument("--manifest", required=True, type=Path, help="Path to Stage 1's manifest.json.")
@@ -172,7 +172,7 @@ def load_genes(manifest: Manifest, manifest_path: Path) -> pd.DataFrame:
 def resolve_benchmark_holdout(holdout_path: Path, genes_df: pd.DataFrame) -> set[str]:
     """Resolve a benchmark holdout file to a set of Ensembl gene IDs.
 
-    Reuses ingest.py's ``resolve_target`` (symbol, synonym, or bare Ensembl
+    Reuses stage1_ingest.py's ``resolve_target`` (symbol, synonym, or bare Ensembl
     ID, same as ``--target``) against Stage 1's genes.parquet — the ID
     authority — rather than matching raw holdout strings against anything in
     ot_disease_subset, which is already Ensembl-keyed and carries no symbol

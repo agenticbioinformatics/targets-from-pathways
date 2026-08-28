@@ -11,10 +11,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-import ingest
+import stage1_ingest as ingest
 from conftest import make_args
-from ingest import run_ingest
-from schemas import GeneSetsSchema, GenesSchema, InteractionsSchema, OTAssociationsSchema, assert_foreign_key
+from stage1_ingest import run_ingest
+from stage0_schemas import GeneSetsSchema, GenesSchema, InteractionsSchema, OTAssociationsSchema, assert_foreign_key
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 TARGET_FIXTURE = FIXTURES_DIR / "opentargets" / "target.parquet"
@@ -59,7 +59,7 @@ def test_malformed_fi_row_fails_loudly(tmp_path, monkeypatch):
     otherwise miss every _FI_DIRECTION_CODES key and vanish with nothing but
     a logged warning (verified: a naive `pd.read_csv` over this exact file
     silently returns a NaN-padded row instead of raising — caught during
-    review of this very test, before ingest.py had an explicit check for it).
+    review of this very test, before stage1_ingest.py had an explicit check for it).
     The zip wrapping matters here too: it's what makes this test actually
     reach the row-parsing code, instead of failing earlier and for an
     unrelated reason (an un-zipped fixture makes _extract_single_member's
@@ -92,7 +92,7 @@ def test_malformed_fi_row_fails_loudly(tmp_path, monkeypatch):
 
 def test_unrecognized_datasource_fails_loudly(tmp_path, monkeypatch, patched_acquisition):
     """An OT association row with a datasource this module doesn't know how
-    to bucket into a datatype must hard-fail (see ingest.py's
+    to bucket into a datatype must hard-fail (see stage1_ingest.py's
     _DATASOURCE_TO_DATATYPE), not be silently dropped or mis-tagged."""
     bad_assoc = tmp_path / "bad_association.parquet"
     schema = pa.schema(

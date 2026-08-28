@@ -1,4 +1,4 @@
-"""Tests that schemas.py rejects malformed data as loudly as it accepts valid data.
+"""Tests that stage0_schemas.py rejects malformed data as loudly as it accepts valid data.
 
 Per Stage 0 of PROMPTS.md: each schema must reject a deliberately malformed
 frame (wrong dtype, missing column, an out-of-vocabulary value, and a
@@ -13,7 +13,7 @@ import pandera.errors
 import pytest
 from pydantic import ValidationError
 
-from schemas import (
+from stage0_schemas import (
     GeneSetsSchema,
     GenesSchema,
     InteractionsSchema,

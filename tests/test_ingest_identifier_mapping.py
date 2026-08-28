@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 
 from conftest import make_args
-from ingest import _build_symbol_index, build_genes_table, resolve_symbol, run_ingest
+from stage1_ingest import _build_symbol_index, build_genes_table, resolve_symbol, run_ingest
 
 FIXTURE_TARGET_PARQUET = Path(__file__).parent / "fixtures" / "opentargets" / "target.parquet"
 

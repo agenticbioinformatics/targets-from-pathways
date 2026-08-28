@@ -1,4 +1,4 @@
-"""pytest tests for genetic_evidence_weights.py (Stage 4: genetic-evidence
+"""pytest tests for stage4_genetic_evidence_weights.py (Stage 4: genetic-evidence
 node/edge weighting).
 
 Hand-built inputs, calling the module's two pure functions directly — no
@@ -39,7 +39,7 @@ import pandas as pd
 import pytest
 import scipy.sparse as sp
 
-import genetic_evidence_weights as gew
+import stage4_genetic_evidence_weights as gew
 
 A, B, C, D = (f"ENSG{n:011d}" for n in (1, 2, 3, 4))
 GENE_INDEX = [A, B, C, D]

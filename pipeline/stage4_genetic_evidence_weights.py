@@ -4,7 +4,7 @@ Takes Stage 3's pathway-based gene-gene graph (its sparse serialization —
 ``graph_weight.npz``, ``graph_sign.npz``, ``graph_gene_index.json``,
 ``graph_metadata.json``, read via ``--graph-dir``) and Open Targets
 association data (``ot_disease_subset.parquet``, read via ``--manifest``,
-same as ``gsea_discovery.py``), and maps non-pathway-derived genetic
+same as ``stage2_gsea_discovery.py``), and maps non-pathway-derived genetic
 evidence onto it as node and edge weights — never a raw source file.
 
 **Datatype restriction is load-bearing, not theoretical.** ``--datatypes``
@@ -13,19 +13,19 @@ everything else — ``affected_pathway`` and any literature/pathway-derived
 datatype in particular — is excluded simply by omission. This matters
 concretely, not just in principle: Open Targets 26.06's ``reactome``
 evidence datasource is itself mapped to the ``affected_pathway`` datatype
-(see ``ingest.py``'s ``_DATASOURCE_TO_DATATYPE``), so an unrestricted
+(see ``stage1_ingest.py``'s ``_DATASOURCE_TO_DATATYPE``), so an unrestricted
 (or aggregated/overall) association score would fold Reactome-derived
 evidence into the very node/edge weights that then feed Stage 5's scoring
 over a graph whose topology *is* Reactome pathway structure — validating
 Reactome against itself. This is the same orthogonality discipline
-``gsea_discovery.py`` applies to Stage 2's ranking signature (see its
+``stage2_gsea_discovery.py`` applies to Stage 2's ranking signature (see its
 module docstring); Stage 4 is the second of the two places it matters.
 
 Where a gene has more than one admitted-datatype row (multiple datasources,
 e.g. ``eva`` and ``clinical_precedence``, or both ``genetic_association``
 and ``known_drug``), the max score wins — the same "strongest single piece
 of evidence, not Open Targets' own cross-datasource aggregate" convention
-``gsea_discovery.py.build_signature`` already uses, applied here across
+``stage2_gsea_discovery.py.build_signature`` already uses, applied here across
 datatypes as well as datasources.
 
 Every node in Stage 3's graph gets a score: 0.0, not null, for a gene with
@@ -93,7 +93,7 @@ import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 
-from schemas import GeneWeightsSchema, Manifest, OTAssociationsSchema
+from stage0_schemas import GeneWeightsSchema, Manifest, OTAssociationsSchema
 
 logger = logging.getLogger("genetic_evidence_weights")
 
@@ -102,10 +102,10 @@ logger = logging.getLogger("genetic_evidence_weights")
 # rna_expression, animal_model, ...) is excluded simply by omission.
 # affected_pathway is the one that matters most to keep out: OT 26.06 maps
 # its own "reactome" evidence datasource to affected_pathway (see
-# ingest.py's _DATASOURCE_TO_DATATYPE), so including it here would let
+# stage1_ingest.py's _DATASOURCE_TO_DATATYPE), so including it here would let
 # Reactome-derived evidence weight a graph whose topology already *is*
 # Reactome pathway structure — the same orthogonality Stage 2's GSEA
-# signature (gsea_discovery.py) has to preserve, for the same reason.
+# signature (stage2_gsea_discovery.py) has to preserve, for the same reason.
 DEFAULT_DATATYPES = ["genetic_association", "known_drug"]
 
 EDGE_WEIGHT_MODES = ("avg", "product")
@@ -118,7 +118,7 @@ EDGE_WEIGHT_MODES = ("avg", "product")
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="genetic_evidence_weights.py",
+        prog="stage4_genetic_evidence_weights.py",
         description="Stage 4: genetic-evidence node/edge weighting over Stage 3's pathway-based "
         "gene-gene graph.",
     )
@@ -128,7 +128,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Directory containing Stage 3's graph_weight.npz/graph_sign.npz/graph_gene_index.json/"
-        "graph_metadata.json. Defaults to alongside --manifest, where build_graph.py writes them.",
+        "graph_metadata.json. Defaults to alongside --manifest, where stage3_build_graph.py writes them.",
     )
     p.add_argument(
         "--out-dir",
@@ -211,7 +211,7 @@ def load_stage3_graph(graph_dir: Path) -> tuple[sp.csr_matrix, sp.csr_matrix, li
     metadata_path = graph_dir / "graph_metadata.json"
     for path in (weight_path, sign_path, index_path, metadata_path):
         if not path.exists():
-            _fail(f"Stage 3 artifact {path} does not exist (run build_graph.py first?).")
+            _fail(f"Stage 3 artifact {path} does not exist (run stage3_build_graph.py first?).")
 
     weight = sp.load_npz(weight_path).tocsr()
     sign = sp.load_npz(sign_path).tocsr()
@@ -238,7 +238,7 @@ def compute_genetic_evidence_scores(
     """One score per gene in ``gene_index`` — 0.0 for a gene with no
     admitted-datatype evidence row. The max score wins where a gene has more
     than one admitted row (multiple datasources and/or datatypes); see
-    module docstring for why this mirrors gsea_discovery.py's convention."""
+    module docstring for why this mirrors stage2_gsea_discovery.py's convention."""
     admitted = ot_disease_subset[ot_disease_subset["datatype_id"].isin(datatypes)]
     if admitted.empty:
         logger.warning(

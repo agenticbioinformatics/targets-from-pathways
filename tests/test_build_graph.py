@@ -1,10 +1,10 @@
-"""pytest tests for build_graph.py (Stage 3: pathway-based gene-gene graph
+"""pytest tests for stage3_build_graph.py (Stage 3: pathway-based gene-gene graph
 construction).
 
-Hand-built DataFrames, calling build_graph.py's functions directly (no
+Hand-built DataFrames, calling stage3_build_graph.py's functions directly (no
 manifest.json/parquet round-trip — that's Stage 1/2 plumbing, already
 covered by tests/test_ingest_*.py, tests/test_gsea_discovery.py, and
-build_graph.py's own ``_resolve_artifact_path``). Gene IDs are fake but
+stage3_build_graph.py's own ``_resolve_artifact_path``). Gene IDs are fake but
 Ensembl-pattern-valid (``graph_to_sparse``'s index validation requires it).
 
 Pathways:
@@ -44,7 +44,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-import build_graph as bg
+import stage3_build_graph as bg
 
 A, B, C, D, F, Z = (f"ENSG{n:011d}" for n in (1, 2, 3, 4, 6, 99))
 TARGET_GENE_ID = F

@@ -5,7 +5,7 @@ created_at/run_id, and every artifact sha256 recorded in the manifest
 matches the file on disk.
 
 run_id is itself a deterministic hash of (target, disease, seed,
-cli_parameters) — see ingest.py's _run_id — and cli_parameters includes
+cli_parameters) — see stage1_ingest.py's _run_id — and cli_parameters includes
 out_dir, so two runs into *different* out-dirs legitimately get different
 run_ids even though target/disease/seed are identical. Using two distinct
 tmp out-dirs here (the realistic way to run this pipeline twice) is exactly
@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 
 from conftest import make_args
-from ingest import run_ingest
+from stage1_ingest import run_ingest
 
 
 def _sha256_file(path):
