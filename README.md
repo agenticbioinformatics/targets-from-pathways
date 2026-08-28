@@ -374,7 +374,15 @@ Sized for a small (2–4 person) mixed bio+CS team on laptop-scale compute.
   file on disk.
 - **End-to-end integration run**: full pipeline on a real (target, disease)
   pair (e.g. PTGS2 / rheumatic disease, EFO_0005755) checked for a
-  non-degenerate ranked output and sane runtime.
+  non-degenerate ranked output and sane runtime. Automated as
+  `tests/test_end_to_end.py` — runs the real stage scripts in order (Stage 1
+  on `tests/fixtures/`; Stages 2–6 via `run_pipeline.py` on the 17-gene
+  synthetic Stage 1 output, since blitzgsea can't calibrate on the
+  3-gene fixture signature) and re-validates *every* inter-stage artifact
+  against its `stage0_schemas` contract, with Ensembl gene IDs and
+  `source_db` attribution checked end to end and a `composite_score` in
+  [0, 1] asserted for every graph gene. A renamed or dropped column
+  anywhere in the pipeline fails here.
 - **Ground-truth validation** (see [`benchmarking/`](benchmarking/README.md)):
   the benchmark run against the literature-curated resistance/compensation
   pairs — this is the check that catches pipeline bugs before any
