@@ -209,9 +209,9 @@ beyond this repo.
 > documented TSV schema, and add a `--benchmark-holdout-file` optional CLI
 > arg: a list of genes (resolved to Ensembl IDs via Stage 1's `genes`
 > table, not matched on symbol) to exclude from the disease-associated seed
-> gene set before running GSEA. This will be used by Stage 7's benchmark
-> validation to prevent circularity when known resistance-pair genes overlap
-> with disease seed genes.
+> gene set before running GSEA. This will be used by benchmark validation
+> (see `benchmarking/`) to prevent circularity when known resistance-pair
+> genes overlap with disease seed genes.
 
 ### Stage 3 — Pathway-based gene-gene graph construction
 
@@ -376,45 +376,18 @@ beyond this repo.
 **Wire to next stage:**
 > Confirm `annotate_context.py` writes the final per-candidate evidence
 > trace (which pathways, which datatypes, which tractability bucket
-> contributed) alongside the composite score, since Stage 8's report needs
+> contributed) alongside the composite score, since the Stage 7 report needs
 > this trace for interpretability, not just the final number.
 
 ---
 
 ## Day 3
 
-### Stage 7 — Benchmark validation
+> Benchmark validation is now its own module — see
+> [`benchmarking/PROMPTS.md`](benchmarking/PROMPTS.md) for its
+> implementation prompt. It runs on Day 3 alongside Stage 7 below.
 
-**Implement:**
-> Write `benchmark_validate.py` that takes a small hand-curated TSV of known
-> resistance/compensation gene pairs (columns: `original_target`,
-> `alternative_target`, `disease_or_context`, `source_citation` — create
-> this file **must be curated by a human, not generated here** — it is the
-> single file the entire validation rests on, and every `source_citation`
-> needs a real, checked PMID. Assume it already exists at
-> `benchmark/resistance_pairs.tsv`; if it does not, stop and say so rather
-> than inventing cases or citations). Run the full pipeline (Stages 1-6) for
-> each known pair with `--benchmark-holdout-file` set to exclude the
-> `alternative_target` gene from Stage 2's seed genes, memoizing the disease
-> GSEA across pairs that share a disease so the benchmark does not re-run
-> enrichment unnecessarily. Record the rank and percentile of
-> `alternative_target` in the resulting candidate list. Print a clear
-> disclaimer that with n<20 cases results must be reported descriptively
-> (e.g. "X of N known pairs ranked in top 5%"), not as a significance test —
-> do not compute or report a p-value against this benchmark.
-
-**Test:**
-> Add a pytest test using a tiny synthetic pipeline setup (small graph,
-> small association table) with one deliberately "easy" known pair (short
-> graph distance) and confirm `benchmark_validate.py` reports it near the
-> top of the ranking with the correct percentile calculation.
-
-**Wire to next stage:**
-> Ensure `benchmark_validate.py` writes its summary as both a TSV and a
-> short human-readable text block, so Stage 8's report can embed the
-> validation summary directly without re-parsing raw output.
-
-### Stage 8 — Output/report + web UI
+### Stage 7 — Output/report + web UI
 
 **Implement:**
 > Write a small pipeline orchestrator `run_pipeline.py` that chains Stages
@@ -425,9 +398,9 @@ beyond this repo.
 > click/expand, the evidence trace (which shared pathways, which datatypes,
 > which interactions contributed). Display genes by HGNC symbol while
 > keeping Ensembl gene IDs as the internal key — resolve symbols via Stage
-> 1's `genes` table at render time only. Include the Stage 7 benchmark
-> summary as a static "validation" panel/page in the app, not recomputed per
-> request.
+> 1's `genes` table at render time only. Include the benchmark validation
+> summary (from `benchmarking/`) as a static "validation" panel/page in the
+> app, not recomputed per request.
 
 **Test:**
 > Write an integration test that runs `run_pipeline.py` end-to-end on the
@@ -459,7 +432,7 @@ beyond this repo.
 > script's argparse setup so the CLI is self-documenting.
 
 **Demo/web app polish:**
-> Add basic input validation and error messages to the web app from Stage 8
+> Add basic input validation and error messages to the web app from Stage 7
 > (e.g. clear message if the EFO ID or target gene isn't found in the
 > loaded data, instead of a stack trace), and a loading indicator while
 > `run_pipeline.py` executes, since a full run may take up to a few minutes.

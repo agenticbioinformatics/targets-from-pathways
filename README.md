@@ -45,7 +45,8 @@ end-to-end identifier
 canonicalisation with mapping-coverage reporting, and the addition of a
 literature-curated benchmark of known clinical resistance mechanisms (e.g.
 EGFR→MET) to sanity-check the method against ground truth before trusting
-its output. The expected deliverable is
+its output (the benchmark is its own module — see `benchmarking/`). The
+expected deliverable is
 a small web app: a researcher enters a target and a disease and gets back a
 ranked, evidence-annotated list of candidate alternative targets. Known
 limitations going in: single-database (Reactome) coverage and curation bias,
@@ -68,8 +69,15 @@ prioritization.
 | 4. Genetic-evidence weighting | Compute Open Targets evidence restricted to non-pathway-derived datatypes (e.g. `genetic_association`, `known_drug`, explicitly excluding `affected_pathway`/literature-pathway sources) and map the resulting scores onto the Stage 3 graph as **node weights and edge weights** — so genetic evidence directly informs Stage 5's scoring rather than only re-ranking its output after the fact, while preserving orthogonality with Stages 2–3. | H4 |
 | 5. Candidate scoring | `--method` defaults to **topology score only** (co-membership / shortest path / branch-convergence, direction- and weight-aware) — the cheapest, deterministic method, run for every candidate by default. Random-walk-with-restart (RWR) is opt-in via `--method` (e.g. `--method topology,rwr`), not run unless requested. Both score from the target node and are able to consume Stage 4's node/edge weights and Stage 3's edge directions/signs. | H1, H2 |
 | 6. Contextual annotation & filtering | Attach Open Targets tractability bucket and safety flags; compute a configurable composite score. No tissue-expression filtering — the method stays strictly pathway- and association-evidence-based. | H5, H6 |
-| 7. Benchmark validation | Score a small literature-curated set of known resistance/compensation gene pairs (held out of Stage 2's seed genes); report descriptive rank/percentile recovery against a random background, not a significance test. | H8 |
-| 8. Output/report | Ranked table (per-candidate scores, evidence trace, tractability/safety) plus a web UI: target + disease in, ranked list out. | Deliverable |
+| 7. Output/report | Ranked table (per-candidate scores, evidence trace, tractability/safety) plus a web UI: target + disease in, ranked list out. | Deliverable |
+
+**Benchmark validation** — scoring a small literature-curated set of known
+resistance/compensation gene pairs (held out of Stage 2's seed genes) and
+reporting descriptive rank/percentile recovery against a random background,
+not a significance test — is a separate module that *drives* the pipeline
+rather than being a stage of it (it has its own human-curated input and its
+own reporting discipline). It addresses **H8** and is documented in
+[`benchmarking/`](benchmarking/README.md).
 
 Hypotheses H9 (target-modality generalization) and H10 (disease-context
 expression weighting) were evaluated and explicitly dropped from hackathon
@@ -155,7 +163,7 @@ emitted, so adding a source later is a new file rather than a refactor.
 **Decision 2 — Ensembl gene ID is the canonical internal identifier.** Open
 Targets is the primary evidence source and is natively Ensembl-keyed, and
 Ensembl IDs are stable across symbol renames. Reactome symbols are mapped in
-at Stage 1 and mapped back out to symbols only for display in Stages 6/8.
+at Stage 1 and mapped back out to symbols only for display in Stages 6/7.
 
 **Decision 3 — Stage 1 may download its own inputs**, from a version-pinned
 registry with sha256 verification and a `--no-download` opt-out, replacing
@@ -210,6 +218,19 @@ manifest; downstream stages read only these, never raw source files.
   core hypotheses (H1/H2) don't require. Stage 5 ships **topology (default)
   + standard RWR (opt-in)** only; `--method` accepts `topology`, `rwr`, or
   `topology,rwr`. H3 is dropped (see the hypotheses note above).
+
+### Plan update 6 (user-directed)
+
+- **Benchmark validation split out of the pipeline.** What was "Stage 7 —
+  benchmark validation" is now a standalone module under
+  [`benchmarking/`](benchmarking/README.md) with its own README and
+  implementation prompt: it drives the pipeline (Stages 1–6) once per
+  curated pair rather than being a stage in the chain, it owns a
+  human-curated input file, and its small-n results are read differently
+  from the pipeline's own output. **Stage 8 (output/report + web UI) is
+  renumbered Stage 7** accordingly; the pipeline is now Stages 1–7.
+  Historical plan-update entries above still say "Stage 7"/"Stage 8" in
+  their original numbering.
 
 ## Open decisions
 
@@ -266,7 +287,7 @@ a cheaper cached "promiscuity score", the fraction of a reference disease
 panel for which a pathway is significant, excluding the top decile.
 
 The permutation null materially increases Stage 2 runtime, which matters for
-Stage 7's repeated runs.
+the benchmark module's repeated runs (see `benchmarking/`).
 
 ### 3. Capping the target-pathway union in Stage 3
 
@@ -314,9 +335,10 @@ Sized for a small (2–4 person) mixed bio+CS team on laptop-scale compute.
 - Stage 2 (GSEA disease-pathway discovery, FDR-corrected)
 - Stage 3 (directed, signed pathway-based gene-gene graph construction,
   versioned/seeded)
-- In parallel, no code required: curate the Stage 7 benchmark TSV of known
-  resistance pairs with verified PMIDs. This is literature work, it gates
-  Day 3, and it is the one file that must not be agent-generated.
+- In parallel, no code required: curate the benchmark TSV of known
+  resistance pairs with verified PMIDs (see `benchmarking/`). This is
+  literature work, it gates Day 3, and it is the one file that must not be
+  agent-generated.
 - Milestone: for a toy (target, disease) pair, produce a disease-relevant
   pathway list and a constructed pathway-based gene-gene graph, with Stage
   1's coverage report showing >90% identifier mapping for every source.
@@ -330,8 +352,8 @@ Sized for a small (2–4 person) mixed bio+CS team on laptop-scale compute.
   known-reasonable sanity check).
 
 **Day 3 — Validation, integration, demo**
-- Stage 7 (benchmark validation against curated resistance cases)
-- Stage 8 (output/report + minimal web UI)
+- Benchmark validation against curated resistance cases (see `benchmarking/`)
+- Stage 7 (output/report + minimal web UI)
 - End-to-end integration test, documentation pass, demo rehearsal buffer.
 
 ## Testing steps
@@ -352,9 +374,9 @@ Sized for a small (2–4 person) mixed bio+CS team on laptop-scale compute.
 - **End-to-end integration run**: full pipeline on a real (target, disease)
   pair (e.g. PTGS2 / rheumatic disease, EFO_0005755) checked for a
   non-degenerate ranked output and sane runtime.
-- **Ground-truth validation**: Stage 7's benchmark run against the
-  literature-curated resistance/compensation pairs — this is the check that
-  catches pipeline bugs before any
+- **Ground-truth validation** (see [`benchmarking/`](benchmarking/README.md)):
+  the benchmark run against the literature-curated resistance/compensation
+  pairs — this is the check that catches pipeline bugs before any
   biological conclusion is trusted, and the one place small-n results must
   be reported descriptively (e.g. "N of 10 known pairs ranked in top 5%"),
   not as a statistical test.
@@ -479,8 +501,9 @@ collapsing step before testing (`5 sets before, 4 sets after`), and
 `R-HSA-400` ("Scattered Noise Pathway", no coherent enrichment signal) is
 tested but excluded by the FDR filter (`3/4 tested pathways pass`).
 
-**Benchmark holdout** (`--benchmark-holdout-file`, for Stage 7): excludes
-genes from the disease-associated seed set before GSEA runs, so a
+**Benchmark holdout** (`--benchmark-holdout-file`, for benchmark validation
+— see [`benchmarking/`](benchmarking/README.md)): excludes genes from the
+disease-associated seed set before GSEA runs, so a
 literature-curated resistance-pair gene that happens to overlap Stage 2's
 own evidence doesn't validate itself. Genes are listed one per line
 (`#` comments allowed) and resolved to Ensembl IDs via Stage 1's
@@ -663,7 +686,7 @@ Stage 6 joins `candidate_scores.gene` directly onto Open Targets
 tractability/safety with no ID-mapping step; `CandidateScoresSchema`'s
 `^ENSG\d{11}$` check (plus an explicit guard in `run()`) makes a namespace
 slip fail loudly rather than silently drop rows on the join. HGNC symbols
-are a display-time lookup (`genes.parquet`) in Stages 6/8, never written
+are a display-time lookup (`genes.parquet`) in Stages 6/7, never written
 here.
 
 `python3 -m pytest tests/test_score_candidates.py` runs the unit-level
@@ -719,14 +742,14 @@ Per candidate it adds:
   the trace shows what built the rank, not just the number.
 - **`composite_weights`** — the renormalised weights actually used
   (`k:fraction,...`, sum 1), repeated on every row so one row is a
-  self-contained explanation for Stage 8's report.
+  self-contained explanation for the Stage 7 report.
 
 Per-candidate **evidence trace**: the passthrough score columns
 (`topology_score` / `rwr_score` / `genetic_evidence_score`), the annotation
 buckets (`tractability` / `safety` / `n_safety_liabilities`), and
 `composite_breakdown` + `composite_weights` together explain every rank.
 Two provenance items are deliberately **not** here — *which shared
-pathways/interactions* (not in this stage's inputs; Stage 8 assembles it
+pathways/interactions* (not in this stage's inputs; Stage 7 assembles it
 from `gene_sets.parquet` at drill-down time) and *which Open Targets
 datatype* produced the genetic-evidence score (a Stage 4 follow-up — Stage
 4 records only the final score).
