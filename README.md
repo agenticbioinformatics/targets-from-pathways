@@ -675,3 +675,85 @@ that favours the target's neighbours over far-away chain nodes, the
 node-weight blend pulling mass toward a high-evidence gene, and the
 output-column contract (`topology_score` always, `rwr_score` only when
 requested, target row excluded, unknown `--method` exits non-zero).
+
+## Running Stage 6 (`pipeline/annotate_context.py`)
+
+**Setup:** `pip install pandas pyarrow pandera pydantic` (or `pip install -r requirements.txt`).
+
+**Run command**, after Stage 5 has produced `candidate_scores.tsv`:
+
+```
+python3 pipeline/annotate_context.py --manifest ./run1/manifest.json
+```
+
+Resolves, all next to `--manifest` by default: `candidate_scores.tsv`
+(Stage 5), `graph_metadata.json` (Stage 4's `genetic_evidence_score` map —
+optional), and the Open Targets `target` parquet (from
+`manifest.sources` — the `opentargets` `*target*.parquet` files; override
+with `--target-parquet`). Writes `candidates_annotated.tsv` alongside the
+candidates file.
+
+Per candidate it adds:
+
+- **`tractability`** — `clinical` (an Open Targets `value==true` flag for a
+  clinical stage), `discovery` (some other true flag), or `unknown` (no
+  true flag, or the gene is absent from the `target` parquet).
+- **`safety`** — `has_liabilities` (one or more `safetyLiabilities`
+  entries) or `unknown`. **There is no `safe` value**: Open Targets records
+  known liabilities or says nothing, and its safety coverage is sparse, so
+  a gene with no annotation is `unknown` (a neutral 0.5 in the composite),
+  never rewarded as if confirmed safe. `n_safety_liabilities` carries the
+  count.
+- **`composite_score`** ∈ [0, 1] — `--weights` (default
+  `topology:0.3,rwr:0.3,genetic_evidence:0.2,tractability:0.1,safety:0.1`)
+  weighted-averaged over: min-max-scaled `topology_score` and `rwr_score`
+  (proximity numbers only meaningful ranked within the candidate set),
+  as-is `genetic_evidence_score`, and the tractability
+  (`clinical`=1/`discovery`=0.5/`unknown`=0) and safety
+  (`has_liabilities`=0/`unknown`=0.5) ordinals. Weights need not sum to 1;
+  a component with no data (`rwr` on a topology-only Stage 5 run,
+  `genetic_evidence` with no Stage 4) is dropped and the rest
+  renormalised.
+- **`composite_breakdown`** — `k=v|k=v` of the normalised component values
+  that fed the score, the evidence trace Stage 8's report renders.
+
+**No tissue-expression data of any kind is read or used** — only `id`,
+`tractability` and `safetyLiabilities` are pulled from the `target`
+parquet, by design (plan update 1, H10 dropped). No rows are filtered out.
+
+Against the checked-in example (after Stages 1–5):
+
+```
+python3 pipeline/annotate_context.py --manifest example_data/stage1_run/manifest.json
+```
+
+**Expected output** (`example_data/stage1_run/candidates_annotated.tsv`,
+top rows; columns per `schemas.AnnotatedCandidatesSchema`, ranked by
+`composite_score`):
+
+```
+gene             topology_score  genetic_evidence_score  tractability  safety           n_safety_liabilities  composite_score
+ENSG00000000004  3.4545          0.92                    discovery     has_liabilities  1                     0.834
+ENSG00000000002  2.6480          0.98                    clinical      has_liabilities  2                     0.805
+ENSG00000000003  2.6197          0.95                    discovery     unknown          0                     0.790
+ENSG00000000009  3.2522          0.77                    unknown       unknown          0                     0.754
+ENSG00000000005  2.5616          0.89                    unknown       unknown          0                     0.712
+```
+
+`ENSG...004` stays on top despite a safety liability because its proximity
+and genetic-evidence terms dominate; `ENSG...017`, clinically tractable but
+far from the target and weakly associated, lands near the bottom
+(`composite_score` ~0.16) — tractability alone can't lift a low-proximity
+candidate. The example's synthetic `ot_target_subset.parquet` covers 6 of
+the 17 genes; the other 11 are `unknown`/`unknown` and ranked purely on the
+score terms, never penalised for missing annotation.
+
+`python3 -m pytest tests/test_annotate_context.py` runs the unit-level
+tests (9 tests): tractability bucketing and the safety flag/count, weight
+parsing and rejection of junk, a hand-computed composite for a known
+two-row input, a second hand-computed composite driven end-to-end from a
+small fixture tractability/safety table, component-drop-and-renormalise
+when `rwr`/`genetic_evidence` data is absent, and — the case the spec
+calls out — a gene with an empty `safetyLiabilities` list and a gene absent
+from the `target` parquet both coming out `unknown` rather than defaulting
+to a numeric or `safe` value, in `build_annotations` and end-to-end.

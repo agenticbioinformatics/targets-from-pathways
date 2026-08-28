@@ -3,10 +3,10 @@ to exercise stage2_gsea_discovery.py, stage3_build_graph.py, and stage4_genetic_
 end to end (see README.md's Stage 2/3/4 run instructions). Not run by any
 test suite — re-run manually if the example needs to change.
 
-Writes example_data/stage1_run/{gene_sets,ot_disease_subset,interactions}.parquet
-and manifest.json, validated against stage0_schemas.py exactly like stage1_ingest.py's real
-output, so downstream stages exercise the identical code path they use on a
-real Stage 1 run.
+Writes example_data/stage1_run/{gene_sets,ot_disease_subset,interactions,genes}.parquet,
+ot_target_subset.parquet, and manifest.json, validated against stage0_schemas.py
+exactly like stage1_ingest.py's real output, so downstream stages exercise
+the identical code path they use on a real Stage 1 run.
 
 Gene universe (all fake ENSG ids, 17 genes total):
 - TARGET (ENSG00000000001): the --target gene. Has a mid-range
@@ -56,6 +56,24 @@ stage4_genetic_evidence_weights.py (Stage 4):
   only, which is excluded from Stage 3's pathway union entirely (it's the
   redundant ancestor Stage 2's collapsing drops) — this row must be
   dropped as out of scope, not silently included.
+
+Also writes ot_target_subset.parquet (id / tractability / safetyLiabilities
+columns, the Open Targets `target` schema subset Stage 6 reads) and records
+it under manifest.sources[opentargets], so annotate_context.py (Stage 6)
+resolves it the same way it would the real OT `target` parquet directory:
+- TARGET: clinically tractable ("Approved Drug"), no safety liabilities
+  -> tractability=clinical, safety=unknown.
+- G2: clinically tractable, TWO safety liabilities -> safety=has_liabilities
+  (a high-proximity candidate that the safety term should pull down).
+- G3: discovery-tractable only, no liabilities -> discovery / unknown.
+- G4: discovery-tractable, one liability -> discovery / has_liabilities.
+- G5: present but no `value==true` flag and no liabilities -> unknown /
+  unknown (distinct from being absent entirely).
+- G17: clinically tractable, no liabilities — a weak "unrelated pathway"
+  gene that is nonetheless druggable, so tractability alone can't lift a
+  low-proximity candidate into the top of the composite ranking.
+- every other gene (G6..G13, G18..G21) is ABSENT from the table -> Stage 6
+  must mark it tractability=unknown, safety=unknown, and NOT penalise it.
 """
 
 from __future__ import annotations
@@ -193,6 +211,38 @@ def build_interactions() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def build_target_annotations() -> pd.DataFrame:
+    """Open Targets `target` schema subset — only the columns Stage 6 reads."""
+
+    def tract(*flags: tuple[str, str, bool]) -> list[dict]:
+        return [{"modality": m, "id": i, "value": v} for (m, i, v) in flags]
+
+    def liabs(*events: str) -> list[dict]:
+        return [{"event": e, "eventId": f"EFO_{n:07d}"} for n, e in enumerate(events, start=1)]
+
+    rows = [
+        {"id": TARGET,
+         "tractability": tract(("SM", "Approved Drug", True), ("SM", "Structure with Ligand", True)),
+         "safetyLiabilities": liabs()},
+        {"id": G[2],
+         "tractability": tract(("SM", "Phase 1 Clinical", True), ("AB", "GO CC high conf", True)),
+         "safetyLiabilities": liabs("cardiovascular toxicity", "hepatotoxicity")},
+        {"id": G[3],
+         "tractability": tract(("SM", "Structure with Ligand", True), ("SM", "High-Quality Pocket", False)),
+         "safetyLiabilities": liabs()},
+        {"id": G[4],
+         "tractability": tract(("AB", "UniProt loc high conf", True)),
+         "safetyLiabilities": liabs("nephrotoxicity")},
+        {"id": G[5],
+         "tractability": tract(("SM", "Druggable Family", False)),
+         "safetyLiabilities": liabs()},
+        {"id": G[17],
+         "tractability": tract(("SM", "Approved Drug", True)),
+         "safetyLiabilities": liabs()},
+    ]
+    return pd.DataFrame(rows, columns=["id", "tractability", "safetyLiabilities"])
+
+
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -211,6 +261,11 @@ def main() -> None:
     interactions_df = InteractionsSchema.validate(build_interactions())
     interactions_path = OUT_DIR / "interactions.parquet"
     interactions_df.to_parquet(interactions_path, index=False)
+
+    # Not a Stage 1 output artifact — this stands in for the Open Targets
+    # `target` parquet Stage 1 downloads, so it goes under manifest.sources.
+    target_subset_path = OUT_DIR / "ot_target_subset.parquet"
+    build_target_annotations().to_parquet(target_subset_path, index=False)
 
     def artifact(path: Path) -> OutputArtifact:
         return OutputArtifact(path=str(path), sha256=_sha256_bytes(path.read_bytes()))
@@ -233,7 +288,16 @@ def main() -> None:
             Source(
                 db="opentargets",
                 version="26.06",
-                files=[SourceFile(path="example_data/fake_association.parquet", sha256="1" * 64, bytes=0)],
+                files=[
+                    SourceFile(path="example_data/fake_association.parquet", sha256="1" * 64, bytes=0),
+                    SourceFile(
+                        # repo-root-relative, like the other source entries — Stage 6
+                        # also retries this basename next to the manifest.
+                        path="example_data/stage1_run/ot_target_subset.parquet",
+                        sha256=_sha256_bytes(target_subset_path.read_bytes()),
+                        bytes=target_subset_path.stat().st_size,
+                    ),
+                ],
             ),
         ],
         cli_parameters={"target": "TARGET", "disease": DISEASE_ID, "min_set_size": 1, "max_set_size": 200},

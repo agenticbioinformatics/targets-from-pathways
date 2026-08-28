@@ -58,6 +58,9 @@ __all__ = [
     "DiseasePathwaysSchema",
     "GeneWeightsSchema",
     "CandidateScoresSchema",
+    "AnnotatedCandidatesSchema",
+    "TRACTABILITY_BUCKETS",
+    "SAFETY_FLAGS",
     "assert_foreign_key",
     "ResolvedTarget",
     "ResolvedDisease",
@@ -275,6 +278,52 @@ CandidateScoresSchema = DataFrameSchema(
         "rwr_score": Column(
             float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True, required=False
         ),
+    },
+    strict=True,
+)
+
+
+# Stage 6 vocabularies. Tractability is an ordinal proxy derived from Open
+# Targets' per-modality flags; safety has deliberately NO "safe" value — OT
+# supplies known *liabilities* or silence, never positive proof of safety,
+# so a gene with no liabilities annotation is "unknown", not "safe".
+TRACTABILITY_BUCKETS = frozenset({"clinical", "discovery", "unknown"})
+SAFETY_FLAGS = frozenset({"has_liabilities", "unknown"})
+
+
+AnnotatedCandidatesSchema = DataFrameSchema(
+    {
+        "gene": Column(
+            str,
+            checks=Check.str_matches(ENSEMBL_GENE_ID_PATTERN.pattern),
+            unique=True,
+            nullable=False,
+        ),
+        # --- carried through from Stage 5 (schemas.CandidateScoresSchema) ---
+        "topology_score": Column(
+            float, checks=Check.greater_than_or_equal_to(0.0), nullable=False, coerce=True
+        ),
+        "rwr_score": Column(
+            float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True, required=False
+        ),
+        # --- joined from Stage 4's graph_metadata.json (absent if Stage 4
+        #     was not run) ---
+        "genetic_evidence_score": Column(
+            float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True, required=False
+        ),
+        # --- Open Targets target-level annotation (this stage) ---
+        "tractability": Column(str, checks=Check.isin(TRACTABILITY_BUCKETS), nullable=False),
+        "safety": Column(str, checks=Check.isin(SAFETY_FLAGS), nullable=False),
+        # Count of Open Targets safetyLiabilities entries; 0 is "none recorded"
+        # (which maps to safety == "unknown", never "safe").
+        "n_safety_liabilities": Column(
+            int, checks=Check.greater_than_or_equal_to(0), nullable=False, coerce=True
+        ),
+        # Weighted average of the normalised components, in [0, 1].
+        "composite_score": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True),
+        # Human-readable "k=v|k=v" of the normalised component values that
+        # fed composite_score — the evidence trace Stage 8's report needs.
+        "composite_breakdown": Column(str, nullable=False),
     },
     strict=True,
 )

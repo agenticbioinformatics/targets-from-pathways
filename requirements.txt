@@ -25,8 +25,9 @@ networkx
 numpy
 scipy
 
-# Stage 6 — contextual annotation & filtering
+# Stage 6 — contextual annotation & filtering (reads the OT `target` parquet)
 pandas
+pyarrow
 
 # Stage 7 — benchmark validation
 pandas
