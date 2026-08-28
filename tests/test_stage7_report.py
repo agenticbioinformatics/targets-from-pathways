@@ -127,23 +127,20 @@ def test_build_report_is_self_contained_and_symbol_labelled(tmp_path):
     assert "<script>" in html and "<style>" in html
 
     annotated = pd.read_csv(EXAMPLE_RUN / "candidates_annotated.tsv", sep="\t")
-    symbols = dict(
-        zip(
-            *[
-                pd.read_parquet(EXAMPLE_RUN / "genes.parquet")[c]
-                for c in ("gene_id", "symbol")
-            ]
-        )
-    )
-    # every candidate: an anchored detail block, and its symbol shown
-    for gid in annotated["gene"]:
-        assert f'id="g-{gid}"' in html
-        assert f">{symbols[gid]}<" in html or f">{symbols[gid]} " in html
+    genes = pd.read_parquet(EXAMPLE_RUN / "genes.parquet")
+    symbols = dict(zip(genes["gene_id"], genes["symbol"]))
+    assert set(symbols.values()) != set(symbols.keys())  # symbols really differ from Ensembl ids
 
-    # one <details> per candidate, table body has one row per candidate
-    assert html.count("<details ") == len(annotated)
     tbody = html.split("<tbody", 1)[1].split("</tbody>", 1)[0]
-    assert tbody.count("<tr>") == len(annotated)
+    assert tbody.count("<tr>") == len(annotated)          # one table row per candidate
+    assert html.count("<details ") == len(annotated)      # one detail block per candidate
+
+    for gid in annotated["gene"]:
+        sym = symbols[gid]
+        assert f'id="g-{gid}"' in html                    # anchored detail block
+        # the ranked table shows the SYMBOL (as a link), with the Ensembl id in its own cell
+        assert f">{sym}</a>" in tbody
+        assert f'class="txt ens">{gid}<' in tbody
 
     # benchmark panel embedded (the example placeholder, clearly labelled)
     assert "Benchmark validation" in html

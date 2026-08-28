@@ -35,11 +35,18 @@ def test_from_manifest_chains_stages_and_writes_report(tmp_path):
 
     run_pipeline.main(["--from-manifest", str(run_dir / "manifest.json"), "--report"])
 
-    for produced in (
-        "disease_pathways.tsv", "graph_weight.npz", "graph_metadata.json",
-        "candidate_scores.tsv", "candidates_annotated.tsv", "report.html",
-    ):
-        assert (run_dir / produced).exists(), f"{produced} not produced"
+    # every artifact Stages 2-6 + the report are expected to drop
+    expected = {
+        "stage 2": ["disease_pathways.tsv"],
+        "stage 3": ["graph_weight.npz", "graph_sign.npz", "graph_gene_index.json", "graph_metadata.json"],
+        "stage 4": ["gene_weights.tsv"],  # + graph_* rewritten in place
+        "stage 5": ["candidate_scores.tsv"],
+        "stage 6": ["candidates_annotated.tsv"],
+        "report": ["report.html"],
+    }
+    for stage, names in expected.items():
+        for name in names:
+            assert (run_dir / name).exists(), f"{stage}: {name} not produced"
 
     annotated = pd.read_csv(run_dir / "candidates_annotated.tsv", sep="\t")
     assert len(annotated) == 16  # 17 graph genes minus the target
