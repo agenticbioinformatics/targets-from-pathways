@@ -423,7 +423,7 @@ identifier-mapping rate and example dropped IDs), `scale_report.json`
 
 There is no tiny checked-in example run for this stage: `stage1_ingest.py`
 needs the real pinned sources (or the test fixtures). The
-`example_data/stage1_run/` directory is synthesised directly by
+`example_data/example_run/` directory is synthesised directly by
 `python3 example_data/build_gsea_example.py`, which writes a hand-built,
 schema-valid Stage 1 output *without* running ingest, so Stages 2–4 have
 something to consume offline. The ingest logic itself — pinned-download
@@ -457,10 +457,10 @@ checked in under `example_data/` — regenerate it with
 `python3 example_data/build_gsea_example.py`, then:
 
 ```
-python3 pipeline/stage2_gsea_discovery.py --manifest example_data/stage1_run/manifest.json
+python3 pipeline/stage2_gsea_discovery.py --manifest example_data/example_run/manifest.json
 ```
 
-**Expected output** (`example_data/stage1_run/disease_pathways.tsv`,
+**Expected output** (`example_data/example_run/disease_pathways.tsv`,
 columns per `schemas.DiseasePathwaysSchema`; exact `pval`/`fdr` floats jitter
 slightly run-to-run — blitzgsea's internal calibration isn't bit-for-bit
 deterministic even with a fixed seed — but the three pathways returned, their
@@ -489,7 +489,7 @@ own evidence doesn't validate itself. Genes are listed one per line
 `ot_disease_subset` (which carries no symbol column at all). Example:
 
 ```
-python3 pipeline/stage2_gsea_discovery.py --manifest example_data/stage1_run/manifest.json \
+python3 pipeline/stage2_gsea_discovery.py --manifest example_data/example_run/manifest.json \
     --benchmark-holdout-file example_data/benchmark_holdout_example.txt
 ```
 
@@ -527,7 +527,7 @@ Against the checked-in example (regenerate with
 `python3 example_data/build_gsea_example.py` if needed):
 
 ```
-python3 pipeline/stage3_build_graph.py --manifest example_data/stage1_run/manifest.json
+python3 pipeline/stage3_build_graph.py --manifest example_data/example_run/manifest.json
 ```
 
 **Expected output** (log lines):
@@ -571,7 +571,7 @@ Reactome-derived evidence weight a graph whose topology already *is*
 Reactome pathway structure.
 
 Writes **exactly Stage 3's four filenames**, not a parallel set, so
-`score_candidates.py` (Stage 5) can point `--graph` at either a Stage 3 or
+`stage5_score_candidates.py` (Stage 5) can point `--graph` at either a Stage 3 or
 a Stage 4 directory and load it through the same code path:
 `graph_weight.npz` is *replaced* with the genetic-evidence-derived edge
 weight (same sparsity pattern as Stage 3's structural weight — no edge
@@ -585,10 +585,10 @@ exact contract.
 Against the checked-in example:
 
 ```
-python3 pipeline/stage4_genetic_evidence_weights.py --manifest example_data/stage1_run/manifest.json
+python3 pipeline/stage4_genetic_evidence_weights.py --manifest example_data/example_run/manifest.json
 ```
 
-**Expected output** (`example_data/stage1_run/gene_weights.tsv`, top rows):
+**Expected output** (`example_data/example_run/gene_weights.tsv`, top rows):
 
 ```
 gene_id           genetic_evidence_score
@@ -601,7 +601,7 @@ ENSG00000000004   0.92
 into `graph_weight.npz`; e.g. the target-`ENSG...002` edge is
 `avg(0.60, 0.98) = 0.79` by default or `0.60 * 0.98 = 0.588` with `product`.
 
-## Running Stage 5 (`pipeline/score_candidates.py`)
+## Running Stage 5 (`pipeline/stage5_score_candidates.py`)
 
 **Setup:** `pip install networkx scipy numpy pandas pandera pydantic` (or `pip install -r requirements.txt`).
 
@@ -609,7 +609,7 @@ into `graph_weight.npz`; e.g. the target-`ENSG...002` edge is
 share one format — see Stage 4 above):
 
 ```
-python3 pipeline/score_candidates.py --graph-dir test_out/
+python3 pipeline/stage5_score_candidates.py --graph-dir test_out/
 ```
 
 `--graph-dir` is the only required argument: it reads `graph_weight.npz`,
@@ -628,13 +628,13 @@ the largest share, so 0.5 leaves it ~2/3 of the restart mass; ignored on a
 Stage 3 graph).
 
 Against the checked-in example (after Stages 1–4 have run, so
-`example_data/stage1_run/` holds a **Stage 4** graph):
+`example_data/example_run/` holds a **Stage 4** graph):
 
 ```
-python3 pipeline/score_candidates.py --graph-dir example_data/stage1_run --method topology,rwr
+python3 pipeline/stage5_score_candidates.py --graph-dir example_data/example_run --method topology,rwr
 ```
 
-**Expected output** (`example_data/stage1_run/candidate_scores.tsv`, top
+**Expected output** (`example_data/example_run/candidate_scores.tsv`, top
 rows; columns per `schemas.CandidateScoresSchema`, ranked by `rwr_score`
 since `rwr` was requested — else by `topology_score`):
 
@@ -676,14 +676,14 @@ node-weight blend pulling mass toward a high-evidence gene, and the
 output-column contract (`topology_score` always, `rwr_score` only when
 requested, target row excluded, unknown `--method` exits non-zero).
 
-## Running Stage 6 (`pipeline/annotate_context.py`)
+## Running Stage 6 (`pipeline/stage6_annotate_context.py`)
 
 **Setup:** `pip install pandas pyarrow pandera pydantic` (or `pip install -r requirements.txt`).
 
 **Run command**, after Stage 5 has produced `candidate_scores.tsv`:
 
 ```
-python3 pipeline/annotate_context.py --manifest ./run1/manifest.json
+python3 pipeline/stage6_annotate_context.py --manifest ./run1/manifest.json
 ```
 
 Resolves, all next to `--manifest` by default: `candidate_scores.tsv`
@@ -738,10 +738,10 @@ parquet, by design (plan update 1, H10 dropped). No rows are filtered out.
 Against the checked-in example (after Stages 1–5):
 
 ```
-python3 pipeline/annotate_context.py --manifest example_data/stage1_run/manifest.json
+python3 pipeline/stage6_annotate_context.py --manifest example_data/example_run/manifest.json
 ```
 
-**Expected output** (`example_data/stage1_run/candidates_annotated.tsv`,
+**Expected output** (`example_data/example_run/candidates_annotated.tsv`,
 top rows; columns per `schemas.AnnotatedCandidatesSchema`, ranked by
 `composite_score`):
 

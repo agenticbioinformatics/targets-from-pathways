@@ -1,4 +1,4 @@
-"""pytest tests for score_candidates.py (Stage 5: candidate scoring).
+"""pytest tests for stage5_score_candidates.py (Stage 5: candidate scoring).
 
 Two hand-built graphs, both with unit edge weights so every hop costs 1.0
 and shortest-path distances are hand-computable:
@@ -43,7 +43,7 @@ import pandas as pd
 import pytest
 import scipy.sparse as sp
 
-import score_candidates as sc
+import stage5_score_candidates as sc
 
 T, A, B, C, D = (f"ENSG{n:011d}" for n in (1, 2, 3, 4, 5))
 GENE_INDEX = [T, A, B, C, D]
@@ -241,7 +241,7 @@ def test_topology_rwr_run_emits_both_and_rwr_is_a_distribution(tmp_path):
     rwr = dict(zip(df["gene"], df["rwr_score"]))
     assert all(v >= 0 for v in rwr.values())
     # The emitted column omits the target, so it is a sub-distribution;
-    # reconstruct the full stationary distribution the same way score_candidates
+    # reconstruct the full stationary distribution the same way stage5_score_candidates
     # does and check *that* is a proper probability distribution.
     graph = sc.build_digraph(sp.load_npz(tmp_path / "graph_weight.npz").tocsr(), _E2E)
     personalization = sc._restart_distribution({}, _E2E, _E2E_T, node_weight_mix=0.5)

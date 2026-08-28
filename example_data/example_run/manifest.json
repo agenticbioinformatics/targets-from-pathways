@@ -15,7 +15,7 @@
       "source": "reactome_gmt"
     }
   },
-  "created_at": "2026-08-28T10:49:07.450877Z",
+  "created_at": "2026-08-28T12:16:40.754482Z",
   "disease": {
     "efo_id": "MONDO_0000001",
     "n_associated_genes": 18,
@@ -24,19 +24,19 @@
   "git_commit": "unknown",
   "output_artifacts": [
     {
-      "path": "/home/kubicaj/workspace/agentic-bioinformatics/targets-from-pathways/example_data/stage1_run/gene_sets.parquet",
+      "path": "/home/kubicaj/workspace/agentic-bioinformatics/targets-from-pathways/example_data/example_run/gene_sets.parquet",
       "sha256": "9f6e6d0b7a47bdca972d4f14f9cf9cd2a5e6b9ca28c78c6785020d580f869893"
     },
     {
-      "path": "/home/kubicaj/workspace/agentic-bioinformatics/targets-from-pathways/example_data/stage1_run/ot_disease_subset.parquet",
+      "path": "/home/kubicaj/workspace/agentic-bioinformatics/targets-from-pathways/example_data/example_run/ot_disease_subset.parquet",
       "sha256": "10727e900b324669a6ef2a1cb2be1c0c2b29ad5b2ce3e58bc5b29fb7407dd679"
     },
     {
-      "path": "/home/kubicaj/workspace/agentic-bioinformatics/targets-from-pathways/example_data/stage1_run/genes.parquet",
+      "path": "/home/kubicaj/workspace/agentic-bioinformatics/targets-from-pathways/example_data/example_run/genes.parquet",
       "sha256": "7be613da80be050b1dc136c2d056e929df6da0967981e730a949127fea6113fe"
     },
     {
-      "path": "/home/kubicaj/workspace/agentic-bioinformatics/targets-from-pathways/example_data/stage1_run/interactions.parquet",
+      "path": "/home/kubicaj/workspace/agentic-bioinformatics/targets-from-pathways/example_data/example_run/interactions.parquet",
       "sha256": "b9a530c992acbeb3d0eabb1dce4a1aa256df4d5bcd687fc253ac30fa468adae7"
     }
   ],
@@ -87,7 +87,7 @@
         },
         {
           "bytes": 3777,
-          "path": "example_data/stage1_run/ot_target_subset.parquet",
+          "path": "example_data/example_run/ot_target_subset.parquet",
           "sha256": "3340b68a8cf045ad7b93a5b582f58cfeaf7f4288c953a0377755a06b1132fadb"
         }
       ],

@@ -1,4 +1,4 @@
-"""pytest tests for annotate_context.py (Stage 6: contextual annotation +
+"""pytest tests for stage6_annotate_context.py (Stage 6: contextual annotation +
 composite score).
 
 Hand-built inputs, calling the module's functions directly, plus one full
@@ -30,7 +30,7 @@ import json
 import pandas as pd
 import pytest
 
-import annotate_context as ac
+import stage6_annotate_context as ac
 
 A = "ENSG00000000001"
 B = "ENSG00000000002"

@@ -3,7 +3,7 @@ to exercise stage2_gsea_discovery.py, stage3_build_graph.py, and stage4_genetic_
 end to end (see README.md's Stage 2/3/4 run instructions). Not run by any
 test suite — re-run manually if the example needs to change.
 
-Writes example_data/stage1_run/{gene_sets,ot_disease_subset,interactions,genes}.parquet,
+Writes example_data/example_run/{gene_sets,ot_disease_subset,interactions,genes}.parquet,
 ot_target_subset.parquet, and manifest.json, validated against stage0_schemas.py
 exactly like stage1_ingest.py's real output, so downstream stages exercise
 the identical code path they use on a real Stage 1 run.
@@ -59,7 +59,7 @@ stage4_genetic_evidence_weights.py (Stage 4):
 
 Also writes ot_target_subset.parquet (id / tractability / safetyLiabilities
 columns, the Open Targets `target` schema subset Stage 6 reads) and records
-it under manifest.sources[opentargets], so annotate_context.py (Stage 6)
+it under manifest.sources[opentargets], so stage6_annotate_context.py (Stage 6)
 resolves it the same way it would the real OT `target` parquet directory:
 - TARGET: clinically tractable ("Approved Drug"), no safety liabilities
   -> tractability=clinical, safety=unknown.
@@ -103,7 +103,7 @@ from stage0_schemas import (  # noqa: E402
     SourceFile,
 )
 
-OUT_DIR = Path(__file__).parent / "stage1_run"
+OUT_DIR = Path(__file__).parent / "example_run"
 
 TARGET = "ENSG00000000001"
 DISEASE_ID = "MONDO_0000001"
@@ -293,7 +293,7 @@ def main() -> None:
                     SourceFile(
                         # repo-root-relative, like the other source entries — Stage 6
                         # also retries this basename next to the manifest.
-                        path="example_data/stage1_run/ot_target_subset.parquet",
+                        path="example_data/example_run/ot_target_subset.parquet",
                         sha256=_sha256_bytes(target_subset_path.read_bytes()),
                         bytes=target_subset_path.stat().st_size,
                     ),

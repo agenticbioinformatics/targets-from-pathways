@@ -40,7 +40,7 @@ only re-weights an existing one.
 
 **Output is Stage 3's exact serialization format, not a parallel one** —
 the same four filenames, same shapes, in the same directory layout — so
-``score_candidates.py`` (Stage 5) can point ``--graph`` at either a Stage 3
+``stage5_score_candidates.py`` (Stage 5) can point ``--graph`` at either a Stage 3
 directory or a Stage 4 directory and load it through the *same* code path,
 with no branching to detect which stage produced it:
 

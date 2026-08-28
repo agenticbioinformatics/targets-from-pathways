@@ -155,7 +155,7 @@ _CLINICAL_TRACTABILITY_IDS = {
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="annotate_context.py",
+        prog="stage6_annotate_context.py",
         description="Stage 6: attach Open Targets tractability/safety to Stage 5's candidates "
         "and compute a configurable composite score.",
     )

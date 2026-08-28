@@ -104,7 +104,7 @@ ZERO_WEIGHT_HOP_COST = 1.0
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="score_candidates.py",
+        prog="stage5_score_candidates.py",
         description="Stage 5: score candidate alternative targets by proximity to the target "
         "node over a Stage 3 or Stage 4 pathway-based gene-gene graph.",
     )
