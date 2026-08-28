@@ -16,6 +16,18 @@ Two entry modes:
 
 Stages 2-6 all write into the manifest's directory, so that directory is
 the "run directory" the report (``stage7_report.py``) then reads.
+
+Any command-line option this orchestrator does not recognise is forwarded
+verbatim to ``stage1_ingest.py`` — that stage is the one with a rich
+config surface. So a full run that needs, say, a lower coverage floor is
+just::
+
+    python3 pipeline/run_pipeline.py --target NOD2 --disease MONDO_0005265 \\
+        --data-dir data/ --out-dir out/ --report --allow-low-coverage
+
+(``--allow-low-coverage`` is not a ``run_pipeline`` flag; it passes
+through.) Forwarding an unknown option together with ``--from-manifest``
+is an error, since Stage 1 does not run in that mode.
 """
 
 from __future__ import annotations
@@ -60,13 +72,22 @@ def run_pipeline(
     from_manifest: Path | None = None,
     method: str = "topology,rwr",
     weights: str | None = None,
+    stage1_args: list[str] | None = None,
     python_exe: str | None = None,
 ) -> Path:
     """Run Stages 1-6 (or 2-6 with ``from_manifest``). Returns the path to
-    ``candidates_annotated.tsv`` in the run directory."""
+    ``candidates_annotated.tsv`` in the run directory. ``stage1_args`` is a
+    list of extra CLI tokens forwarded to ``stage1_ingest.py`` (e.g.
+    ``["--allow-low-coverage"]``)."""
     python_exe = python_exe or sys.executable
+    stage1_args = stage1_args or []
 
     if from_manifest is not None:
+        if stage1_args:
+            _fail(
+                f"{stage1_args} look like stage1_ingest.py options, but --from-manifest "
+                f"skips Stage 1 — drop them or run a full pipeline."
+            )
         manifest = Path(from_manifest).resolve()
         if not manifest.exists():
             _fail(f"--from-manifest {manifest} does not exist.")
@@ -83,7 +104,8 @@ def run_pipeline(
         _run_stage(
             "Stage 1 (ingest)",
             "stage1_ingest.py",
-            ["--target", target, "--disease", disease, "--data-dir", data_dir, "--out-dir", out_dir],
+            ["--target", target, "--disease", disease, "--data-dir", data_dir,
+             "--out-dir", out_dir, *stage1_args],
             python_exe=python_exe,
         )
         manifest = out_dir / "manifest.json"
@@ -114,7 +136,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="run_pipeline.py",
         description="Chain Stages 1-6 for one (target, disease), or Stages 2-6 from an "
-        "existing Stage 1 manifest.",
+        "existing Stage 1 manifest. Any option not listed below is forwarded to "
+        "stage1_ingest.py (run `python3 pipeline/stage1_ingest.py --help` for its flags, "
+        "e.g. --allow-low-coverage, --no-download, --seed, --min-set-size).",
     )
     p.add_argument("--target", help="Gene symbol or Ensembl ID (Stage 1).")
     p.add_argument("--disease", help="Disease ontology ID, e.g. EFO_0005755 (Stage 1).")
@@ -137,7 +161,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    args = build_arg_parser().parse_args(argv)
+    args, stage1_extra = build_arg_parser().parse_known_args(argv)
     annotated = run_pipeline(
         target=args.target,
         disease=args.disease,
@@ -146,6 +170,7 @@ def main(argv: list[str] | None = None) -> None:
         from_manifest=args.from_manifest,
         method=args.method,
         weights=args.weights,
+        stage1_args=stage1_extra,
     )
     if args.report:
         import stage7_report

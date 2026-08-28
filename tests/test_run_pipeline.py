@@ -78,3 +78,34 @@ def test_stage_failure_names_the_stage_and_command(tmp_path, caplog):
     assert "stage2_gsea_discovery.py" in msg
     assert "exit code 1" in msg
     assert "command:" in msg
+
+
+def test_unknown_flags_forward_to_stage1(monkeypatch, tmp_path):
+    """An option run_pipeline doesn't define is passed through to
+    stage1_ingest.py (so `--allow-low-coverage` etc. need no run_pipeline
+    flag). Later stages are not run here — _run_stage is stubbed."""
+    calls = []
+    monkeypatch.setattr(run_pipeline, "_run_stage",
+                        lambda label, script, args, **kw: calls.append((script, [str(a) for a in args])))
+
+    with pytest.raises(SystemExit):  # stages are stubbed, so the final artifact check fails — fine
+        run_pipeline.main([
+            "--target", "NOD2", "--disease", "MONDO_0005265",
+            "--data-dir", str(tmp_path / "d"), "--out-dir", str(tmp_path / "o"),
+            "--allow-low-coverage", "--min-set-size", "5",
+        ])
+
+    stage1_script, stage1_args = calls[0]
+    assert stage1_script == "stage1_ingest.py"
+    assert "--allow-low-coverage" in stage1_args
+    assert stage1_args[stage1_args.index("--min-set-size") + 1] == "5"
+    # run_pipeline's own flags are NOT forwarded
+    assert "--report" not in stage1_args and "--method" not in stage1_args
+
+
+def test_stage1_flags_with_from_manifest_are_rejected(tmp_path, caplog):
+    (tmp_path / "manifest.json").write_text("{}")
+    with caplog.at_level("ERROR"):
+        with pytest.raises(SystemExit):
+            run_pipeline.main(["--from-manifest", str(tmp_path / "manifest.json"), "--allow-low-coverage"])
+    assert "allow-low-coverage" in "\n".join(r.message for r in caplog.records)

@@ -17,6 +17,10 @@ python3 pipeline/run_pipeline.py \
     --data-dir data/ --out-dir out/ --report
 ```
 
+Any option `run_pipeline.py` does not recognise is forwarded to
+`stage1_ingest.py`, so a run that needs one of Stage 1's flags is just
+`… --report --allow-low-coverage` (see `stage1_ingest.py --help`).
+
 Offline (no real Open Targets /
 Reactome data), start from the checked-in synthetic Stage 1 output:
 
