@@ -339,6 +339,84 @@ Sized for a small (2–4 person) mixed bio+CS team on laptop-scale compute.
   be reported descriptively (e.g. "N of 10 known pairs ranked in top 5%"),
   not as a statistical test.
 
+## Running Stage 0 (`pipeline/stage0_schemas.py`)
+
+Stage 0 is a library, not a script — there is nothing to invoke. It defines
+the inter-stage data contracts (the `pandera` `DataFrameSchema` objects and
+the `Manifest` pydantic model) that every later stage imports and calls as
+`SCHEMA.validate(df)` / `Manifest.model_validate(...)` on both read and
+write. All other `pipeline/stageN_*.py` scripts `from stage0_schemas import
+...`; keep `pipeline/` importable (run them as `python3 pipeline/stageN_*.py`
+from the repo root, which puts `pipeline/` on `sys.path` automatically).
+
+**Setup:** `pip install pandas pandera pydantic numpy` (or `pip install -r requirements.txt`).
+
+**Check it:**
+
+```
+python3 -m pytest tests/test_schemas.py
+```
+
+`tests/test_schemas.py` asserts each schema *rejects* a deliberately
+malformed frame (wrong dtype, missing column, out-of-vocabulary value, and
+an HGNC symbol where an Ensembl gene ID is required — the `GRB2-1` bug
+class) with an error naming the offending column, as loudly as it accepts a
+valid one.
+
+## Running Stage 1 (`pipeline/stage1_ingest.py`)
+
+**Setup:** `pip install pandas pyarrow pandera pydantic` (or `pip install -r requirements.txt`).
+
+**Run command** (the entry point of the whole pipeline — takes a target
+gene and a disease ID, nothing upstream):
+
+```
+python3 pipeline/stage1_ingest.py --target PTGS2 --disease EFO_0005755 --data-dir ./data --out-dir ./run1
+```
+
+On the first run this downloads the version-pinned source files (Open
+Targets Platform 26.06; Reactome release 97 + the `04142025` FI file) into
+`--data-dir` and verifies each against a hardcoded sha256, then resolves
+every gene identifier to an Ensembl gene ID using the Open Targets `target`
+parquet as the authority. Later runs reuse `--data-dir` as a cache. Key
+flags:
+
+- `--no-download` — never touch the network; `--data-dir` must already be
+  populated (see the error message it prints for the exact mirror layout).
+- `--allow-low-coverage` — do not fail when identifier-mapping coverage is
+  below 90% or the disease's `genetic_association` gene count is
+  implausibly small. Off by default, so an unusable run aborts early.
+- `--fi-curated-only` (default on) — keep only curated Reactome functional-
+  interaction rows; predicted rows carry no reliable direction/sign.
+- `--min-set-size` / `--max-set-size` — gene-set size cap applied before
+  Stage 2.
+
+**Expected output** — seven artifacts in `--out-dir`, each schema-validated
+on write: `genes.parquet` (the canonical Ensembl-keyed gene table),
+`gene_sets.parquet` and `interactions.parquet` (the two database-agnostic,
+`source_db`-tagged Reactome tables), `ot_disease_subset.parquet` (OT
+associations subset to the disease), `coverage_report.json` (per-source
+identifier-mapping rate and example dropped IDs), `scale_report.json`
+(gene-set size distribution and projected Stage 3 edge count), and
+`manifest.json`. Every later stage reads only these, resolved through
+`manifest.json` — never a raw source file.
+
+There is no tiny checked-in example run for this stage: `stage1_ingest.py`
+needs the real pinned sources (or the test fixtures). The
+`example_data/stage1_run/` directory is synthesised directly by
+`python3 example_data/build_gsea_example.py`, which writes a hand-built,
+schema-valid Stage 1 output *without* running ingest, so Stages 2–4 have
+something to consume offline. The ingest logic itself — pinned-download
+verification, PE→gene mapping, coverage reporting, manifest determinism —
+is covered by:
+
+```
+python3 -m pytest tests/test_ingest_identifier_mapping.py tests/test_ingest_manifest_determinism.py tests/test_ingest_schema_conformance.py
+```
+
+which patch the acquisition layer to serve the tiny fixtures under
+`tests/fixtures/` (see `tests/conftest.py`) so nothing touches the network.
+
 ## Running Stage 2 (`pipeline/stage2_gsea_discovery.py`)
 
 **Setup:** `pip install blitzgsea statsmodels pandas pandera pydantic pyarrow` (or `pip install -r requirements.txt`).
