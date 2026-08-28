@@ -69,10 +69,34 @@ renormalised, with a log line.
 
 **Output** — ``candidates_annotated.tsv`` (or ``--out``), validated against
 ``schemas.AnnotatedCandidatesSchema``, ranked by ``composite_score``
-descending: the Stage 5 columns, plus ``genetic_evidence_score`` (when
-available), ``tractability``, ``safety``, ``n_safety_liabilities``,
-``composite_score`` and ``composite_breakdown`` (the ``k=v|k=v`` of
-normalised component values — the evidence trace Stage 8's report renders).
+descending.
+
+Per-candidate **evidence trace** (so Stage 8's report is interpretable, not
+just a final number):
+
+- the raw component scores it stands on — ``topology_score``,
+  ``rwr_score`` (when Stage 5 produced it), ``genetic_evidence_score``
+  (when Stage 4 ran);
+- the annotation buckets and their evidence — ``tractability``,
+  ``safety``, ``n_safety_liabilities``;
+- ``composite_breakdown`` — ``k=contribution|...``, each component's
+  *weighted contribution* to ``composite_score`` (the terms sum to it), so
+  a reader sees exactly what drove the rank;
+- ``composite_weights`` — the renormalised weights actually used
+  (``k:fraction,...``, sum 1), repeated on every row so one row is a
+  self-contained explanation.
+
+What the trace does **not** carry, by design:
+
+- *which shared pathways / interactions* put a candidate near the target —
+  that provenance is not in this stage's inputs (Stage 5 collapses the
+  graph to scores), and re-deriving Stage 3's pathway union here would
+  duplicate it. It is Stage 8's drill-down, assembled from
+  ``gene_sets.parquet`` / ``interactions.parquet`` at render time (see
+  PROMPTS.md Stage 8).
+- *which Open Targets datatype* produced ``genetic_evidence_score`` — Stage
+  4 records only the final score; surfacing the winning datatype is a
+  Stage 4 follow-up.
 
 No rows are filtered out; "& filtering" in the stage name is left to Stage
 8's UI, which can threshold on any of these columns.
@@ -359,11 +383,15 @@ def _minmax(series: pd.Series) -> pd.Series:
 def compute_composite(
     df: pd.DataFrame, weights: dict[str, float]
 ) -> tuple[pd.Series, pd.Series, dict[str, float]]:
-    """Returns (composite_score, composite_breakdown, used_weights).
+    """Returns (composite_score, composite_breakdown, used_fractions).
 
-    ``used_weights`` is ``weights`` minus any component with no data column;
-    the composite is their weighted average of the per-component [0, 1]
-    normalised values."""
+    ``used_fractions`` is the weight of each *available* component
+    renormalised to sum to 1 (a component with no data column is dropped and
+    its weight redistributed). ``composite_score`` is the sum of the
+    per-component **weighted contributions** ``fraction_k * normalised_k``;
+    ``composite_breakdown`` is the ``k=contribution`` string of exactly
+    those terms, so it adds up to ``composite_score`` and shows what built
+    the number, not just the number."""
     components: dict[str, pd.Series] = {}
     if "topology" in weights:
         components["topology"] = _minmax(df["topology_score"])
@@ -380,20 +408,21 @@ def compute_composite(
     if dropped:
         logger.warning("Dropping weighted component(s) with no data: %s — weights renormalised.", dropped)
 
-    used_weights = {k: weights[k] for k in components}
-    total = sum(used_weights.values())
+    total = sum(weights[k] for k in components)
     if total <= 0:
         _fail("Every weighted component was unavailable — nothing to score.")
+    fractions = {k: weights[k] / total for k in components}
 
-    composite = sum(w * components[k] for k, w in used_weights.items()) / total
+    contributions = {k: fractions[k] * components[k] for k in components}
+    composite = sum(contributions.values())
     breakdown = pd.Series(
         [
-            "|".join(f"{k}={components[k].iloc[i]:.3f}" for k in used_weights)
+            "|".join(f"{k}={contributions[k].iloc[i]:.3f}" for k in fractions)
             for i in range(len(df))
         ],
         index=df.index,
     )
-    return composite.clip(0.0, 1.0), breakdown, used_weights
+    return composite.clip(0.0, 1.0), breakdown, fractions
 
 
 # ==========================================================================
@@ -435,16 +464,19 @@ def run(args: argparse.Namespace) -> Path:
         n_tract, len(df), n_safety, len(df),
     )
 
-    composite, breakdown, used_weights = compute_composite(df, weights)
+    composite, breakdown, used_fractions = compute_composite(df, weights)
+    weights_str = ",".join(f"{k}:{v:.3f}" for k, v in used_fractions.items())
     df["composite_score"] = composite
     df["composite_breakdown"] = breakdown
-    logger.info("Composite weights used (renormalised): %s", {k: round(w, 4) for k, w in used_weights.items()})
+    df["composite_weights"] = weights_str  # constant per run — makes each row's trace self-contained
+    logger.info("Composite weights used (renormalised to sum 1): %s", weights_str)
 
     df = df.sort_values("composite_score", ascending=False, kind="stable").reset_index(drop=True)
 
     ordered = [
         "gene", "topology_score", "rwr_score", "genetic_evidence_score",
-        "tractability", "safety", "n_safety_liabilities", "composite_score", "composite_breakdown",
+        "tractability", "safety", "n_safety_liabilities",
+        "composite_score", "composite_breakdown", "composite_weights",
     ]
     df = df[[c for c in ordered if c in df.columns]]
     df = AnnotatedCandidatesSchema.validate(df)

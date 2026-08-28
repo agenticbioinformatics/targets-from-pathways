@@ -321,9 +321,14 @@ AnnotatedCandidatesSchema = DataFrameSchema(
         ),
         # Weighted average of the normalised components, in [0, 1].
         "composite_score": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True),
-        # Human-readable "k=v|k=v" of the normalised component values that
-        # fed composite_score — the evidence trace Stage 8's report needs.
+        # "k=contribution|..." — each component's weighted contribution to
+        # composite_score (the terms sum to composite_score), so the trace
+        # shows what built the number, not just the number.
         "composite_breakdown": Column(str, nullable=False),
+        # "k:fraction,..." — the renormalised weights actually used (sum 1),
+        # repeated on every row so a single row is a self-contained trace
+        # for Stage 8's report.
+        "composite_weights": Column(str, nullable=False),
     },
     strict=True,
 )

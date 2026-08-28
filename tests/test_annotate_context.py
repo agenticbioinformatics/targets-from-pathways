@@ -100,11 +100,15 @@ def _composite_fixture() -> pd.DataFrame:
 def test_composite_matches_hand_computed():
     df = _composite_fixture()
     weights = {"topology": 0.4, "rwr": 0.3, "genetic_evidence": 0.2, "tractability": 0.05, "safety": 0.05}
-    composite, breakdown, used = ac.compute_composite(df, weights)
+    composite, breakdown, fractions = ac.compute_composite(df, weights)
 
-    assert used == weights
+    # weights already sum to 1, so the renormalised fractions equal them
+    assert fractions == pytest.approx(weights)
     assert composite.tolist() == pytest.approx([0.510, 0.525])
-    assert breakdown.iloc[0] == "topology=0.000|rwr=1.000|genetic_evidence=0.800|tractability=1.000|safety=0.000"
+    # breakdown is each component's *weighted contribution*; the terms sum to composite
+    assert breakdown.iloc[0] == "topology=0.000|rwr=0.300|genetic_evidence=0.160|tractability=0.050|safety=0.000"
+    contrib_sum = sum(float(kv.split("=")[1]) for kv in breakdown.iloc[0].split("|"))
+    assert contrib_sum == pytest.approx(0.510)
 
 
 def test_composite_drops_unavailable_components_and_renormalises():
@@ -205,8 +209,15 @@ def test_run_end_to_end_columns_ranking_and_unknown_gene(tmp_path):
 
     assert list(df.columns) == [
         "gene", "topology_score", "rwr_score", "genetic_evidence_score",
-        "tractability", "safety", "n_safety_liabilities", "composite_score", "composite_breakdown",
+        "tractability", "safety", "n_safety_liabilities",
+        "composite_score", "composite_breakdown", "composite_weights",
     ]
+    # composite_breakdown terms sum to composite_score (per-component contributions)
+    for _, r in df.iterrows():
+        parts = sum(float(kv.split("=")[1]) for kv in r["composite_breakdown"].split("|"))
+        assert parts == pytest.approx(r["composite_score"], abs=2e-3)
+    # composite_weights is the same self-contained string on every row
+    assert df["composite_weights"].nunique() == 1
     assert df["composite_score"].is_monotonic_decreasing
     assert df["composite_score"].between(0.0, 1.0).all()
 

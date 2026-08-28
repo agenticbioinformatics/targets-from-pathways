@@ -714,8 +714,22 @@ Per candidate it adds:
   a component with no data (`rwr` on a topology-only Stage 5 run,
   `genetic_evidence` with no Stage 4) is dropped and the rest
   renormalised.
-- **`composite_breakdown`** — `k=v|k=v` of the normalised component values
-  that fed the score, the evidence trace Stage 8's report renders.
+- **`composite_breakdown`** — `k=contribution|...`, each component's
+  *weighted contribution* to `composite_score` (the terms sum to it), so
+  the trace shows what built the rank, not just the number.
+- **`composite_weights`** — the renormalised weights actually used
+  (`k:fraction,...`, sum 1), repeated on every row so one row is a
+  self-contained explanation for Stage 8's report.
+
+Per-candidate **evidence trace**: the passthrough score columns
+(`topology_score` / `rwr_score` / `genetic_evidence_score`), the annotation
+buckets (`tractability` / `safety` / `n_safety_liabilities`), and
+`composite_breakdown` + `composite_weights` together explain every rank.
+Two provenance items are deliberately **not** here — *which shared
+pathways/interactions* (not in this stage's inputs; Stage 8 assembles it
+from `gene_sets.parquet` at drill-down time) and *which Open Targets
+datatype* produced the genetic-evidence score (a Stage 4 follow-up — Stage
+4 records only the final score).
 
 **No tissue-expression data of any kind is read or used** — only `id`,
 `tractability` and `safetyLiabilities` are pulled from the `target`
@@ -751,7 +765,8 @@ score terms, never penalised for missing annotation.
 `python3 -m pytest tests/test_annotate_context.py` runs the unit-level
 tests (9 tests): tractability bucketing and the safety flag/count, weight
 parsing and rejection of junk, a hand-computed composite for a known
-two-row input, a second hand-computed composite driven end-to-end from a
+two-row input (with `composite_breakdown` contributions that sum back to
+the score), a second hand-computed composite driven end-to-end from a
 small fixture tractability/safety table, component-drop-and-renormalise
 when `rwr`/`genetic_evidence` data is absent, and — the case the spec
 calls out — a gene with an empty `safetyLiabilities` list and a gene absent
