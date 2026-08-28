@@ -656,9 +656,11 @@ behaviour the example is built to show. On the **Stage 3** graph (run
 direct interaction partner (`TARGET -> G2`, confidence 0.9).
 
 `python3 -m pytest tests/test_score_candidates.py` runs the unit-level
-tests (8 tests): hand-computed `topology_score` values on a small
-cycle+chain graph, an isolated node scoring 0, RWR being a valid
-sub-distribution that favours the target's neighbours, the node-weight
-blend pulling mass toward a high-evidence gene, and the output-column
-contract (`topology_score` always, `rwr_score` only when requested, target
-row excluded, unknown `--method` exits non-zero).
+tests (10 tests): hand-computed `topology_score` values on a small
+cycle+chain graph (both at the function level and end-to-end through a
+default `run()` with no `--method`), an isolated node scoring 0, RWR
+reconstructed as a full stationary distribution (non-negative, sums to 1)
+that favours the target's neighbours over far-away chain nodes, the
+node-weight blend pulling mass toward a high-evidence gene, and the
+output-column contract (`topology_score` always, `rwr_score` only when
+requested, target row excluded, unknown `--method` exits non-zero).
