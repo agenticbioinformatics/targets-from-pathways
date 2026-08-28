@@ -706,7 +706,7 @@ requested, target row excluded, unknown `--method` exits non-zero).
 **Run command**, after Stage 5 has produced `candidate_scores.tsv`:
 
 ```
-python3 pipeline/stage6_annotate_context.py --manifest ./run1/manifest.json
+python3 pipeline/stage6_annotate_context.py --manifest test_out/manifest.json
 ```
 
 Resolves, all next to `--manifest` by default: `candidate_scores.tsv`
