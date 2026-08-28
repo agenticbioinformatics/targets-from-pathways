@@ -45,7 +45,7 @@ it needs is in the graph directory.
 
   ``networkx.pagerank`` is a deterministic power iteration with no random
   step, so the ``seed`` recorded in ``graph_metadata.json`` has nothing to
-  seed here; it is logged for provenance and otherwise unused.
+  seed here and is not used.
 
 Backtrack-free walk (non-backtracking RWR) was considered as a third method
 and removed from scope — see README.md plan update 5.
@@ -169,8 +169,7 @@ def parse_methods(raw: str) -> list[str]:
         _fail(f"--method has unknown value(s) {unknown}; valid: {list(METHODS)}.")
     methods = list(dict.fromkeys(requested)) or ["topology"]
     if "topology" not in methods:
-        logger.info("topology not requested explicitly, but topology_score is always emitted — adding it.")
-        methods = ["topology", *methods]
+        methods = ["topology", *methods]  # topology_score is always emitted
     return methods
 
 
@@ -279,7 +278,6 @@ def _restart_distribution(
 
     total = float(sum(max(0.0, float(node_weights.get(g, 0.0))) for g in gene_index))
     if total <= 0:
-        logger.info("Graph carries node weights but all are 0 — RWR restarts on the target alone.")
         return restart
 
     mix = max(node_weight_mix, 0.0)
@@ -288,9 +286,8 @@ def _restart_distribution(
     norm = sum(restart.values())
     restart = {g: v / norm for g, v in restart.items()}
     logger.info(
-        "RWR restart distribution: target keeps %.2f of the mass, %.2f spread over genes by "
-        "genetic-evidence score (--node-weight-mix=%.2f).",
-        restart[target], 1.0 - restart[target], mix,
+        "RWR restart: target keeps %.2f of the mass (--node-weight-mix=%.2f).",
+        restart[target], mix,
     )
     return restart
 
@@ -328,11 +325,9 @@ def run(args: argparse.Namespace) -> Path:
         _fail(f"Graph gene index has non-Ensembl ID(s): {bad[:10]}")
 
     target = resolve_target(args.target, metadata, gene_index)
-    seed = metadata.get("seed")
     logger.info(
-        "Scoring %d candidate genes against target %s. Methods: %s. Graph seed: %s "
-        "(no stochastic step in topology/RWR — recorded, not consumed).",
-        len(gene_index) - 1, target, ",".join(methods), seed,
+        "Scoring %d candidates against %s (methods: %s).",
+        len(gene_index) - 1, target, ",".join(methods),
     )
 
     graph = build_digraph(weight, gene_index)
@@ -356,10 +351,7 @@ def run(args: argparse.Namespace) -> Path:
 
     out_path = args.out or (args.graph_dir / "candidate_scores.tsv")
     result.to_csv(out_path, sep="\t", index=False)
-
-    top = result.head(5).to_string(index=False)
-    logger.info("Ranked by %s (descending). Top %d:\n%s", rank_col, min(5, len(result)), top)
-    logger.info("Stage 5 complete: %s", out_path)
+    logger.info("Stage 5 complete (%d candidates ranked by %s): %s", len(result), rank_col, out_path)
     return out_path
 
 

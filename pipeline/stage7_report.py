@@ -486,10 +486,7 @@ def build_report(run_dir: Path, out_path: Path, *, benchmark_dir: Path | None = 
     html_str = render_html(run, text, label)
     out_path = Path(out_path)
     out_path.write_text(html_str)
-    logger.info(
-        "Wrote %s (%d candidates, benchmark: %s).",
-        out_path, len(run["annotated"]), label,
-    )
+    logger.info("Report written (%d candidates): %s", len(run["annotated"]), out_path)
     return out_path
 
 

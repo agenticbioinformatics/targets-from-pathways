@@ -207,10 +207,7 @@ def resolve_benchmark_holdout(holdout_path: Path, genes_df: pd.DataFrame) -> set
 def apply_benchmark_holdout(ot_disease_subset: pd.DataFrame, holdout_gene_ids: set[str]) -> pd.DataFrame:
     excluded = set(ot_disease_subset["gene_id"]) & holdout_gene_ids
     if excluded:
-        logger.info(
-            "Benchmark holdout: excluding %d gene(s) from the disease-associated seed set: %s",
-            len(excluded), sorted(excluded),
-        )
+        logger.info("Benchmark holdout: excluded %d gene(s) from the seed set.", len(excluded))
     return ot_disease_subset[~ot_disease_subset["gene_id"].isin(holdout_gene_ids)]
 
 
@@ -291,10 +288,8 @@ def collapse_near_duplicate_sets(
         for gene in genes:
             gene_to_kept_sets[gene].add(set_id)
 
-    logger.info(
-        "Near-duplicate collapsing (Jaccard > %.2f): %d sets before, %d sets after (%d dropped as redundant).",
-        jaccard_threshold, len(sets_by_id), len(kept_ids), n_dropped,
-    )
+    if n_dropped:
+        logger.info("Collapsed %d near-duplicate gene set(s) (Jaccard > %.2f).", n_dropped, jaccard_threshold)
     return gene_sets[gene_sets["set_id"].isin(kept_ids)]
 
 
@@ -360,21 +355,15 @@ def run(args: argparse.Namespace) -> Path:
         ot_disease_subset = apply_benchmark_holdout(ot_disease_subset, holdout_gene_ids)
 
     signature = build_signature(ot_disease_subset)
-    logger.info(
-        "Signature: %d genes with a genetic_association score (disease=%s).",
-        len(signature), manifest.disease.efo_id,
-    )
-
+    n_sets_before = gene_sets["set_id"].nunique()
     collapsed_gene_sets = collapse_near_duplicate_sets(gene_sets)
 
     result, sets_by_id = run_gsea(signature, collapsed_gene_sets, seed=manifest.seed)
     result = add_contains_target(result, sets_by_id, target_gene_id)
-    logger.info("GSEA tested %d pathways (target=%s).", len(result), target_gene_id)
-
     significant = filter_results(result, args.pval_threshold, args.fdr_threshold)
     logger.info(
-        "%d/%d tested pathways pass pval<=%.4g and fdr<=%.4g.",
-        len(significant), len(result), args.pval_threshold, args.fdr_threshold,
+        "GSEA: %d seed genes, %d/%d gene sets tested, %d significant.",
+        len(signature), len(result), n_sets_before, len(significant),
     )
 
     out_path = args.manifest.parent / "disease_pathways.tsv"

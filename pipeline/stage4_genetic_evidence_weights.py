@@ -251,11 +251,6 @@ def compute_genetic_evidence_scores(
     scores = pd.Series(0.0, index=gene_index, name="genetic_evidence_score")
     scores.update(per_gene_max)  # only touches genes already in gene_index; extras are ignored
 
-    n_nonzero = int((scores > 0).sum())
-    logger.info(
-        "Genetic evidence: %d/%d graph genes have a nonzero score from datatypes %s.",
-        n_nonzero, len(gene_index), datatypes,
-    )
     return scores
 
 
@@ -302,8 +297,8 @@ def run(args: argparse.Namespace) -> Path:
 
     edge_weight = compute_edge_weights(weight, node_scores, args.edge_weight_mode)
     logger.info(
-        "Edge weighting (--edge-weight-mode=%s): %d edges annotated.",
-        args.edge_weight_mode, edge_weight.nnz,
+        "Genetic evidence: %d/%d genes scored, %d edges weighted (%s).",
+        int((node_scores > 0).sum()), len(gene_index), edge_weight.nnz, args.edge_weight_mode,
     )
 
     out_dir = args.out_dir or graph_dir

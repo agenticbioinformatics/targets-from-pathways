@@ -459,8 +459,7 @@ def run(args: argparse.Namespace) -> Path:
     n_tract = int((df["tractability"] != "unknown").sum())
     n_safety = int((df["safety"] != "unknown").sum())
     logger.info(
-        "Open Targets annotation coverage: tractability known for %d/%d, safety liabilities recorded for "
-        "%d/%d (the rest are 'unknown', not assumed safe/undruggable).",
+        "OT annotation: tractability %d/%d, safety liabilities %d/%d.",
         n_tract, len(df), n_safety, len(df),
     )
 
@@ -469,7 +468,6 @@ def run(args: argparse.Namespace) -> Path:
     df["composite_score"] = composite
     df["composite_breakdown"] = breakdown
     df["composite_weights"] = weights_str  # constant per run — makes each row's trace self-contained
-    logger.info("Composite weights used (renormalised to sum 1): %s", weights_str)
 
     df = df.sort_values("composite_score", ascending=False, kind="stable").reset_index(drop=True)
 
@@ -483,11 +481,7 @@ def run(args: argparse.Namespace) -> Path:
 
     out_path = args.out or (candidates_path.parent / "candidates_annotated.tsv")
     df.to_csv(out_path, sep="\t", index=False)
-    logger.info(
-        "Ranked by composite_score. Top %d:\n%s",
-        min(5, len(df)), df.head(5).to_string(index=False),
-    )
-    logger.info("Stage 6 complete: %s", out_path)
+    logger.info("Stage 6 complete (weights %s): %s", weights_str, out_path)
     return out_path
 
 

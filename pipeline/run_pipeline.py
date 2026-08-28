@@ -38,7 +38,7 @@ def _fail(msg: str) -> None:
 
 def _run_stage(label: str, script: str, args: list, *, python_exe: str) -> None:
     cmd = [python_exe, str(PIPELINE_DIR / script), *(str(a) for a in args)]
-    logger.info("%s → %s", label, " ".join(cmd))
+    logger.info("Running %s …", label)
     # stdout/stderr are NOT captured — the stage streams its own progress and,
     # on failure, its own error (e.g. Stage 1's "Could not resolve --target
     # 'FOO'. Did you mean: ...?") straight to the console.

@@ -225,11 +225,6 @@ def compute_pathway_union(
     disease_ids = set(disease_pathways_df["set_id"])
     target_ids = compute_target_pathway_ids(gene_sets_df, target_gene_id)
     union_ids = disease_ids | target_ids
-    logger.info(
-        "Pathway union: %d disease-relevant + %d target-containing = %d unique pathways "
-        "(%d overlap both).",
-        len(disease_ids), len(target_ids), len(union_ids), len(disease_ids & target_ids),
-    )
     return union_ids, disease_ids, target_ids
 
 
@@ -248,13 +243,11 @@ def add_comembership_edges(graph: nx.DiGraph, gene_sets_df: pd.DataFrame, pathwa
     graph.add_nodes_from(subset["gene_id"].unique())
 
     unordered_pairs_seen: set[tuple[str, str]] = set()
-    n_pathways_used = 0
     for set_id, group in subset.groupby("set_id"):
         genes = sorted(group["gene_id"].unique())
         n = len(genes)
         if n < 2:
             continue
-        n_pathways_used += 1
         contribution = 1.0 / (n - 1)
         source_db = group["source_db"].iloc[0]
         for i in range(n):
@@ -273,11 +266,6 @@ def add_comembership_edges(graph: nx.DiGraph, gene_sets_df: pd.DataFrame, pathwa
                             evidence_type=None,
                             source_db=source_db,
                         )
-    logger.info(
-        "Co-membership: %d pathways contributed edges (of %d in the union; the rest had <2 "
-        "genes after collapsing/mapping), inducing %d unordered gene pairs (%d directed edges).",
-        n_pathways_used, len(pathway_union_ids), len(unordered_pairs_seen), 2 * len(unordered_pairs_seen),
-    )
     return len(unordered_pairs_seen)
 
 
@@ -330,12 +318,6 @@ def add_interaction_edges(
                 evidence_type=row.evidence_type,
                 source_db=row.source_db,
             )
-    logger.info(
-        "Interactions: %d rows in scope (both genes in the pathway union) added/updated as edges; "
-        "%d row(s) out of scope dropped (at least one gene outside the union — see module docstring); "
-        "%d duplicate (gene_a, gene_b) pair(s) collapsed to their highest-confidence row.",
-        len(scoped), n_out_of_scope, n_duplicate_pairs,
-    )
     return len(scoped), n_out_of_scope, n_duplicate_pairs
 
 
@@ -370,18 +352,6 @@ def build_pathway_based_gene_gene_graph(
         "n_interaction_duplicate_pairs_collapsed": n_duplicate_pairs,
     }
     return pathway_based_gene_gene_graph, stats
-
-
-def log_edge_count_vs_projection(stats: dict, manifest: Manifest) -> None:
-    projected = manifest.scale_report.projected_comembership_edge_count
-    logger.info(
-        "Co-membership edge count: %d unordered pairs realized here vs. %d projected in Stage 1's "
-        "scale_report.json. The projection sums over *every* retained gene set (%d sets); this "
-        "stage only uses the %d-pathway disease+target union, so a much smaller realized count is "
-        "expected, not a red flag by itself.",
-        stats["n_comembership_unordered_pairs"], projected,
-        manifest.scale_report.sets_retained, stats["n_pathways_union"],
-    )
 
 
 # ==========================================================================
@@ -446,10 +416,11 @@ def run(args: argparse.Namespace) -> Path:
     pathway_based_gene_gene_graph, stats = build_pathway_based_gene_gene_graph(
         gene_sets_df, disease_pathways_df, interactions_df, target_gene_id
     )
-    log_edge_count_vs_projection(stats, manifest)
     logger.info(
-        "Pathway-based gene-gene graph: %d nodes, %d directed edges.",
-        stats["n_nodes"], stats["n_edges"],
+        "Graph: %d nodes, %d edges (%d pathways in union, %d interaction edges in scope, "
+        "%d dropped out of scope).",
+        stats["n_nodes"], stats["n_edges"], stats["n_pathways_union"],
+        stats["n_interaction_edges_added"], stats["n_interaction_edges_out_of_scope"],
     )
 
     weight, sign, gene_index = graph_to_sparse(pathway_based_gene_gene_graph)
