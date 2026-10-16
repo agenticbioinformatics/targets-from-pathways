@@ -237,7 +237,7 @@ artifacts alongside it by default (override with `--graph-dir`/`--out-dir`).
 list — `affected_pathway` and any literature/pathway-derived datatype are
 excluded simply by not being named, which matters concretely: OT 26.06 maps
 its own `reactome` evidence datasource to `affected_pathway` (see
-`pipeline/stage1_ingest.py`'s `_DATASOURCE_TO_DATATYPE`), so including it would let
+`pipeline/stage1_ingest.py`'s `DATASOURCE_TO_DATATYPE`), so including it would let
 Reactome-derived evidence weight a graph whose topology already *is*
 Reactome pathway structure.
 

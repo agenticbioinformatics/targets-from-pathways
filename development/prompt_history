@@ -774,3 +774,74 @@ numbered "Plan update" sections.
   `development/PROMPTS.md`; "Stage 8" -> "Stage 7 report").
 - `python3 -m pytest` -> 100 passed. All eight stage scripts' `--help`
   render.
+
+## Prompt 24 — simplify and de-comment pipeline scripts (stages 0-7)
+
+> /hackathon-cleanup: read scripts stages 0-7. remove all comments and
+> development logs from the scripts. simplify the code as much as possible,
+> make the code human-readable (including variables and functions names),
+> simplify or get rid of python-like things to make it easily understandable
+> for humans so that the code can be searched for bugs etc (for example use
+> for loops instead of list comprehensions). remove unused or dead or
+> unnecessary code. reduce the number of lines if possible. but keep the
+> functionality required to run the script and the whole pipeline. add
+> comments in the code: make them minimialistic and straightfoward to
+> clarify why the script does something which is not clear rather than only
+> what the code does. add this prompt with a summary to
+> development/prompt_history.
+
+Note: commits after Prompt 23 (README/example-data updates, run_pipeline
+option forwarding) were not logged here; see git history.
+
+**Changes (pipeline/, 4487 -> 2678 lines):**
+- All nine scripts rewritten. Removed the long module docstrings
+  (verification logs, design notes, plan references), section banners,
+  `__all__`, `from __future__ import annotations` and type hints. Each
+  module now has a 3-8 line docstring saying what it reads/writes; inline
+  comments only explain non-obvious "why" (e.g. circularity of pathway
+  evidence, parquet list -> numpy array, reactome.org User-Agent block,
+  MONDO-primary disease IDs, why interactions are scoped to pathway genes).
+- List/dict/set comprehensions, generator expressions, `*`-unpacking and
+  most lambdas replaced by explicit for loops.
+- Duplicated helpers moved into `stage0_schemas.py`: `fail`,
+  `load_manifest`, `find_artifact` (was `_resolve_artifact_path` x3) and
+  `load_graph` (was `load_stage3_graph` / `load_graph` in stages 4/5).
+  `CoverageEntry`'s three cross-field validators merged into one
+  `model_validator`; sha256 validators replaced by `Field(pattern=...)`.
+- `build_arg_parser` + `parse_args` merged into one `parse_args(argv)` per
+  stage (run_pipeline: parser built inside `main`).
+- Stage 1: pinned-source dataclasses -> plain dicts `PINNED_FILES` /
+  `PINNED_DIRECTORIES`; removed unused file-size parsing of the Apache
+  index; replaced the `genes_df.attrs` side channel with
+  `read_target_table` + `build_protein_and_transcript_to_gene`; removed a
+  no-op `drop(columns=[])`. Renames: `_ensure_pinned_file` ->
+  `get_pinned_file`, `_ensure_directory_source` -> `get_directory_files`,
+  `_build_symbol_index` -> `build_symbol_index`, `_load_fi_interactions` ->
+  `build_interactions_table`, `_load_ensembl2reactome_coverage` ->
+  `ensembl2reactome_coverage`, `build_scale_report` -> `apply_size_cap`,
+  `_extract_single_member` -> `unzip_single_file`,
+  `_DATASOURCE_TO_DATATYPE` / `_FI_DIRECTION_CODES` lose the underscore.
+- Stage 2: inlined the thin loaders, `apply_benchmark_holdout` and
+  `add_contains_target`; `resolve_benchmark_holdout` -> `read_holdout_genes`.
+- Stage 3: `build_pathway_based_gene_gene_graph` -> `build_graph`; inlined
+  `compute_pathway_union` / `dedupe_interactions_by_confidence` /
+  `build_graph_metadata`; dropped a dead duplicate-gene-ID check (graph
+  node names are unique by construction).
+- Stage 5: `_restart_distribution` -> `restart_distribution`; target
+  resolution inlined into `run`.
+- Stage 6: `_bucket_tractability` -> `tractability_bucket`, `_safety` ->
+  `safety_flag`, `resolve_target_parquet` -> `find_target_parquet_files`,
+  `_minmax` -> `min_max_normalise`.
+- Stage 7: the three optional-file loader closures -> one loop; helper
+  names `_sym`/`_e`/`_trace_html` -> `symbol_of`/`escape`/`trace_html`.
+- run_pipeline: `_run_stage` -> `run_stage`; `stage7_report` imported at
+  the top instead of inside `main`.
+- tests/: updated for the renames (monkeypatch targets, imports, stub
+  signature, docstring references); docs/README.md reference updated.
+  Test logic unchanged.
+- Verified: `python3 -m pytest` -> 102 passed. Re-ran
+  `run_pipeline.py --from-manifest` on a copy of example_data/example_run:
+  disease_pathways.tsv, gene_weights.tsv, candidate_scores.tsv,
+  candidates_annotated.tsv, graph_gene_index.json and both .npz matrices
+  are identical to the committed outputs; report.html differs only in its
+  timestamp. All nine scripts' `--help` render.

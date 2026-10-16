@@ -56,13 +56,13 @@ def test_malformed_fi_row_fails_loudly(tmp_path, monkeypatch):
 
     This is a real, non-obvious trap: pandas' C parser does NOT raise on a
     short row — it pads the missing trailing fields with NaN, which would
-    otherwise miss every _FI_DIRECTION_CODES key and vanish with nothing but
+    otherwise miss every FI_DIRECTION_CODES key and vanish with nothing but
     a logged warning (verified: a naive `pd.read_csv` over this exact file
     silently returns a NaN-padded row instead of raising — caught during
     review of this very test, before stage1_ingest.py had an explicit check for it).
     The zip wrapping matters here too: it's what makes this test actually
     reach the row-parsing code, instead of failing earlier and for an
-    unrelated reason (an un-zipped fixture makes _extract_single_member's
+    unrelated reason (an un-zipped fixture makes unzip_single_file's
     zipfile.ZipFile() call raise BadZipFile before any row is ever read).
     """
     import zipfile
@@ -77,12 +77,12 @@ def test_malformed_fi_row_fails_loudly(tmp_path, monkeypatch):
     with zipfile.ZipFile(bad_fi_zip, "w") as zf:
         zf.write(bad_fi_txt, arcname="FIsInGene_test_with_annotations.txt")
 
-    from conftest import _make_fake_ensure_directory_source, _make_fake_ensure_pinned_file
+    from conftest import _make_fake_get_directory_files, _make_fake_get_pinned_file
 
     monkeypatch.setattr(
-        ingest, "_ensure_pinned_file", _make_fake_ensure_pinned_file(tmp_path, overrides={"reactome_fi": bad_fi_zip})
+        ingest, "get_pinned_file", _make_fake_get_pinned_file(tmp_path, overrides={"reactome_fi": bad_fi_zip})
     )
-    monkeypatch.setattr(ingest, "_ensure_directory_source", _make_fake_ensure_directory_source())
+    monkeypatch.setattr(ingest, "get_directory_files", _make_fake_get_directory_files())
 
     out_dir = tmp_path / "out"
     with pytest.raises(SystemExit):
@@ -93,7 +93,7 @@ def test_malformed_fi_row_fails_loudly(tmp_path, monkeypatch):
 def test_unrecognized_datasource_fails_loudly(tmp_path, monkeypatch, patched_acquisition):
     """An OT association row with a datasource this module doesn't know how
     to bucket into a datatype must hard-fail (see stage1_ingest.py's
-    _DATASOURCE_TO_DATATYPE), not be silently dropped or mis-tagged."""
+    DATASOURCE_TO_DATATYPE), not be silently dropped or mis-tagged."""
     bad_assoc = tmp_path / "bad_association.parquet"
     schema = pa.schema(
         [
@@ -115,12 +115,12 @@ def test_unrecognized_datasource_fails_loudly(tmp_path, monkeypatch, patched_acq
     ]
     pq.write_table(pa.Table.from_pylist(rows, schema=schema), bad_assoc)
 
-    from conftest import _make_fake_ensure_directory_source
+    from conftest import _make_fake_get_directory_files
 
     monkeypatch.setattr(
         ingest,
-        "_ensure_directory_source",
-        _make_fake_ensure_directory_source(
+        "get_directory_files",
+        _make_fake_get_directory_files(
             overrides={"opentargets_association_by_datasource_direct": [bad_assoc]}
         ),
     )

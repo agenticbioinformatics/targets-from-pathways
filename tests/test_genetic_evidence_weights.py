@@ -4,10 +4,10 @@ node/edge weighting).
 Hand-built inputs, calling the module's two pure functions directly — no
 manifest.json/graph-directory round-trip (that's Stage 1/3 plumbing,
 already covered by tests/test_ingest_*.py, tests/test_build_graph.py, and
-this module's own ``_resolve_artifact_path``/``load_stage3_graph``).
+stage0_schemas.py's ``find_artifact``/``load_graph``).
 
 Small synthetic graph (a chain, as a raw ``scipy.sparse`` weight matrix +
-gene index — exactly the shape ``load_stage3_graph`` hands to
+gene index — exactly the shape ``load_graph`` hands to
 ``compute_edge_weights``; the actual numeric values in this matrix are
 irrelevant to Stage 4, only *where* it has entries, since edge weights are
 derived purely from endpoint node scores):

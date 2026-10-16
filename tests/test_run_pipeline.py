@@ -83,10 +83,10 @@ def test_stage_failure_names_the_stage_and_command(tmp_path, caplog):
 def test_unknown_flags_forward_to_stage1(monkeypatch, tmp_path):
     """An option run_pipeline doesn't define is passed through to
     stage1_ingest.py (so `--allow-low-coverage` etc. need no run_pipeline
-    flag). Later stages are not run here — _run_stage is stubbed."""
+    flag). Later stages are not run here — run_stage is stubbed."""
     calls = []
-    monkeypatch.setattr(run_pipeline, "_run_stage",
-                        lambda label, script, args, **kw: calls.append((script, [str(a) for a in args])))
+    monkeypatch.setattr(run_pipeline, "run_stage",
+                        lambda label, script, args, python_exe: calls.append((script, [str(a) for a in args])))
 
     with pytest.raises(SystemExit):  # stages are stubbed, so the final artifact check fails — fine
         run_pipeline.main([

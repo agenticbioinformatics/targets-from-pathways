@@ -42,25 +42,25 @@ CAND = "ENSG00000000003"  # a third gene, absent from the target parquet fixture
 # --------------------------------------------------------------------------
 
 
-def test_bucket_tractability():
-    assert ac._bucket_tractability([{"id": "Approved Drug", "modality": "SM", "value": True}]) == "clinical"
-    assert ac._bucket_tractability(
+def testtractability_bucket():
+    assert ac.tractability_bucket([{"id": "Approved Drug", "modality": "SM", "value": True}]) == "clinical"
+    assert ac.tractability_bucket(
         [{"id": "Phase 1 Clinical", "modality": "SM", "value": True}]
     ) == "clinical"
-    assert ac._bucket_tractability(
+    assert ac.tractability_bucket(
         [{"id": "Structure with Ligand", "modality": "SM", "value": True}]
     ) == "discovery"
     # a flag that is present but False does not count
-    assert ac._bucket_tractability([{"id": "Druggable Family", "modality": "SM", "value": False}]) == "unknown"
-    assert ac._bucket_tractability([]) == "unknown"
-    assert ac._bucket_tractability(None) == "unknown"
+    assert ac.tractability_bucket([{"id": "Druggable Family", "modality": "SM", "value": False}]) == "unknown"
+    assert ac.tractability_bucket([]) == "unknown"
+    assert ac.tractability_bucket(None) == "unknown"
 
 
 def test_safety_flag_and_count():
-    assert ac._safety([{"event": "x"}, {"event": "y"}]) == ("has_liabilities", 2)
+    assert ac.safety_flag([{"event": "x"}, {"event": "y"}]) == ("has_liabilities", 2)
     # no annotation at all -> unknown, never a numeric/"safe" default
-    assert ac._safety([]) == ("unknown", 0)
-    assert ac._safety(None) == ("unknown", 0)
+    assert ac.safety_flag([]) == ("unknown", 0)
+    assert ac.safety_flag(None) == ("unknown", 0)
 
 
 # --------------------------------------------------------------------------

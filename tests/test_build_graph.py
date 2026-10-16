@@ -4,7 +4,7 @@ construction).
 Hand-built DataFrames, calling stage3_build_graph.py's functions directly (no
 manifest.json/parquet round-trip — that's Stage 1/2 plumbing, already
 covered by tests/test_ingest_*.py, tests/test_gsea_discovery.py, and
-stage3_build_graph.py's own ``_resolve_artifact_path``). Gene IDs are fake but
+stage0_schemas.py's ``find_artifact``). Gene IDs are fake but
 Ensembl-pattern-valid (``graph_to_sparse``'s index validation requires it).
 
 Pathways:
@@ -99,7 +99,7 @@ EXPECTED_EDGES = {
 
 @pytest.fixture(scope="module")
 def graph_and_stats():
-    return bg.build_pathway_based_gene_gene_graph(GENE_SETS, DISEASE_PATHWAYS, INTERACTIONS, TARGET_GENE_ID)
+    return bg.build_graph(GENE_SETS, DISEASE_PATHWAYS, INTERACTIONS, TARGET_GENE_ID)
 
 
 def test_exact_directed_signed_edge_list_with_source_db(graph_and_stats):

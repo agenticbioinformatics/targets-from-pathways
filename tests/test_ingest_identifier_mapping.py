@@ -14,14 +14,14 @@ import json
 from pathlib import Path
 
 from conftest import make_args
-from stage1_ingest import _build_symbol_index, build_genes_table, resolve_symbol, run_ingest
+from stage1_ingest import build_genes_table, build_symbol_index, read_target_table, resolve_symbol, run_ingest
 
 FIXTURE_TARGET_PARQUET = Path(__file__).parent / "fixtures" / "opentargets" / "target.parquet"
 
 
 def test_resolve_symbol_clean_synonym_and_unmappable():
-    genes_df = build_genes_table([FIXTURE_TARGET_PARQUET])
-    index = _build_symbol_index(genes_df)
+    genes_df = build_genes_table(read_target_table([FIXTURE_TARGET_PARQUET]))
+    index = build_symbol_index(genes_df)
 
     gene_id, reason = resolve_symbol("TP53", index)
     assert gene_id == "ENSG00000141510"

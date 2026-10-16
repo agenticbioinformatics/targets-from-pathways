@@ -1,138 +1,63 @@
-"""Inter-stage data contracts for the targets-from-pathways v2 pipeline.
+"""Stage 0 - data contracts shared by all stages, plus small helpers every stage needs.
 
-Every stage after Stage 1 reads its inputs from, and writes its outputs as,
-one of the artifacts defined here — never a raw source file, and never a
-column layout described only in a docstring or comment. Concretely:
-
-- Tabular artifacts (``genes.parquet``, ``gene_sets.parquet``,
-  ``interactions.parquet``, ``ot_disease_subset.parquet``, and Stage 2's
-  ``disease_pathways.tsv``) are pandas DataFrames validated against the
-  ``pandera.DataFrameSchema`` objects below via ``SCHEMA.validate(df)``, on
-  read *and* on write. ``disease_pathways.tsv`` is TSV rather than parquet
-  (it's meant to be eyeballed), but the contract discipline is the same:
-  Stage 3 and Stage 7 read it as ``DiseasePathwaysSchema``, never by
-  re-deriving its column layout from ``stage2_gsea_discovery.py``'s source.
-- ``manifest.json`` is validated against the ``Manifest`` pydantic model via
-  ``Manifest.model_validate(json.load(f))`` on read and
-  ``Manifest.model_dump(mode="json")`` on write.
-
-``source_db`` is retained as a column on ``GeneSetsSchema`` and
-``InteractionsSchema`` even though this hackathon build only ever emits
-``"reactome"`` (see ``SUPPORTED_SOURCE_DBS``). This is deliberate: it is the
-seam a second curation (e.g. a future WikiPathways or OmniPath adapter) will
-need to plug into downstream stages without a refactor. Do not add KEGG,
-WikiPathways, or OmniPath support in this version — extend
-``SUPPORTED_SOURCE_DBS`` and the corresponding ingest adapter only when that
-work is actually scoped.
-
-Gene identity is Ensembl gene ID throughout (``genes.gene_id`` is the single
-primary key every other table's ``gene_id``/``gene_a``/``gene_b`` foreign
-keys resolve against); HGNC symbols are carried only for display. This is
-enforced at the column level via ``ENSEMBL_GENE_ID_PATTERN`` — v1 leaked a
-Reactome physical-entity ID (``GRB2-1``) into a gene list by skipping exactly
-this check.
+Tables are validated with pandera on read and on write; manifest.json is validated with pydantic.
 """
 
-from __future__ import annotations
-
+import json
+import logging
 import re
+import sys
 from datetime import datetime
-from typing import Any
+from pathlib import Path
+from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
+import scipy.sparse as sp
 from pandera.pandas import Check, Column, DataFrameSchema
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-__all__ = [
-    "ENSEMBL_GENE_ID_PATTERN",
-    "SHA256_PATTERN",
-    "SUPPORTED_SOURCE_DBS",
-    "SUPPORTED_PROVENANCE_DBS",
-    "EVIDENCE_TYPES",
-    "SIGN_VALUES",
-    "GenesSchema",
-    "GeneSetsSchema",
-    "InteractionsSchema",
-    "OTAssociationsSchema",
-    "DiseasePathwaysSchema",
-    "GeneWeightsSchema",
-    "CandidateScoresSchema",
-    "AnnotatedCandidatesSchema",
-    "TRACTABILITY_BUCKETS",
-    "SAFETY_FLAGS",
-    "assert_foreign_key",
-    "ResolvedTarget",
-    "ResolvedDisease",
-    "SourceFile",
-    "Source",
-    "OutputArtifact",
-    "CoverageEntry",
-    "GeneSetSizeBucket",
-    "ScaleReport",
-    "Manifest",
-]
-
-# --------------------------------------------------------------------------
-# Shared vocabularies
-# --------------------------------------------------------------------------
-
-# Ensembl human gene IDs: "ENSG" + 11 digits. Rejects HGNC symbols and
-# Reactome physical-entity identifiers (e.g. "GRB2-1"), which is the exact
-# class of bug this pattern exists to catch (see module docstring).
+# Gene identity is the Ensembl gene ID everywhere. The pattern rejects HGNC symbols and Reactome
+# physical-entity IDs such as "GRB2-1", which once leaked into gene lists.
 ENSEMBL_GENE_ID_PATTERN = re.compile(r"^ENSG\d{11}$")
+SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
-SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-
-# Extend this set — and only this set — when a second curation is added.
-SUPPORTED_SOURCE_DBS = frozenset({"reactome"})
-
-# Manifest.sources.db is a broader vocabulary than SUPPORTED_SOURCE_DBS: the
-# latter gates the *pathway-curation* identity carried on GeneSetsSchema/
-# InteractionsSchema.source_db (reactome, and only reactome, for this
-# hackathon build). Stage 1's manifest additionally records acquisition
-# provenance for Open Targets (target/disease/association parquet), which is
-# a genetic-evidence source, not a pathway curation — so it is admitted here
-# without being added to SUPPORTED_SOURCE_DBS or to either DataFrameSchema.
-SUPPORTED_PROVENANCE_DBS = SUPPORTED_SOURCE_DBS | {"opentargets"}
-
-EVIDENCE_TYPES = frozenset({"curated", "predicted"})
-
-SIGN_VALUES = frozenset({-1, 0, 1})
+# Pathway databases allowed in gene_sets/interactions. Kept as a column so a second database
+# can be added later without changing downstream stages.
+SUPPORTED_SOURCE_DBS = {"reactome"}
+# Databases allowed in manifest.sources: Open Targets is a data source but not a pathway database.
+SUPPORTED_PROVENANCE_DBS = {"reactome", "opentargets"}
+EVIDENCE_TYPES = {"curated", "predicted"}
+SIGN_VALUES = {-1, 0, 1}
+TRACTABILITY_BUCKETS = {"clinical", "discovery", "unknown"}
+# There is no "safe" value: Open Targets lists known liabilities or nothing, never proof of safety.
+SAFETY_FLAGS = {"has_liabilities", "unknown"}
 
 
-def _is_list_of_str(series: pd.Series) -> pd.Series:
-    # A DataFrame built in-process holds Python `list`; one that has round-
-    # tripped through parquet (pyarrow's LIST type -> pandas) comes back as
-    # `numpy.ndarray` of the same `str` elements, not `list` — verified
-    # against a real genes.parquet written by stage1_ingest.py and re-read with a
-    # bare `pd.read_parquet`. Both container types are accepted here so
-    # "validate on read" (module docstring) doesn't spuriously fail for
-    # every stage after Stage 1; a bare string (the real malformed case this
-    # check exists to catch) is still neither and is still rejected.
-    return series.apply(
-        lambda v: isinstance(v, (list, np.ndarray)) and all(isinstance(x, str) for x in v)
-    )
+def is_list_of_strings(series):
+    # After a parquet round-trip, list columns come back as numpy arrays instead of Python lists.
+    results = []
+    for value in series:
+        ok = isinstance(value, (list, np.ndarray))
+        if ok:
+            for item in value:
+                if not isinstance(item, str):
+                    ok = False
+        results.append(ok)
+    return pd.Series(results, index=series.index)
 
 
-# --------------------------------------------------------------------------
-# Tabular artifacts (pandera)
-# --------------------------------------------------------------------------
+def ensembl_column(unique=False):
+    return Column(str, checks=Check.str_matches(ENSEMBL_GENE_ID_PATTERN.pattern), unique=unique, nullable=False)
 
+
+# coerce=True is used only on numeric columns: a parquet round-trip can turn int into float.
+# Other columns are not coerced, so e.g. a non-bool "directed" column still fails.
 GenesSchema = DataFrameSchema(
     {
-        "gene_id": Column(
-            str,
-            checks=Check.str_matches(ENSEMBL_GENE_ID_PATTERN.pattern),
-            unique=True,
-            nullable=False,
-        ),
+        "gene_id": ensembl_column(unique=True),
         "symbol": Column(str, nullable=False),
-        "synonyms": Column(
-            object,
-            checks=Check(_is_list_of_str, error="synonyms must be a list[str]"),
-            nullable=False,
-        ),
+        "synonyms": Column(object, checks=Check(is_list_of_strings, error="synonyms must be a list[str]"), nullable=False),
         "biotype": Column(str, nullable=False),
     },
     strict=True,
@@ -144,50 +69,24 @@ GeneSetsSchema = DataFrameSchema(
         "set_name": Column(str, nullable=False),
         "source_db": Column(str, checks=Check.isin(SUPPORTED_SOURCE_DBS), nullable=False),
         "source_version": Column(str, nullable=False),
-        "gene_id": Column(
-            str,
-            checks=Check.str_matches(ENSEMBL_GENE_ID_PATTERN.pattern),
-            nullable=False,
-        ),
-        # coerce=True here only: a NaN-bearing int column round-trips through
-        # pandas/parquet as float64, so this column alone needs coercion to
-        # the nullable Int64 dtype. Every other column keeps strict dtype
-        # checking — no schema-wide coerce, since that would silently accept
-        # e.g. a non-bool "directed" column (see InteractionsSchema).
+        "gene_id": ensembl_column(),
         "hierarchy_level": Column(pd.Int64Dtype(), nullable=True, coerce=True),
         "parent_id": Column(str, nullable=True),
     },
-    unique=["set_id", "gene_id"],  # one row per (set, gene) pair
+    unique=["set_id", "gene_id"],
     strict=True,
 )
 
 InteractionsSchema = DataFrameSchema(
     {
-        "gene_a": Column(
-            str,
-            checks=Check.str_matches(ENSEMBL_GENE_ID_PATTERN.pattern),
-            nullable=False,
-        ),
-        "gene_b": Column(
-            str,
-            checks=Check.str_matches(ENSEMBL_GENE_ID_PATTERN.pattern),
-            nullable=False,
-        ),
+        "gene_a": ensembl_column(),
+        "gene_b": ensembl_column(),
         "directed": Column(bool, nullable=False),
         "sign": Column(int, checks=Check.isin(SIGN_VALUES), nullable=False),
         "source_db": Column(str, checks=Check.isin(SUPPORTED_SOURCE_DBS), nullable=False),
         "source_version": Column(str, nullable=False),
         "evidence_type": Column(str, checks=Check.isin(EVIDENCE_TYPES), nullable=False),
-        # coerce=True: same int64-vs-float64 round-trip rationale as
-        # hierarchy_level above. Known residual gap (same class as the
-        # "directed" trap, narrower blast radius): a genuinely bool-dtype
-        # column here would silently cast to 0.0/1.0 and pass in_range(0, 1)
-        # rather than raising, since bool->float64 is a lossless numpy cast.
-        # Accepted for now — Reactome FI confidence is always numeric in
-        # practice — but pinned by
-        # test_interactions_confidence_bool_column_coerces_silently so a
-        # future change in this trade-off is a deliberate decision, not a
-        # surprise.
+        # Known gap, pinned by a test: a bool column would be coerced to 0.0/1.0 and pass.
         "confidence": Column(float, checks=Check.in_range(0.0, 1.0), nullable=True, coerce=True),
     },
     strict=True,
@@ -195,168 +94,72 @@ InteractionsSchema = DataFrameSchema(
 
 OTAssociationsSchema = DataFrameSchema(
     {
-        "gene_id": Column(
-            str,
-            checks=Check.str_matches(ENSEMBL_GENE_ID_PATTERN.pattern),
-            nullable=False,
-        ),
+        "gene_id": ensembl_column(),
         "disease_id": Column(str, nullable=False),
         "datatype_id": Column(str, nullable=False),
         "datasource_id": Column(str, nullable=False),
-        # coerce=True: same int64-vs-float64 round-trip rationale as
-        # GeneSetsSchema.hierarchy_level and InteractionsSchema.confidence
-        # above, and the same accepted bool->float64 residual gap.
         "score": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True),
     },
     strict=True,
 )
 
-
 DiseasePathwaysSchema = DataFrameSchema(
     {
-        # Reactome stable ID (or equivalent for a future source_db) — the
-        # join key back to gene_sets.parquet for Stage 3's graph construction.
         "set_id": Column(str, nullable=False, unique=True),
-        # Human-readable pathway name (gene_sets.set_name), for display.
         "gene_set": Column(str, nullable=False),
         "source_db": Column(str, checks=Check.isin(SUPPORTED_SOURCE_DBS), nullable=False),
-        # Nominal GSEA p-value, pre-correction.
         "pval": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False),
-        # Benjamini-Hochberg FDR, corrected across every pathway actually
-        # tested in this run (see stage2_gsea_discovery.py's module docstring) —
-        # not comparable across runs with a different tested-pathway set.
+        # FDR is corrected over the pathways tested in this run only, so it is not comparable across runs.
         "fdr": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False),
-        # Whether this pathway's (collapsed) gene membership includes the
-        # manifest's resolved --target gene.
         "contains_target": Column(bool, nullable=False),
     },
     strict=True,
 )
 
-
 GeneWeightsSchema = DataFrameSchema(
     {
-        "gene_id": Column(
-            str,
-            checks=Check.str_matches(ENSEMBL_GENE_ID_PATTERN.pattern),
-            unique=True,
-            nullable=False,
-        ),
-        # Non-pathway-datatype Open Targets evidence (see
-        # stage4_genetic_evidence_weights.py's module docstring) — 0.0, not null,
-        # for a gene with no matching evidence, so every graph node gets a
-        # row here.
+        "gene_id": ensembl_column(unique=True),
         "genetic_evidence_score": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False),
     },
     strict=True,
 )
 
-
 CandidateScoresSchema = DataFrameSchema(
     {
-        # Ensembl gene ID of a candidate alternative target — every non-target
-        # node of the Stage 3/4 graph gets exactly one row. Same identifier
-        # namespace as GenesSchema.gene_id / OTAssociationsSchema.gene_id
-        # (all Open-Targets-canonicalised in Stage 1), so Stage 6 joins this
-        # column straight onto Open Targets annotation with no ID mapping;
-        # the pattern check here is what makes a namespace slip fail loudly.
-        "gene": Column(
-            str,
-            checks=Check.str_matches(ENSEMBL_GENE_ID_PATTERN.pattern),
-            unique=True,
-            nullable=False,
-        ),
-        # Direction- and weight-aware topology proximity to the target
-        # (higher = closer); 0.0 for a node the target cannot reach. Always
-        # present — topology is Stage 5's always-on method.
-        "topology_score": Column(
-            float, checks=Check.greater_than_or_equal_to(0.0), nullable=False, coerce=True
-        ),
-        # Personalised random-walk-with-restart stationary probability,
-        # restart on the target. Present only when Stage 5 was run with
-        # `rwr` in --method (hence required=False); a probability in [0, 1].
-        "rwr_score": Column(
-            float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True, required=False
-        ),
+        "gene": ensembl_column(unique=True),
+        "topology_score": Column(float, checks=Check.greater_than_or_equal_to(0.0), nullable=False, coerce=True),
+        "rwr_score": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True, required=False),
     },
     strict=True,
 )
 
-
-# Stage 6 vocabularies. Tractability is an ordinal proxy derived from Open
-# Targets' per-modality flags; safety has deliberately NO "safe" value — OT
-# supplies known *liabilities* or silence, never positive proof of safety,
-# so a gene with no liabilities annotation is "unknown", not "safe".
-TRACTABILITY_BUCKETS = frozenset({"clinical", "discovery", "unknown"})
-SAFETY_FLAGS = frozenset({"has_liabilities", "unknown"})
-
-
 AnnotatedCandidatesSchema = DataFrameSchema(
     {
-        "gene": Column(
-            str,
-            checks=Check.str_matches(ENSEMBL_GENE_ID_PATTERN.pattern),
-            unique=True,
-            nullable=False,
-        ),
-        # --- carried through from Stage 5 (schemas.CandidateScoresSchema) ---
-        "topology_score": Column(
-            float, checks=Check.greater_than_or_equal_to(0.0), nullable=False, coerce=True
-        ),
-        "rwr_score": Column(
-            float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True, required=False
-        ),
-        # --- joined from Stage 4's graph_metadata.json (absent if Stage 4
-        #     was not run) ---
+        "gene": ensembl_column(unique=True),
+        "topology_score": Column(float, checks=Check.greater_than_or_equal_to(0.0), nullable=False, coerce=True),
+        "rwr_score": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True, required=False),
         "genetic_evidence_score": Column(
             float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True, required=False
         ),
-        # --- Open Targets target-level annotation (this stage) ---
         "tractability": Column(str, checks=Check.isin(TRACTABILITY_BUCKETS), nullable=False),
         "safety": Column(str, checks=Check.isin(SAFETY_FLAGS), nullable=False),
-        # Count of Open Targets safetyLiabilities entries; 0 is "none recorded"
-        # (which maps to safety == "unknown", never "safe").
-        "n_safety_liabilities": Column(
-            int, checks=Check.greater_than_or_equal_to(0), nullable=False, coerce=True
-        ),
-        # Weighted average of the normalised components, in [0, 1].
+        "n_safety_liabilities": Column(int, checks=Check.greater_than_or_equal_to(0), nullable=False, coerce=True),
         "composite_score": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True),
-        # "k=contribution|..." — each component's weighted contribution to
-        # composite_score (the terms sum to composite_score), so the trace
-        # shows what built the number, not just the number.
+        # "component=contribution|...": the contributions add up to composite_score.
         "composite_breakdown": Column(str, nullable=False),
-        # "k:fraction,..." — the renormalised weights actually used (sum 1),
-        # repeated on every row so a single row is a self-contained trace
-        # for Stage 8's report.
+        # "component:weight,...": the weights actually used, repeated on every row.
         "composite_weights": Column(str, nullable=False),
     },
     strict=True,
 )
 
 
-def assert_foreign_key(
-    child_df: pd.DataFrame, child_col: str, genes_df: pd.DataFrame, *, gene_col: str = "gene_id"
-) -> None:
-    """Raise ValueError if ``child_df[child_col]`` contains an ID absent from ``genes_df[gene_col]``.
-
-    Pandera validates one DataFrame at a time and cannot express a foreign
-    key across two tables, so this small helper exists for stages to check
-    ``gene_sets.gene_id``, ``interactions.gene_a``/``gene_b``, and
-    ``ot_disease_subset.gene_id`` against ``genes.gene_id`` after validating
-    each table independently.
-    """
-    known = set(genes_df[gene_col])
-    missing = sorted(set(child_df[child_col]) - known)
+def assert_foreign_key(child_df, child_column, genes_df, gene_column="gene_id"):
+    """Raise ValueError if child_df[child_column] has gene IDs missing from genes_df (pandera checks one table only)."""
+    known_genes = set(genes_df[gene_column])
+    missing = sorted(set(child_df[child_column]) - known_genes)
     if missing:
-        raise ValueError(
-            f"{child_col} contains {len(missing)} gene_id(s) not present in genes.gene_id: "
-            f"{missing[:20]}"
-        )
-
-
-# --------------------------------------------------------------------------
-# Manifest (pydantic)
-# --------------------------------------------------------------------------
+        raise ValueError(f"{child_column} contains {len(missing)} gene_id(s) not present in genes.gene_id: {missing[:20]}")
 
 
 class ResolvedTarget(BaseModel):
@@ -366,10 +169,10 @@ class ResolvedTarget(BaseModel):
 
     @field_validator("gene_id")
     @classmethod
-    def _valid_ensembl_id(cls, v: str) -> str:
-        if not ENSEMBL_GENE_ID_PATTERN.match(v):
-            raise ValueError(f"gene_id {v!r} is not a valid Ensembl gene ID")
-        return v
+    def check_gene_id(cls, value):
+        if not ENSEMBL_GENE_ID_PATTERN.match(value):
+            raise ValueError(f"gene_id {value!r} is not a valid Ensembl gene ID")
+        return value
 
 
 class ResolvedDisease(BaseModel):
@@ -380,92 +183,57 @@ class ResolvedDisease(BaseModel):
 
 class SourceFile(BaseModel):
     path: str
-    sha256: str
+    sha256: str = Field(pattern=SHA256_PATTERN)
     bytes: int = Field(ge=0)
-
-    @field_validator("sha256")
-    @classmethod
-    def _valid_sha256(cls, v: str) -> str:
-        if not SHA256_PATTERN.match(v):
-            raise ValueError(f"sha256 {v!r} is not 64 lowercase hex characters")
-        return v
 
 
 class Source(BaseModel):
     db: str
     version: str
-    files: list[SourceFile]
+    files: List[SourceFile]
 
     @field_validator("db")
     @classmethod
-    def _supported_db(cls, v: str) -> str:
-        if v not in SUPPORTED_PROVENANCE_DBS:
-            raise ValueError(f"db {v!r} is not in SUPPORTED_PROVENANCE_DBS {sorted(SUPPORTED_PROVENANCE_DBS)}")
-        return v
+    def check_db(cls, value):
+        if value not in SUPPORTED_PROVENANCE_DBS:
+            raise ValueError(f"db {value!r} is not in SUPPORTED_PROVENANCE_DBS {sorted(SUPPORTED_PROVENANCE_DBS)}")
+        return value
 
 
 class OutputArtifact(BaseModel):
     path: str
-    sha256: str
-
-    @field_validator("sha256")
-    @classmethod
-    def _valid_sha256(cls, v: str) -> str:
-        if not SHA256_PATTERN.match(v):
-            raise ValueError(f"sha256 {v!r} is not 64 lowercase hex characters")
-        return v
+    sha256: str = Field(pattern=SHA256_PATTERN)
 
 
 class CoverageEntry(BaseModel):
-    """One entry of coverage_report.json's per-source mapping summary."""
-
     source: str
     raw_gene_count: int = Field(ge=0)
     mapped_count: int = Field(ge=0)
     percent_mapped: float = Field(ge=0.0, le=100.0)
     dropped_count: int = Field(ge=0)
-    example_dropped_ids: list[str] = Field(default_factory=list, max_length=20)
+    example_dropped_ids: List[str] = Field(default_factory=list, max_length=20)
 
-    @field_validator("mapped_count")
-    @classmethod
-    def _mapped_le_raw(cls, v: int, info) -> int:
-        raw = info.data.get("raw_gene_count")
-        if raw is not None and v > raw:
-            raise ValueError(f"mapped_count ({v}) cannot exceed raw_gene_count ({raw})")
-        return v
-
-    @field_validator("percent_mapped")
-    @classmethod
-    def _percent_matches_counts(cls, v: float, info) -> float:
-        # Catches the class of bug where percent_mapped is computed
-        # separately from mapped_count/raw_gene_count and silently drifts
-        # out of sync — which matters here because the 90% coverage floor
-        # gating the whole pipeline run (see README.md) reads percent_mapped
-        # directly. Tolerance of 0.51 accommodates integer-rounded reporting.
-        raw = info.data.get("raw_gene_count")
-        mapped = info.data.get("mapped_count")
-        if raw is not None and mapped is not None:
-            expected = (100.0 * mapped / raw) if raw > 0 else 0.0
-            if abs(v - expected) > 0.51:
-                raise ValueError(
-                    f"percent_mapped ({v}) is inconsistent with "
-                    f"mapped_count/raw_gene_count ({mapped}/{raw} = {expected:.2f})"
-                )
-        return v
-
-    @field_validator("dropped_count")
-    @classmethod
-    def _dropped_matches_counts(cls, v: int, info) -> int:
-        # Unlike percent_mapped, these are integer counts, so the identity
-        # is exact — no rounding tolerance needed.
-        raw = info.data.get("raw_gene_count")
-        mapped = info.data.get("mapped_count")
-        if raw is not None and mapped is not None and v != raw - mapped:
+    # The 90% coverage floor reads percent_mapped, so it must agree with the counts.
+    @model_validator(mode="after")
+    def check_counts_agree(self):
+        raw = self.raw_gene_count
+        mapped = self.mapped_count
+        if mapped > raw:
+            raise ValueError(f"mapped_count ({mapped}) cannot exceed raw_gene_count ({raw})")
+        expected_percent = 0.0
+        if raw > 0:
+            expected_percent = 100.0 * mapped / raw
+        # 0.51 tolerance allows for rounding.
+        if abs(self.percent_mapped - expected_percent) > 0.51:
             raise ValueError(
-                f"dropped_count ({v}) must equal raw_gene_count - mapped_count "
-                f"({raw} - {mapped} = {raw - mapped})"
+                f"percent_mapped ({self.percent_mapped}) is inconsistent with "
+                f"mapped_count/raw_gene_count ({mapped}/{raw} = {expected_percent:.2f})"
             )
-        return v
+        if self.dropped_count != raw - mapped:
+            raise ValueError(
+                f"dropped_count ({self.dropped_count}) must equal raw_gene_count - mapped_count ({raw} - {mapped})"
+            )
+        return self
 
 
 class GeneSetSizeBucket(BaseModel):
@@ -474,13 +242,11 @@ class GeneSetSizeBucket(BaseModel):
 
 
 class ScaleReport(BaseModel):
-    """scale_report.json: gene-set size distribution and the projected Stage 3 edge count."""
-
-    gene_set_size_distribution_before_cap: list[GeneSetSizeBucket]
-    gene_set_size_distribution_after_cap: list[GeneSetSizeBucket]
+    gene_set_size_distribution_before_cap: List[GeneSetSizeBucket]
+    gene_set_size_distribution_after_cap: List[GeneSetSizeBucket]
     sets_retained: int = Field(ge=0)
-    interaction_counts_by_sign: dict[str, int]
-    interaction_counts_by_evidence_type: dict[str, int]
+    interaction_counts_by_sign: Dict[str, int]
+    interaction_counts_by_evidence_type: Dict[str, int]
     projected_comembership_edge_count: int = Field(ge=0)
 
 
@@ -491,8 +257,58 @@ class Manifest(BaseModel):
     seed: int
     resolved_target: ResolvedTarget
     disease: ResolvedDisease
-    sources: list[Source]
-    cli_parameters: dict[str, Any]
-    output_artifacts: list[OutputArtifact]
-    coverage_report: dict[str, CoverageEntry]
+    sources: List[Source]
+    cli_parameters: Dict[str, Any]
+    output_artifacts: List[OutputArtifact]
+    coverage_report: Dict[str, CoverageEntry]
     scale_report: ScaleReport
+
+
+def fail(message):
+    logging.getLogger("pipeline").error(message)
+    sys.exit(1)
+
+
+def load_manifest(manifest_path):
+    return Manifest.model_validate(json.loads(Path(manifest_path).read_text()))
+
+
+def find_artifact(manifest, manifest_path, filename):
+    """Return the path of a Stage 1 output file listed in the manifest."""
+    for artifact in manifest.output_artifacts:
+        listed_path = Path(artifact.path)
+        if listed_path.name != filename:
+            continue
+        if listed_path.exists():
+            return listed_path
+        # The listed path may be relative to another working directory, so also look next to the manifest.
+        next_to_manifest = Path(manifest_path).parent / filename
+        if next_to_manifest.exists():
+            return next_to_manifest
+        fail(f"Manifest artifact {filename!r} listed at {listed_path} does not exist (also checked {next_to_manifest}).")
+    fail(f"Manifest {manifest_path} lists no output artifact named {filename!r}.")
+
+
+def load_graph(graph_dir):
+    """Load the graph files written by Stage 3 (or Stage 4, which uses the same format)."""
+    graph_dir = Path(graph_dir)
+    weight_path = graph_dir / "graph_weight.npz"
+    sign_path = graph_dir / "graph_sign.npz"
+    index_path = graph_dir / "graph_gene_index.json"
+    metadata_path = graph_dir / "graph_metadata.json"
+    for path in [weight_path, sign_path, index_path, metadata_path]:
+        if not path.exists():
+            fail(f"Graph file {path} does not exist (run stage3_build_graph.py first?).")
+
+    weight = sp.load_npz(weight_path).tocsr()
+    sign = sp.load_npz(sign_path).tocsr()
+    gene_index = json.loads(index_path.read_text())
+    metadata = json.loads(metadata_path.read_text())
+
+    n_genes = len(gene_index)
+    if weight.shape != (n_genes, n_genes) or sign.shape != (n_genes, n_genes):
+        fail(
+            f"Graph files in {graph_dir} are misaligned: weight.shape={weight.shape}, "
+            f"sign.shape={sign.shape}, but the gene index has {n_genes} entries."
+        )
+    return weight, sign, gene_index, metadata

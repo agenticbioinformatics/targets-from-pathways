@@ -3,8 +3,8 @@
 Everything here is a synthetic, hand-built DataFrame — no manifest.json or
 parquet round-trip — calling stage2_gsea_discovery.py's functions directly.
 Resolving artifacts out of a real manifest is Stage 1 plumbing, already
-covered by tests/test_ingest_*.py and stage2_gsea_discovery.py's own
-``_resolve_artifact_path``; what needs covering here is the GSEA/statistics
+covered by tests/test_ingest_*.py and stage0_schemas.py's
+``find_artifact``; what needs covering here is the GSEA/statistics
 logic itself.
 
 blitzgsea is *not* perfectly deterministic run-to-run even with a fixed

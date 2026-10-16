@@ -1,103 +1,14 @@
-"""Stage 3 — Pathway-based gene-gene graph construction.
+"""Stage 3 - pathway-based gene-gene graph.
 
-Builds the **pathway-based gene-gene graph**: a directed, signed graph whose
-node set is exactly the genes appearing in (Stage 2's disease-relevant
-pathways) ∪ (the target's own pathways) — never the whole genome, never the
-whole interactome. That scoping is what makes it "pathway-based" rather than
-a generic PPI/functional-interaction network with a pathway-derived weight
-bolted on; see "Interactions are scoped to the pathway-gene pool" below for
-why this matters concretely.
-
-Inputs, both read only through the artifacts named — never a raw source
-file, and never by re-deriving anything Stage 1/2 already computed:
-
-- ``--manifest``: Stage 1's manifest.json, for ``gene_sets.parquet``,
-  ``interactions.parquet`` (already parsed, filtered, and canonicalized —
-  this module does not touch the Reactome FI file), the resolved target
-  gene, and (for graph metadata) the Reactome version(s) and random seed.
-- ``--disease-pathways``: Stage 2's ``disease_pathways.tsv``, validated
-  against ``schemas.DiseasePathwaysSchema``. Stage 2 doesn't register this
-  file as a manifest output artifact (it isn't part of Stage 1's contract),
-  so it defaults to sitting alongside ``manifest.json`` — where
-  ``stage2_gsea_discovery.py`` writes it — with an explicit override for when
-  it doesn't.
-
-Two edges sources, both added to one ``networkx.DiGraph``:
-
-1. **Co-membership**: for every pathway in the union above, every pair of
-   its genes gets a bidirectional pair of edges (sign=0, "unknown effect")
-   weighted ``1 / (|pathway| - 1)``, *summed* over every qualifying pathway
-   that co-contains the pair. Without the down-weighting, one 200-gene
-   pathway alone contributes ~20,000 edges and a handful of large Reactome
-   sets would dominate the entire graph's topology — the hub-domination
-   failure mode behind v1's results. The realized edge count is logged
-   against Stage 1's ``scale_report.json`` projection; the projection
-   necessarily runs far higher, since it sums over *every* retained gene
-   set while this stage only ever uses the small disease+target union.
-2. **Interactions**: directional, signed rows read straight from
-   ``interactions.parquet``. Which curation those rows come from is
-   README.md's open decision ("what counts as pathway topology?") and this
-   module does not resolve it — it reads whatever ``source_db``-tagged,
-   already-normalized rows Stage 1 wrote, unchanged by which option gets
-   picked later.
-
-**Interactions are scoped to the pathway-gene pool.** A row is only added
-if *both* ``gene_a`` and ``gene_b`` already belong to the disease+target
-pathway union — never genome-wide. ``interactions.parquet`` is a
-disease-agnostic, curated Reactome-FI-derived table; adding every row
-unconditionally would silently turn a "pathway-based" graph back into the
-whole interactome (hundreds of thousands of edges unrelated to this
-disease or target), exactly the scale/hub-domination problem the
-co-membership weighting exists to avoid, and would contradict README.md's
-own description of this graph as one "spanning the target's and the
-disease's pathway neighborhoods." Out-of-scope rows are counted and
-logged, not silently dropped.
-
-**Duplicate interaction rows.** ``interactions.parquet`` can legitimately
-carry more than one row for the same ordered ``(gene_a, gene_b)`` pair —
-distinct Reactome FI reaction annotations can produce different
-sign/confidence values for the same gene pair, and Stage 1 only
-deduplicates exact full-row duplicates. Since a plain ``DiGraph`` (as
-specified — not a ``MultiDiGraph``) can hold only one edge per ordered
-pair, the highest-``confidence`` row wins; how many pairs this affected is
-logged, never silent.
-
-When both edge sources touch the same ordered pair, the interaction row's
-``sign`` overrides co-membership's default ``sign=0`` (it is more specific
-evidence); the co-membership weight is preserved either way.
-
-**Serialization**: two ``scipy.sparse`` CSR matrices sharing one gene index
-(an ordered list, row/col ``i`` <-> ``gene_index[i]``), not GraphML —
-GraphML on a graph with hundreds of thousands of edges is slow to write,
-slow to re-read, and large on disk, and nothing downstream needs anything
-GraphML gives beyond what the matrices plus index already carry.
-``networkx`` is used only for construction, in-process inspection, and
-small test fixtures; it is never the serialized artifact.
-
-- ``weight`` (float64): ``comembership_weight + confidence`` (confidence
-  treated as 0 where null) — a single combined closeness score for
-  anything that walks the graph by weight, Stage 5's diffusion in
-  particular. A true stored zero means "no edge."
-- ``sign`` (int8): the edge's sign where one exists, ``-1``/``0``/``1``.
-  A stored ``0`` is ambiguous by construction — it means either "no edge"
-  or "an edge exists with unknown/co-membership-only effect" — so
-  ``sign`` is only meaningful at a position where ``weight > 0``; check
-  ``weight`` first. Edge *direction* is not stored as a separate matrix at
-  all: it's already exactly what row/col asymmetry between ``weight[i,j]``
-  and ``weight[j,i]`` encodes in a directed adjacency matrix, so a third
-  matrix would only duplicate that information.
-
-Graph metadata (seed, Reactome source versions, target/disease identity,
-edge-count comparison against the Stage 1 projection) is written alongside
-as ``graph_metadata.json``.
+Builds a directed, signed graph whose nodes are the genes of the disease-relevant pathways (Stage 2) plus
+the pathways containing the target. Edges come from pathway co-membership and from Reactome functional
+interactions between those genes. Writes graph_weight.npz, graph_sign.npz (sparse matrices sharing the
+row/column order in graph_gene_index.json) and graph_metadata.json.
 """
-
-from __future__ import annotations
 
 import argparse
 import json
 import logging
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -106,328 +17,163 @@ import pandas as pd
 import scipy.sparse as sp
 
 from stage0_schemas import (
-    DiseasePathwaysSchema,
     ENSEMBL_GENE_ID_PATTERN,
+    DiseasePathwaysSchema,
     GeneSetsSchema,
     InteractionsSchema,
-    Manifest,
+    fail,
+    find_artifact,
+    load_manifest,
 )
 
 logger = logging.getLogger("build_graph")
 
 
-# ==========================================================================
-# CLI
-# ==========================================================================
-
-
-def build_arg_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
         prog="stage3_build_graph.py",
-        description="Stage 3 — pathway-based gene-gene graph. Builds a directed, signed networkx graph "
-        "from the union of disease-relevant and target-containing pathways (co-membership edges + "
-        "Reactome functional-interaction edges). Reads gene_sets/interactions via --manifest and "
-        "disease_pathways.tsv alongside it; writes graph_weight.npz / graph_sign.npz / "
-        "graph_gene_index.json / graph_metadata.json.",
+        description="Stage 3 - pathway-based gene-gene graph. Builds a directed, signed graph from the union "
+        "of disease-relevant and target-containing pathways (co-membership edges + Reactome "
+        "functional-interaction edges). Reads gene_sets/interactions via --manifest and "
+        "disease_pathways.tsv; writes graph_weight.npz / graph_sign.npz / graph_gene_index.json / "
+        "graph_metadata.json.",
     )
-    p.add_argument("--manifest", required=True, type=Path, help="Path to Stage 1's manifest.json.")
-    p.add_argument(
-        "--disease-pathways",
-        type=Path,
-        default=None,
-        help="Path to Stage 2's disease_pathways.tsv. Defaults to alongside --manifest, where "
-        "stage2_gsea_discovery.py writes it.",
+    parser.add_argument("--manifest", required=True, type=Path, help="Path to Stage 1's manifest.json.")
+    parser.add_argument(
+        "--disease-pathways", type=Path, default=None,
+        help="Path to Stage 2's disease_pathways.tsv. Default: next to --manifest.",
     )
-    p.add_argument(
-        "--out-dir",
-        type=Path,
-        default=None,
-        help="Where to write graph artifacts. Defaults to --manifest's directory.",
-    )
-    return p
+    parser.add_argument("--out-dir", type=Path, default=None, help="Output directory. Default: --manifest's directory.")
+    return parser.parse_args(argv)
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    return build_arg_parser().parse_args(argv)
+def add_comembership_edges(graph, gene_sets_df, pathway_ids):
+    """Connect every pair of genes in each pathway, in both directions, with sign 0 (unknown effect).
+    Each pathway adds 1 / (size - 1) to a pair, so a few large pathways cannot dominate the graph.
+    Returns the number of distinct gene pairs."""
+    selected = gene_sets_df[gene_sets_df["set_id"].isin(pathway_ids)]
+    graph.add_nodes_from(selected["gene_id"].unique())
 
-
-def _fail(msg: str) -> None:
-    logger.error(msg)
-    sys.exit(1)
-
-
-# ==========================================================================
-# Manifest-driven artifact loading
-# ==========================================================================
-
-
-def load_manifest(manifest_path: Path) -> Manifest:
-    return Manifest.model_validate(json.loads(manifest_path.read_text()))
-
-
-def _resolve_artifact_path(manifest: Manifest, manifest_path: Path, filename: str) -> Path:
-    """Find a Stage 1 output artifact by filename and resolve it to a real path.
-
-    ``output_artifacts[i].path`` is whatever ``--out-dir`` Stage 1 was run
-    with, which may be relative to a working directory that no longer
-    matches this process's cwd — so a relative path is retried next to
-    ``manifest.json`` itself before giving up.
-    """
-    for artifact in manifest.output_artifacts:
-        if Path(artifact.path).name != filename:
+    gene_pairs = set()
+    for _, pathway in selected.groupby("set_id"):
+        genes = sorted(pathway["gene_id"].unique())
+        if len(genes) < 2:
             continue
-        as_given = Path(artifact.path)
-        if as_given.exists():
-            return as_given
-        alongside_manifest = manifest_path.parent / as_given.name
-        if alongside_manifest.exists():
-            return alongside_manifest
-        _fail(
-            f"Manifest artifact {filename!r} listed at {as_given} does not exist "
-            f"(also checked {alongside_manifest})."
-        )
-    _fail(f"Manifest {manifest_path} lists no output artifact named {filename!r}.")
-
-
-def load_gene_sets(manifest: Manifest, manifest_path: Path) -> pd.DataFrame:
-    path = _resolve_artifact_path(manifest, manifest_path, "gene_sets.parquet")
-    return GeneSetsSchema.validate(pd.read_parquet(path))
-
-
-def load_interactions(manifest: Manifest, manifest_path: Path) -> pd.DataFrame:
-    path = _resolve_artifact_path(manifest, manifest_path, "interactions.parquet")
-    return InteractionsSchema.validate(pd.read_parquet(path))
-
-
-def load_disease_pathways(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        _fail(f"--disease-pathways {path} does not exist (run stage2_gsea_discovery.py first?).")
-    return DiseasePathwaysSchema.validate(pd.read_csv(path, sep="\t"))
-
-
-# ==========================================================================
-# Pathway union: (disease-relevant) ∪ (target-containing)
-# ==========================================================================
-
-
-def compute_target_pathway_ids(gene_sets_df: pd.DataFrame, target_gene_id: str) -> set[str]:
-    ids = set(gene_sets_df.loc[gene_sets_df["gene_id"] == target_gene_id, "set_id"])
-    if not ids:
-        logger.warning(
-            "Target gene %s is not a member of any pathway in gene_sets.parquet — "
-            "the target-containing side of the union is empty (README.md open decision #3: "
-            "no additional cap is applied here beyond Stage 1's own gene_sets.parquet size cap).",
-            target_gene_id,
-        )
-    return ids
-
-
-def compute_pathway_union(
-    gene_sets_df: pd.DataFrame, disease_pathways_df: pd.DataFrame, target_gene_id: str
-) -> tuple[set[str], set[str], set[str]]:
-    disease_ids = set(disease_pathways_df["set_id"])
-    target_ids = compute_target_pathway_ids(gene_sets_df, target_gene_id)
-    union_ids = disease_ids | target_ids
-    return union_ids, disease_ids, target_ids
-
-
-# ==========================================================================
-# Co-membership edges
-# ==========================================================================
-
-
-def add_comembership_edges(graph: nx.DiGraph, gene_sets_df: pd.DataFrame, pathway_union_ids: set[str]) -> int:
-    """Add every pathway-union pathway's co-membership edges, weighted
-    ``1 / (|pathway| - 1)`` per pathway and summed where multiple qualifying
-    pathways co-contain the same pair. Returns the number of unordered gene
-    pairs that received at least one contribution (each becomes two directed
-    edges, added to ``graph`` symmetrically with sign=0)."""
-    subset = gene_sets_df[gene_sets_df["set_id"].isin(pathway_union_ids)]
-    graph.add_nodes_from(subset["gene_id"].unique())
-
-    unordered_pairs_seen: set[tuple[str, str]] = set()
-    for set_id, group in subset.groupby("set_id"):
-        genes = sorted(group["gene_id"].unique())
-        n = len(genes)
-        if n < 2:
-            continue
-        contribution = 1.0 / (n - 1)
-        source_db = group["source_db"].iloc[0]
-        for i in range(n):
-            for j in range(i + 1, n):
-                a, b = genes[i], genes[j]
-                unordered_pairs_seen.add((a, b))
-                for u, v in ((a, b), (b, a)):
-                    if graph.has_edge(u, v):
-                        graph[u][v]["comembership_weight"] += contribution
+        contribution = 1.0 / (len(genes) - 1)
+        source_db = pathway["source_db"].iloc[0]
+        for i in range(len(genes)):
+            for j in range(i + 1, len(genes)):
+                gene_pairs.add((genes[i], genes[j]))
+                for source, target in [(genes[i], genes[j]), (genes[j], genes[i])]:
+                    if graph.has_edge(source, target):
+                        graph[source][target]["comembership_weight"] += contribution
                     else:
-                        graph.add_edge(
-                            u, v,
-                            comembership_weight=contribution,
-                            sign=0,
-                            confidence=None,
-                            evidence_type=None,
-                            source_db=source_db,
-                        )
-    return len(unordered_pairs_seen)
+                        graph.add_edge(source, target, comembership_weight=contribution, sign=0,
+                                       confidence=None, evidence_type=None, source_db=source_db)
+    return len(gene_pairs)
 
 
-# ==========================================================================
-# Interaction edges
-# ==========================================================================
+def add_interaction_edges(graph, interactions_df, pathway_genes):
+    """Add interactions whose two genes are both already in the graph. Adding all interactions would turn
+    the pathway graph into the whole interactome. Returns (n_added, n_out_of_scope, n_duplicates)."""
+    # A DiGraph holds one edge per ordered pair: keep the highest-confidence row for each pair.
+    by_confidence = interactions_df.assign(rank=interactions_df["confidence"].fillna(-1.0))
+    by_confidence = by_confidence.sort_values("rank", ascending=False, kind="stable")
+    unique_pairs = by_confidence.drop_duplicates(subset=["gene_a", "gene_b"], keep="first")
+    n_duplicates = len(interactions_df) - len(unique_pairs)
 
-
-def dedupe_interactions_by_confidence(interactions_df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
-    """Collapse to one row per ordered (gene_a, gene_b): highest confidence
-    wins, ties broken by original row order. See module docstring
-    "Duplicate interaction rows" for why this is needed at all."""
-    if interactions_df.empty:
-        return interactions_df, 0
-    n_rows_before = len(interactions_df)
-    ordered = interactions_df.assign(_rank=interactions_df["confidence"].fillna(-1.0))
-    ordered = ordered.sort_values("_rank", ascending=False, kind="stable")
-    deduped = ordered.drop_duplicates(subset=["gene_a", "gene_b"], keep="first").drop(columns="_rank")
-    n_dropped = n_rows_before - len(deduped)
-    return deduped.reset_index(drop=True), n_dropped
-
-
-def add_interaction_edges(
-    graph: nx.DiGraph, interactions_df: pd.DataFrame, pathway_gene_pool: set[str]
-) -> tuple[int, int, int]:
-    """Add interactions.parquet rows as directed, signed edges, restricted to
-    pairs where both genes are already in the pathway union (see module
-    docstring "Interactions are scoped to the pathway-gene pool"). Returns
-    (n_added_or_updated, n_out_of_scope_dropped, n_duplicate_pairs_collapsed)."""
-    deduped, n_duplicate_pairs = dedupe_interactions_by_confidence(interactions_df)
-    if deduped.empty:
-        return 0, 0, n_duplicate_pairs
-
-    in_scope = deduped["gene_a"].isin(pathway_gene_pool) & deduped["gene_b"].isin(pathway_gene_pool)
+    in_scope = unique_pairs["gene_a"].isin(pathway_genes) & unique_pairs["gene_b"].isin(pathway_genes)
     n_out_of_scope = int((~in_scope).sum())
-    scoped = deduped.loc[in_scope]
 
-    for row in scoped.itertuples(index=False):
-        confidence = None if pd.isna(row.confidence) else float(row.confidence)
-        if graph.has_edge(row.gene_a, row.gene_b):
-            graph[row.gene_a][row.gene_b].update(
-                sign=int(row.sign), confidence=confidence, evidence_type=row.evidence_type, source_db=row.source_db
-            )
-        else:
-            graph.add_edge(
-                row.gene_a, row.gene_b,
-                comembership_weight=0.0,
-                sign=int(row.sign),
-                confidence=confidence,
-                evidence_type=row.evidence_type,
-                source_db=row.source_db,
-            )
-    return len(scoped), n_out_of_scope, n_duplicate_pairs
+    for row in unique_pairs[in_scope].itertuples(index=False):
+        confidence = None
+        if not pd.isna(row.confidence):
+            confidence = float(row.confidence)
+        if not graph.has_edge(row.gene_a, row.gene_b):
+            graph.add_edge(row.gene_a, row.gene_b, comembership_weight=0.0)
+        # The interaction sign is more specific than co-membership's sign 0, so it overrides it.
+        edge = graph[row.gene_a][row.gene_b]
+        edge["sign"] = int(row.sign)
+        edge["confidence"] = confidence
+        edge["evidence_type"] = row.evidence_type
+        edge["source_db"] = row.source_db
+    return int(in_scope.sum()), n_out_of_scope, n_duplicates
 
 
-# ==========================================================================
-# Orchestration: build the pathway-based gene-gene graph
-# ==========================================================================
+def build_graph(gene_sets_df, disease_pathways_df, interactions_df, target_gene_id):
+    disease_pathway_ids = set(disease_pathways_df["set_id"])
+    target_pathway_ids = set(gene_sets_df.loc[gene_sets_df["gene_id"] == target_gene_id, "set_id"])
+    if not target_pathway_ids:
+        logger.warning("Target gene %s is not in any pathway of gene_sets.parquet.", target_gene_id)
+    pathway_ids = disease_pathway_ids | target_pathway_ids
 
-
-def build_pathway_based_gene_gene_graph(
-    gene_sets_df: pd.DataFrame, disease_pathways_df: pd.DataFrame, interactions_df: pd.DataFrame, target_gene_id: str
-) -> tuple[nx.DiGraph, dict]:
-    pathway_union_ids, disease_ids, target_ids = compute_pathway_union(
-        gene_sets_df, disease_pathways_df, target_gene_id
-    )
-
-    pathway_based_gene_gene_graph = nx.DiGraph()
-    n_unordered_pairs = add_comembership_edges(pathway_based_gene_gene_graph, gene_sets_df, pathway_union_ids)
-    pathway_gene_pool = set(pathway_based_gene_gene_graph.nodes)
-    n_interaction_edges, n_out_of_scope, n_duplicate_pairs = add_interaction_edges(
-        pathway_based_gene_gene_graph, interactions_df, pathway_gene_pool
-    )
+    graph = nx.DiGraph()
+    n_gene_pairs = add_comembership_edges(graph, gene_sets_df, pathway_ids)
+    n_added, n_out_of_scope, n_duplicates = add_interaction_edges(graph, interactions_df, set(graph.nodes))
 
     stats = {
-        "n_pathways_union": len(pathway_union_ids),
-        "n_disease_pathways": len(disease_ids),
-        "n_target_pathways": len(target_ids),
-        "n_nodes": pathway_based_gene_gene_graph.number_of_nodes(),
-        "n_edges": pathway_based_gene_gene_graph.number_of_edges(),
-        "n_comembership_unordered_pairs": n_unordered_pairs,
-        "n_interaction_edges_added": n_interaction_edges,
+        "n_pathways_union": len(pathway_ids),
+        "n_disease_pathways": len(disease_pathway_ids),
+        "n_target_pathways": len(target_pathway_ids),
+        "n_nodes": graph.number_of_nodes(),
+        "n_edges": graph.number_of_edges(),
+        "n_comembership_unordered_pairs": n_gene_pairs,
+        "n_interaction_edges_added": n_added,
         "n_interaction_edges_out_of_scope": n_out_of_scope,
-        "n_interaction_duplicate_pairs_collapsed": n_duplicate_pairs,
+        "n_interaction_duplicate_pairs_collapsed": n_duplicates,
     }
-    return pathway_based_gene_gene_graph, stats
+    return graph, stats
 
 
-# ==========================================================================
-# Sparse serialization
-# ==========================================================================
-
-
-def validate_gene_index(gene_index: list[str]) -> None:
-    if len(gene_index) != len(set(gene_index)):
-        _fail("Gene index contains duplicate gene IDs — this would silently misalign matrix rows.")
-    bad = [g for g in gene_index if not ENSEMBL_GENE_ID_PATTERN.match(g)]
-    if bad:
-        _fail(f"Gene index contains non-Ensembl gene ID(s): {bad[:20]}")
-
-
-def graph_to_sparse(graph: nx.DiGraph) -> tuple[sp.csr_matrix, sp.csr_matrix, list[str]]:
-    """(weight, sign, gene_index) — see module docstring "Serialization" for
-    the exact contract, in particular that ``sign`` is only meaningful where
-    the corresponding ``weight`` entry is > 0."""
+def graph_to_sparse(graph):
+    """Return (weight, sign, gene_index). weight = co-membership weight + interaction confidence.
+    A stored sign of 0 means either no edge or an unsigned edge, so read sign only where weight > 0.
+    Edge direction is the asymmetry between weight[i, j] and weight[j, i]."""
     gene_index = sorted(graph.nodes)
-    validate_gene_index(gene_index)
+    for gene in gene_index:
+        if not ENSEMBL_GENE_ID_PATTERN.match(gene):
+            fail(f"Graph contains a non-Ensembl gene ID: {gene}")
 
-    for _u, _v, attrs in graph.edges(data=True):
-        confidence = attrs["confidence"] if attrs["confidence"] is not None else 0.0
-        attrs["_matrix_weight"] = attrs["comembership_weight"] + confidence
+    for _, _, edge in graph.edges(data=True):
+        confidence = edge["confidence"]
+        if confidence is None:
+            confidence = 0.0
+        edge["matrix_weight"] = edge["comembership_weight"] + confidence
 
-    weight = nx.to_scipy_sparse_array(graph, nodelist=gene_index, weight="_matrix_weight", format="csr", dtype="float64")
+    weight = nx.to_scipy_sparse_array(graph, nodelist=gene_index, weight="matrix_weight", format="csr", dtype="float64")
     sign = nx.to_scipy_sparse_array(graph, nodelist=gene_index, weight="sign", format="csr", dtype="int8")
     return weight, sign, gene_index
 
 
-# ==========================================================================
-# Metadata
-# ==========================================================================
+def run(args):
+    manifest = load_manifest(args.manifest)
+    gene_sets_df = GeneSetsSchema.validate(pd.read_parquet(find_artifact(manifest, args.manifest, "gene_sets.parquet")))
+    interactions_df = InteractionsSchema.validate(
+        pd.read_parquet(find_artifact(manifest, args.manifest, "interactions.parquet"))
+    )
+    disease_pathways_path = args.disease_pathways or args.manifest.parent / "disease_pathways.tsv"
+    if not disease_pathways_path.exists():
+        fail(f"--disease-pathways {disease_pathways_path} does not exist (run stage2_gsea_discovery.py first?).")
+    disease_pathways_df = DiseasePathwaysSchema.validate(pd.read_csv(disease_pathways_path, sep="\t"))
 
+    graph, stats = build_graph(gene_sets_df, disease_pathways_df, interactions_df, manifest.resolved_target.gene_id)
+    logger.info("Graph: %d nodes, %d edges (%d pathways, %d interaction edges added, %d out of scope).",
+                stats["n_nodes"], stats["n_edges"], stats["n_pathways_union"],
+                stats["n_interaction_edges_added"], stats["n_interaction_edges_out_of_scope"])
+    weight, sign, gene_index = graph_to_sparse(graph)
 
-def build_graph_metadata(manifest: Manifest, stats: dict) -> dict:
-    reactome_sources = [s.model_dump(mode="json") for s in manifest.sources if s.db == "reactome"]
-    return {
+    reactome_sources = []
+    for source in manifest.sources:
+        if source.db == "reactome":
+            reactome_sources.append(source.model_dump(mode="json"))
+    metadata = {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "seed": manifest.seed,
         "reactome_sources": reactome_sources,
         "resolved_target": manifest.resolved_target.model_dump(mode="json"),
         "disease": manifest.disease.model_dump(mode="json"),
-        **stats,
     }
-
-
-# ==========================================================================
-# Orchestration
-# ==========================================================================
-
-
-def run(args: argparse.Namespace) -> Path:
-    manifest = load_manifest(args.manifest)
-    gene_sets_df = load_gene_sets(manifest, args.manifest)
-    interactions_df = load_interactions(manifest, args.manifest)
-    disease_pathways_path = args.disease_pathways or (args.manifest.parent / "disease_pathways.tsv")
-    disease_pathways_df = load_disease_pathways(disease_pathways_path)
-    target_gene_id = manifest.resolved_target.gene_id
-
-    pathway_based_gene_gene_graph, stats = build_pathway_based_gene_gene_graph(
-        gene_sets_df, disease_pathways_df, interactions_df, target_gene_id
-    )
-    logger.info(
-        "Graph: %d nodes, %d edges (%d pathways in union, %d interaction edges in scope, "
-        "%d dropped out of scope).",
-        stats["n_nodes"], stats["n_edges"], stats["n_pathways_union"],
-        stats["n_interaction_edges_added"], stats["n_interaction_edges_out_of_scope"],
-    )
-
-    weight, sign, gene_index = graph_to_sparse(pathway_based_gene_gene_graph)
-    metadata = build_graph_metadata(manifest, stats)
+    metadata.update(stats)
 
     out_dir = args.out_dir or args.manifest.parent
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -440,10 +186,9 @@ def run(args: argparse.Namespace) -> Path:
     return metadata_path
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv=None):
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    args = parse_args(argv)
-    run(args)
+    run(parse_args(argv))
 
 
 if __name__ == "__main__":

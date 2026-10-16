@@ -1,239 +1,33 @@
-"""Stage 7 — Output/report.
+"""Stage 7 - HTML report.
 
-Reads a run directory holding the Stage 1-6 artifacts and writes ONE
-self-contained, interactive HTML file (no server, no external assets, no
-JS/CSS dependencies). Open it in a browser or hand it to a teammate.
-
-Run directory contents. Only the two **required** artifacts must be
-present; every other one is optional — a missing one just narrows the
-report (a header note says which), it never fails:
-
-    manifest.json               Stage 1  — target/disease/versions    [required]
-    candidates_annotated.tsv    Stage 6  — the ranked table           [required]
-    genes.parquet               Stage 1  — Ensembl -> HGNC symbol (else labels fall back to Ensembl ids)
-    gene_sets.parquet           Stage 1  — pathway membership (shared-pathways trace)
-    interactions.parquet        Stage 1  — signed edges (interactions trace)
-    ot_disease_subset.parquet   Stage 1  — OT datatypes/scores (datatypes trace)
-    disease_pathways.tsv        Stage 2  — disease-relevant pathway list (widens the pathway union)
-    graph_gene_index.json       Stage 3  — graph node set (scopes the interactions trace)
-    graph_metadata.json         Stage 3/4 — Stage-4-ran flag, admitted datatypes
-
-A Stage-3-only run (Stage 4 skipped) simply has no ``rwr_score`` /
-``genetic_evidence_score`` columns in ``candidates_annotated.tsv`` — those
-columns are then omitted from the table rather than crashing it.
-
-Genes are shown by **HGNC symbol**; the Ensembl gene ID stays the key
-(its own column, and the anchor id for each candidate's detail block).
-Symbols are resolved from ``genes.parquet`` here, at render time only.
-
-The benchmark validation panel is *static* — it embeds
-``benchmarking/benchmark_summary.txt`` (or, if absent,
-``benchmarking/benchmark_summary.example.txt``, clearly labelled). This
-stage never runs the benchmark; see ``benchmarking/``.
+Turns a run directory into one self-contained interactive HTML file (no server, no external assets):
+a sortable ranked table, an evidence trace per candidate and a static benchmark panel.
+Only manifest.json and candidates_annotated.tsv are required; a missing optional file only hides the
+report sections that need it. The benchmark panel embeds benchmarking/benchmark_summary.txt
+(or the .example.txt placeholder) and is never recomputed here.
 """
-
-from __future__ import annotations
 
 import argparse
 import html
 import json
 import logging
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
-from stage0_schemas import AnnotatedCandidatesSchema
+from stage0_schemas import AnnotatedCandidatesSchema, fail
 
 PIPELINE_DIR = Path(__file__).resolve().parent
 REPO_DIR = PIPELINE_DIR.parent
 
 logger = logging.getLogger("stage7_report")
 
-_SIGN_LABEL = {1: "activating (+)", -1: "inhibiting (−)", 0: "unsigned (0)"}
-_DEFAULT_ADMITTED_DATATYPES = ["genetic_association", "known_drug"]
+SIGN_LABELS = {1: "activating (+)", -1: "inhibiting (−)", 0: "unsigned (0)"}
+# Stage 4's default --datatypes, used when graph_metadata.json does not record them.
+DEFAULT_ADMITTED_DATATYPES = ["genetic_association", "known_drug"]
 
-
-def _fail(msg: str) -> None:
-    logger.error(msg)
-    sys.exit(1)
-
-
-# ==========================================================================
-# Load
-# ==========================================================================
-
-
-def load_run(run_dir: Path) -> dict:
-    """Load a run directory. Only ``manifest.json`` and
-    ``candidates_annotated.tsv`` are required; every other artifact is
-    optional — a missing one just narrows what the report can show (the
-    ``missing`` list records which), rather than failing."""
-    run_dir = Path(run_dir)
-
-    def _need(name: str) -> Path:
-        p = run_dir / name
-        if not p.exists():
-            _fail(
-                f"{name} missing from {run_dir} — this is a required Stage 1/6 artifact; "
-                "has the pipeline run?"
-            )
-        return p
-
-    missing: list[str] = []
-
-    def _opt_json(name: str):
-        p = run_dir / name
-        if not p.exists():
-            missing.append(name)
-            return None
-        return json.loads(p.read_text())
-
-    def _opt_parquet(name: str):
-        p = run_dir / name
-        if not p.exists():
-            missing.append(name)
-            return None
-        return pd.read_parquet(p)
-
-    def _opt_tsv(name: str):
-        p = run_dir / name
-        if not p.exists():
-            missing.append(name)
-            return None
-        return pd.read_csv(p, sep="\t")
-
-    manifest = json.loads(_need("manifest.json").read_text())
-    annotated = pd.read_csv(_need("candidates_annotated.tsv"), sep="\t")
-    AnnotatedCandidatesSchema.validate(annotated)
-
-    graph_meta = _opt_json("graph_metadata.json") or {}
-    graph_index_raw = _opt_json("graph_gene_index.json")
-    genes = _opt_parquet("genes.parquet")
-
-    admitted = list(
-        graph_meta.get("stage4_genetic_evidence", {}).get("datatypes", _DEFAULT_ADMITTED_DATATYPES)
-    )
-
-    return {
-        "run_dir": run_dir,
-        "manifest": manifest,
-        "graph_meta": graph_meta,
-        "graph_index": set(graph_index_raw) if graph_index_raw is not None else None,
-        "annotated": annotated,
-        "symbols": dict(zip(genes["gene_id"], genes["symbol"])) if genes is not None else {},
-        "admitted_datatypes": set(admitted),
-        "gene_sets": _opt_parquet("gene_sets.parquet"),
-        "interactions": _opt_parquet("interactions.parquet"),
-        "ot": _opt_parquet("ot_disease_subset.parquet"),
-        "disease_pathways": _opt_tsv("disease_pathways.tsv"),
-        "stage4_ran": "stage4_genetic_evidence" in graph_meta,
-        "missing": missing,
-    }
-
-
-def _sym(gene_id: str, symbols: dict) -> str:
-    return symbols.get(gene_id, gene_id)
-
-
-# ==========================================================================
-# Evidence trace (assembled at render time from Stage 1-3 artifacts)
-# ==========================================================================
-
-
-def evidence_trace(gene_id: str, run: dict) -> dict:
-    """Assemble one candidate's trace from whichever Stage 1-3 artifacts the
-    run directory actually holds. A missing artifact sets its
-    ``*_available`` flag to False (the report then says so) rather than
-    raising."""
-    target_id = run["manifest"]["resolved_target"]["gene_id"]
-    symbols = run["symbols"]
-    gs = run["gene_sets"]
-    dp = run["disease_pathways"]
-    ot = run["ot"]
-    it = run["interactions"]
-    graph_index = run["graph_index"]
-
-    shared: list[str] = []
-    member_only: list[str] = []
-    if gs is not None:
-        set_name = dict(zip(gs["set_id"], gs["set_name"]))
-        target_sets = set(gs.loc[gs["gene_id"] == target_id, "set_id"])
-        disease_sets = set(dp["set_id"]) if dp is not None else set()
-        union_sets = disease_sets | target_sets  # the Stage 3 pathway union
-        cand_sets = set(gs.loc[gs["gene_id"] == gene_id, "set_id"]) & union_sets
-        shared = sorted((set_name.get(s, s) for s in cand_sets & target_sets), key=str.lower)
-        member_only = sorted((set_name.get(s, s) for s in cand_sets - target_sets), key=str.lower)
-
-    datatypes = []
-    if ot is not None:
-        for dt, grp in ot[ot["gene_id"] == gene_id].groupby("datatype_id"):
-            datatypes.append(
-                {
-                    "datatype": str(dt),
-                    "score": float(grp["score"].max()),
-                    "datasources": sorted(str(x) for x in grp["datasource_id"].unique()),
-                    # "feeds" only means something when Stage 4 actually ran
-                    "feeds": run["stage4_ran"] and str(dt) in run["admitted_datatypes"],
-                }
-            )
-        datatypes.sort(key=lambda d: (not d["feeds"], -d["score"]))
-
-    interactions = []
-    if it is not None:
-        touching = it[(it["gene_a"] == gene_id) | (it["gene_b"] == gene_id)]
-        for r in touching.itertuples(index=False):
-            other = r.gene_b if r.gene_a == gene_id else r.gene_a
-            # without graph_gene_index.json we can't apply Stage 3's
-            # pathway-pool scoping, so show every touching interaction
-            if graph_index is not None and other not in graph_index:
-                continue
-            interactions.append(
-                {
-                    "a": _sym(r.gene_a, symbols),
-                    "b": _sym(r.gene_b, symbols),
-                    "directed": bool(r.directed),
-                    "sign": _SIGN_LABEL.get(int(r.sign), str(r.sign)),
-                    "evidence_type": str(r.evidence_type),
-                    "confidence": None if pd.isna(r.confidence) else float(r.confidence),
-                    "to_target": other == target_id,
-                }
-            )
-
-    return {
-        "shared_pathways": shared,
-        "member_pathways": member_only,
-        "datatypes": datatypes,
-        "interactions": interactions,
-        "pathways_available": gs is not None,
-        "datatypes_available": ot is not None,
-        "interactions_available": it is not None,
-        "interactions_unscoped": it is not None and graph_index is None,
-    }
-
-
-# ==========================================================================
-# Benchmark summary (static)
-# ==========================================================================
-
-
-def benchmark_summary(benchmark_dir: Path | None = None) -> tuple[str | None, str]:
-    benchmark_dir = Path(benchmark_dir) if benchmark_dir else (REPO_DIR / "benchmarking")
-    real = benchmark_dir / "benchmark_summary.txt"
-    example = benchmark_dir / "benchmark_summary.example.txt"
-    if real.exists():
-        return real.read_text().strip(), "benchmark_summary.txt"
-    if example.exists():
-        return example.read_text().strip(), "benchmark_summary.example.txt (EXAMPLE — not a real validation run)"
-    return None, "none"
-
-
-# ==========================================================================
-# HTML
-# ==========================================================================
-
-_CSS = """
+CSS = """
 :root { color-scheme: light dark; }
 body { font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem auto;
        max-width: 60rem; padding: 0 1rem; }
@@ -265,7 +59,7 @@ pre { background: rgba(127,127,127,.1); padding: .8rem; border-radius: 6px; over
 .warn { color: #b30; font-size: .86rem; }
 """.strip()
 
-_JS = """
+JAVASCRIPT = """
 function sortTable(i, numeric){
   var tb = document.getElementById('ranktbody');
   var rows = Array.prototype.slice.call(tb.rows);
@@ -287,62 +81,226 @@ function openGene(id){
 """.strip()
 
 
-def _e(x) -> str:
-    return html.escape(str(x))
+def load_run(run_dir):
+    run_dir = Path(run_dir)
+    for required in ["manifest.json", "candidates_annotated.tsv"]:
+        if not (run_dir / required).exists():
+            fail(f"{required} missing from {run_dir} - this is a required Stage 1/6 output; has the pipeline run?")
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    annotated = pd.read_csv(run_dir / "candidates_annotated.tsv", sep="\t")
+    AnnotatedCandidatesSchema.validate(annotated)
+
+    missing = []
+    optional = {}
+    for name in ["graph_metadata.json", "graph_gene_index.json", "genes.parquet", "gene_sets.parquet",
+                 "interactions.parquet", "ot_disease_subset.parquet", "disease_pathways.tsv"]:
+        path = run_dir / name
+        if not path.exists():
+            missing.append(name)
+            optional[name] = None
+        elif name.endswith(".json"):
+            optional[name] = json.loads(path.read_text())
+        elif name.endswith(".parquet"):
+            optional[name] = pd.read_parquet(path)
+        else:
+            optional[name] = pd.read_csv(path, sep="\t")
+
+    graph_metadata = optional["graph_metadata.json"] or {}
+    stage4_info = graph_metadata.get("stage4_genetic_evidence", {})
+    graph_index = None
+    if optional["graph_gene_index.json"] is not None:
+        graph_index = set(optional["graph_gene_index.json"])
+    symbols = {}
+    if optional["genes.parquet"] is not None:
+        symbols = dict(zip(optional["genes.parquet"]["gene_id"], optional["genes.parquet"]["symbol"]))
+
+    return {
+        "run_dir": run_dir,
+        "manifest": manifest,
+        "graph_meta": graph_metadata,
+        "graph_index": graph_index,
+        "annotated": annotated,
+        "symbols": symbols,
+        "admitted_datatypes": set(stage4_info.get("datatypes", DEFAULT_ADMITTED_DATATYPES)),
+        "gene_sets": optional["gene_sets.parquet"],
+        "interactions": optional["interactions.parquet"],
+        "ot": optional["ot_disease_subset.parquet"],
+        "disease_pathways": optional["disease_pathways.tsv"],
+        "stage4_ran": "stage4_genetic_evidence" in graph_metadata,
+        "missing": missing,
+    }
 
 
-def _trace_html(gene_id: str, sym: str, row, tr: dict) -> str:
-    """``row`` is a namedtuple from ``df.itertuples()``."""
+def symbol_of(gene_id, symbols):
+    return symbols.get(gene_id, gene_id)
+
+
+def evidence_trace(gene_id, run):
+    """Collect why a candidate is near the target: shared pathways, Open Targets datatypes and interactions.
+    Stage 5 keeps only scores, so this is rebuilt here from the Stage 1-3 files."""
+    target_id = run["manifest"]["resolved_target"]["gene_id"]
+    symbols = run["symbols"]
+    gene_sets = run["gene_sets"]
+    ot = run["ot"]
+    interactions_df = run["interactions"]
+    graph_index = run["graph_index"]
+
+    shared_pathways = []
+    member_only_pathways = []
+    if gene_sets is not None:
+        set_names = dict(zip(gene_sets["set_id"], gene_sets["set_name"]))
+        target_sets = set(gene_sets.loc[gene_sets["gene_id"] == target_id, "set_id"])
+        disease_sets = set()
+        if run["disease_pathways"] is not None:
+            disease_sets = set(run["disease_pathways"]["set_id"])
+        # Only pathways that Stage 3 used to build the graph.
+        candidate_sets = set(gene_sets.loc[gene_sets["gene_id"] == gene_id, "set_id"]) & (disease_sets | target_sets)
+        for set_id in candidate_sets:
+            if set_id in target_sets:
+                shared_pathways.append(set_names.get(set_id, set_id))
+            else:
+                member_only_pathways.append(set_names.get(set_id, set_id))
+        shared_pathways.sort(key=str.lower)
+        member_only_pathways.sort(key=str.lower)
+
+    datatypes = []
+    if ot is not None:
+        for datatype, rows in ot[ot["gene_id"] == gene_id].groupby("datatype_id"):
+            datatypes.append({
+                "datatype": str(datatype),
+                "score": float(rows["score"].max()),
+                "datasources": sorted(rows["datasource_id"].astype(str).unique()),
+                # "Feeds" the genetic-evidence score only if Stage 4 ran with this datatype.
+                "feeds": run["stage4_ran"] and str(datatype) in run["admitted_datatypes"],
+            })
+        # Datatypes that feed the score first, then by score.
+        datatypes.sort(key=lambda entry: (not entry["feeds"], -entry["score"]))
+
+    interactions = []
+    if interactions_df is not None:
+        touching = interactions_df[(interactions_df["gene_a"] == gene_id) | (interactions_df["gene_b"] == gene_id)]
+        for row in touching.itertuples(index=False):
+            if row.gene_a == gene_id:
+                other_gene = row.gene_b
+            else:
+                other_gene = row.gene_a
+            # Without graph_gene_index.json every touching interaction is shown.
+            if graph_index is not None and other_gene not in graph_index:
+                continue
+            confidence = None
+            if not pd.isna(row.confidence):
+                confidence = float(row.confidence)
+            interactions.append({
+                "a": symbol_of(row.gene_a, symbols),
+                "b": symbol_of(row.gene_b, symbols),
+                "directed": bool(row.directed),
+                "sign": SIGN_LABELS.get(int(row.sign), str(row.sign)),
+                "evidence_type": str(row.evidence_type),
+                "confidence": confidence,
+                "to_target": other_gene == target_id,
+            })
+
+    return {
+        "shared_pathways": shared_pathways,
+        "member_pathways": member_only_pathways,
+        "datatypes": datatypes,
+        "interactions": interactions,
+        "pathways_available": gene_sets is not None,
+        "datatypes_available": ot is not None,
+        "interactions_available": interactions_df is not None,
+        "interactions_unscoped": interactions_df is not None and graph_index is None,
+    }
+
+
+def benchmark_summary(benchmark_dir=None):
+    """Return (summary text or None, label of its source)."""
+    if benchmark_dir is None:
+        benchmark_dir = REPO_DIR / "benchmarking"
+    benchmark_dir = Path(benchmark_dir)
+    real_summary = benchmark_dir / "benchmark_summary.txt"
+    example_summary = benchmark_dir / "benchmark_summary.example.txt"
+    if real_summary.exists():
+        return real_summary.read_text().strip(), "benchmark_summary.txt"
+    if example_summary.exists():
+        return example_summary.read_text().strip(), "benchmark_summary.example.txt (EXAMPLE — not a real validation run)"
+    return None, "none"
+
+
+def escape(value):
+    return html.escape(str(value))
+
+
+def html_list(items):
+    text = "<ul>"
+    for item in items:
+        text += f"<li>{item}</li>"
+    return text + "</ul>"
+
+
+def trace_html(gene_id, symbol, row, trace):
     parts = [
-        f'<details id="g-{_e(gene_id)}">',
-        f"<summary><b>{_e(sym)}</b> <span class=ens>{_e(gene_id)}</span> "
+        f'<details id="g-{escape(gene_id)}">',
+        f"<summary><b>{escape(symbol)}</b> <span class=ens>{escape(gene_id)}</span> "
         f"&mdash; composite <b>{row.composite_score:.3f}</b></summary>",
         '<div class="trace">',
         '<p class="k">Composite breakdown</p>',
-        f"<p><code>{_e(row.composite_breakdown)}</code><br>"
-        f"weights <code>{_e(row.composite_weights)}</code></p>",
+        f"<p><code>{escape(row.composite_breakdown)}</code><br>weights <code>{escape(row.composite_weights)}</code></p>",
+        '<p class="k">Shared pathways with the target</p>',
     ]
-
-    parts.append('<p class="k">Shared pathways with the target</p>')
-    if not tr["pathways_available"]:
+    if not trace["pathways_available"]:
         parts.append('<p class="none">gene_sets.parquet not in the run directory</p>')
-    elif tr["shared_pathways"]:
-        parts.append("<ul>" + "".join(f"<li>{_e(n)}</li>" for n in tr["shared_pathways"]) + "</ul>")
+    elif trace["shared_pathways"]:
+        names = []
+        for name in trace["shared_pathways"]:
+            names.append(escape(name))
+        parts.append(html_list(names))
     else:
         parts.append('<p class="none">none in the Stage 3 pathway union</p>')
 
-    if tr["member_pathways"]:
+    if trace["member_pathways"]:
         parts.append('<p class="k">Also a member of (disease-relevant; target is not)</p>')
-        parts.append("<ul>" + "".join(f"<li>{_e(n)}</li>" for n in tr["member_pathways"]) + "</ul>")
+        names = []
+        for name in trace["member_pathways"]:
+            names.append(escape(name))
+        parts.append(html_list(names))
 
     parts.append('<p class="k">Open Targets evidence datatypes</p>')
-    if not tr["datatypes_available"]:
+    if not trace["datatypes_available"]:
         parts.append('<p class="none">ot_disease_subset.parquet not in the run directory</p>')
-    elif tr["datatypes"]:
-        lis = []
-        for d in tr["datatypes"]:
-            badge = '<span class="badge">feeds genetic-evidence score</span>' if d["feeds"] else ""
-            src = f' <span class="src">({", ".join(_e(s) for s in d["datasources"])})</span>'
-            lis.append(f"<li>{_e(d['datatype'])} &mdash; {d['score']:.3f}{badge}{src}</li>")
-        parts.append("<ul>" + "".join(lis) + "</ul>")
+    elif trace["datatypes"]:
+        items = []
+        for datatype in trace["datatypes"]:
+            badge = ""
+            if datatype["feeds"]:
+                badge = '<span class="badge">feeds genetic-evidence score</span>'
+            sources = escape(", ".join(datatype["datasources"]))
+            items.append(f"{escape(datatype['datatype'])} &mdash; {datatype['score']:.3f}{badge} "
+                         f"<span class=\"src\">({sources})</span>")
+        parts.append(html_list(items))
     else:
         parts.append('<p class="none">no Open Targets association rows for this gene in this disease</p>')
 
-    label = "Interactions touching this gene" if tr["interactions_unscoped"] else "Interactions in the graph"
-    parts.append(f'<p class="k">{label}</p>')
-    if not tr["interactions_available"]:
+    if trace["interactions_unscoped"]:
+        parts.append('<p class="k">Interactions touching this gene</p>')
+    else:
+        parts.append('<p class="k">Interactions in the graph</p>')
+    if not trace["interactions_available"]:
         parts.append('<p class="none">interactions.parquet not in the run directory</p>')
-    elif tr["interactions"]:
-        lis = []
-        for it in tr["interactions"]:
-            arrow = "&rarr;" if it["directed"] else "&mdash;"
-            conf = "" if it["confidence"] is None else f", confidence {it['confidence']:.2f}"
-            tgt = '<span class="badge tgt">to target</span>' if it["to_target"] else ""
-            lis.append(
-                f"<li>{_e(it['a'])} {arrow} {_e(it['b'])} &mdash; {_e(it['sign'])}, "
-                f"{_e(it['evidence_type'])}{conf}{tgt}</li>"
-            )
-        parts.append("<ul>" + "".join(lis) + "</ul>")
+    elif trace["interactions"]:
+        items = []
+        for interaction in trace["interactions"]:
+            arrow = "&mdash;"
+            if interaction["directed"]:
+                arrow = "&rarr;"
+            confidence = ""
+            if interaction["confidence"] is not None:
+                confidence = f", confidence {interaction['confidence']:.2f}"
+            to_target = ""
+            if interaction["to_target"]:
+                to_target = '<span class="badge tgt">to target</span>'
+            items.append(f"{escape(interaction['a'])} {arrow} {escape(interaction['b'])} &mdash; "
+                         f"{escape(interaction['sign'])}, {escape(interaction['evidence_type'])}{confidence}{to_target}")
+        parts.append(html_list(items))
     else:
         parts.append('<p class="none">no signed interaction edges touch this gene</p>')
 
@@ -350,13 +308,17 @@ def _trace_html(gene_id: str, sym: str, row, tr: dict) -> str:
     return "".join(parts)
 
 
-def render_html(run: dict, bench_text: str | None, bench_label: str) -> str:
-    m = run["manifest"]
-    df = run["annotated"].reset_index(drop=True)
+def render_html(run, benchmark_text, benchmark_label):
+    manifest = run["manifest"]
+    candidates = run["annotated"].reset_index(drop=True)
     symbols = run["symbols"]
-    tgt = m["resolved_target"]
-    dis = m["disease"]
-    versions = ", ".join(f"{s['db']} {s['version']}" for s in m.get("sources", []))
+    target = manifest["resolved_target"]
+    disease = manifest["disease"]
+    target_symbol = escape(symbol_of(target["gene_id"], symbols))
+
+    versions = []
+    for source in manifest.get("sources", []):
+        versions.append(f"{source['db']} {source['version']}")
     if run["stage4_ran"]:
         graph_kind = "Stage 4 (genetic-evidence-weighted)"
     elif run["graph_meta"]:
@@ -364,89 +326,78 @@ def render_html(run: dict, bench_text: str | None, bench_label: str) -> str:
     else:
         graph_kind = "unknown (no graph_metadata.json)"
 
-    have_rwr = "rwr_score" in df.columns
-    have_gen = "genetic_evidence_score" in df.columns
+    has_rwr = "rwr_score" in candidates.columns
+    has_genetic_evidence = "genetic_evidence_score" in candidates.columns
 
-    # ---- ranked table ----
-    # (name, numeric-sort, left-align-text)
-    headers = [
-        ("#", True, False), ("symbol", False, True), ("gene", False, True),
-        ("composite", True, False), ("topology", True, False),
-    ]
-    if have_rwr:
+    # (column title, sort numerically, left-aligned text)
+    headers = [("#", True, False), ("symbol", False, True), ("gene", False, True),
+               ("composite", True, False), ("topology", True, False)]
+    if has_rwr:
         headers.append(("rwr", True, False))
-    if have_gen:
+    if has_genetic_evidence:
         headers.append(("genetic ev.", True, False))
-    headers += [("tractability", False, True), ("safety", False, True)]
+    headers.append(("tractability", False, True))
+    headers.append(("safety", False, True))
+    header_html = ""
+    for i, (title, numeric, is_text) in enumerate(headers):
+        css_class = ""
+        if is_text:
+            css_class = ' class="txt"'
+        header_html += f'<th{css_class} onclick="sortTable({i},{str(numeric).lower()})">{escape(title)}</th>'
 
-    thead = "".join(
-        f'<th class="txt" onclick="sortTable({i},false)">{_e(name)}</th>'
-        if txt else f'<th onclick="sortTable({i},{str(num).lower()})">{_e(name)}</th>'
-        for i, (name, num, txt) in enumerate(headers)
-    )
-
-    body_rows = []
-    for rank, row in enumerate(df.itertuples(index=False), start=1):
-        gid = row.gene
-        sym = _sym(gid, symbols)
+    table_rows = []
+    details = []
+    rank = 0
+    for row in candidates.itertuples(index=False):
+        rank += 1
+        gene_id = row.gene
+        symbol = symbol_of(gene_id, symbols)
         cells = [
             f'<td data-v="{rank}">{rank}</td>',
-            f'<td class="txt"><a href="#" onclick="openGene(\'g-{_e(gid)}\');return false;">{_e(sym)}</a></td>',
-            f'<td class="txt ens">{_e(gid)}</td>',
+            f'<td class="txt"><a href="#" onclick="openGene(\'g-{escape(gene_id)}\');return false;">{escape(symbol)}</a></td>',
+            f'<td class="txt ens">{escape(gene_id)}</td>',
             f'<td data-v="{row.composite_score}">{row.composite_score:.3f}</td>',
             f'<td data-v="{row.topology_score}">{row.topology_score:.3f}</td>',
         ]
-        if have_rwr:
+        if has_rwr:
             cells.append(f'<td data-v="{row.rwr_score}">{row.rwr_score:.4f}</td>')
-        if have_gen:
+        if has_genetic_evidence:
             cells.append(f'<td data-v="{row.genetic_evidence_score}">{row.genetic_evidence_score:.3f}</td>')
-        cells.append(f'<td class="txt">{_e(row.tractability)}</td>')
-        cells.append(f'<td class="txt">{_e(row.safety)}</td>')
-        body_rows.append("<tr>" + "".join(cells) + "</tr>")
+        cells.append(f'<td class="txt">{escape(row.tractability)}</td>')
+        cells.append(f'<td class="txt">{escape(row.safety)}</td>')
+        table_rows.append("<tr>" + "".join(cells) + "</tr>")
+        details.append(trace_html(gene_id, symbol, row, evidence_trace(gene_id, run)))
 
-    # ---- per-candidate detail blocks (rank order) ----
-    details = [
-        _trace_html(row.gene, _sym(row.gene, symbols), row, evidence_trace(row.gene, run))
-        for row in df.itertuples(index=False)
-    ]
-
-    # ---- validation panel ----
-    if bench_text is None:
-        bench_block = (
-            '<p class="none">No benchmark summary found. Run '
-            "<code>benchmarking/benchmark_validate.py</code> and re-generate this report.</p>"
-        )
+    if benchmark_text is None:
+        benchmark_html = ('<p class="none">No benchmark summary found. Run '
+                          "<code>benchmarking/benchmark_validate.py</code> and re-generate this report.</p>")
     else:
-        warn = ""
-        if "EXAMPLE" in bench_label:
-            warn = f'<p class="warn">Source: {_e(bench_label)}</p>'
-        else:
-            warn = f'<p class="meta">Source: {_e(bench_label)}</p>'
-        bench_block = warn + f"<pre>{_e(bench_text)}</pre>"
+        css_class = "meta"
+        if "EXAMPLE" in benchmark_label:
+            css_class = "warn"
+        benchmark_html = f'<p class="{css_class}">Source: {escape(benchmark_label)}</p><pre>{escape(benchmark_text)}</pre>'
 
+    missing_note = ""
+    if run["missing"]:
+        missing_note = (f'<p class="warn">Partial run: {escape(", ".join(run["missing"]))} not in the run directory — '
+                        "the affected columns / trace sections are shown as unavailable below.</p>")
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    tbody_html = "\n".join(body_rows)
+    table_html = "\n".join(table_rows)
     details_html = "\n".join(details)
-    missing_note = (
-        f'<p class="warn">Partial run: {_e(", ".join(run["missing"]))} not in the run directory — '
-        "the affected columns / trace sections are shown as unavailable below.</p>"
-        if run["missing"]
-        else ""
-    )
 
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Target Rescue via Pathways &mdash; {_e(_sym(tgt['gene_id'], symbols))} / {_e(dis['name'])}</title>
-<style>{_CSS}</style>
+<title>Target Rescue via Pathways &mdash; {target_symbol} / {escape(disease['name'])}</title>
+<style>{CSS}</style>
 </head><body>
 <h1>Target Rescue via Pathways &mdash; candidate report</h1>
 <p class="meta">
-Target <b>{_e(_sym(tgt['gene_id'], symbols))}</b> <span class=ens>{_e(tgt['gene_id'])}</span>
-(input <code>{_e(tgt['input'])}</code>) &middot;
-Disease <b>{_e(dis['name'])}</b> <span class=ens>{_e(dis['efo_id'])}</span> &middot;
-{len(df)} candidates &middot; seed {_e(m.get('seed'))} &middot; {_e(versions)} &middot;
-graph: {_e(graph_kind)} &middot; generated {generated}
+Target <b>{target_symbol}</b> <span class=ens>{escape(target['gene_id'])}</span>
+(input <code>{escape(target['input'])}</code>) &middot;
+Disease <b>{escape(disease['name'])}</b> <span class=ens>{escape(disease['efo_id'])}</span> &middot;
+{len(candidates)} candidates &middot; seed {escape(manifest.get('seed'))} &middot; {escape(", ".join(versions))} &middot;
+graph: {escape(graph_kind)} &middot; generated {generated}
 </p>
 {missing_note}
 <p class="lead">
@@ -457,9 +408,9 @@ its evidence trace.
 </p>
 
 <table id="ranktable">
-<thead><tr>{thead}</tr></thead>
+<thead><tr>{header_html}</tr></thead>
 <tbody id="ranktbody">
-{tbody_html}
+{table_html}
 </tbody>
 </table>
 
@@ -468,62 +419,41 @@ its evidence trace.
 
 <h2>Benchmark validation</h2>
 <p class="meta">Static &mdash; embedded from <code>benchmarking/</code>, not recomputed for this report.</p>
-{bench_block}
+{benchmark_html}
 
-<script>{_JS}</script>
+<script>{JAVASCRIPT}</script>
 </body></html>
 """
 
 
-# ==========================================================================
-# Orchestration
-# ==========================================================================
-
-
-def build_report(run_dir: Path, out_path: Path, *, benchmark_dir: Path | None = None) -> Path:
+def build_report(run_dir, out_path, benchmark_dir=None):
     run = load_run(run_dir)
-    text, label = benchmark_summary(benchmark_dir)
-    html_str = render_html(run, text, label)
+    benchmark_text, benchmark_label = benchmark_summary(benchmark_dir)
     out_path = Path(out_path)
-    out_path.write_text(html_str)
+    out_path.write_text(render_html(run, benchmark_text, benchmark_label))
     logger.info("Report written (%d candidates): %s", len(run["annotated"]), out_path)
     return out_path
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
         prog="stage7_report.py",
-        description="Stage 7 — output/report. Turns a finished run directory (manifest.json + "
-        "candidates_annotated.tsv required; other artifacts optional) into ONE self-contained "
-        "interactive HTML file: sortable ranked table, click-to-expand evidence trace per "
-        "candidate, and a static benchmark-validation panel. No server, no external assets.",
+        description="Stage 7 - output/report. Turns a finished run directory (manifest.json + "
+        "candidates_annotated.tsv required; other files optional) into ONE self-contained interactive HTML "
+        "file: sortable ranked table, click-to-expand evidence trace per candidate, and a static "
+        "benchmark-validation panel.",
     )
-    p.add_argument(
-        "--run-dir",
-        required=True,
-        type=Path,
-        help="Directory with the Stage 1-6 artifacts (manifest.json, candidates_annotated.tsv, ...).",
-    )
-    p.add_argument(
-        "--out",
-        type=Path,
-        default=None,
-        help="Output HTML path. Default: <run-dir>/report.html.",
-    )
-    p.add_argument(
-        "--benchmark-dir",
-        type=Path,
-        default=None,
-        help="Directory holding benchmark_summary.txt / .example.txt. Default: <repo>/benchmarking.",
-    )
-    return p
+    parser.add_argument("--run-dir", required=True, type=Path, help="Directory with the Stage 1-6 outputs.")
+    parser.add_argument("--out", type=Path, default=None, help="Output HTML path. Default: <run-dir>/report.html.")
+    parser.add_argument("--benchmark-dir", type=Path, default=None,
+                        help="Directory holding benchmark_summary.txt / .example.txt. Default: <repo>/benchmarking.")
+    return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv=None):
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    args = build_arg_parser().parse_args(argv)
-    out = args.out or (args.run_dir / "report.html")
-    build_report(args.run_dir, out, benchmark_dir=args.benchmark_dir)
+    args = parse_args(argv)
+    build_report(args.run_dir, args.out or args.run_dir / "report.html", benchmark_dir=args.benchmark_dir)
 
 
 if __name__ == "__main__":

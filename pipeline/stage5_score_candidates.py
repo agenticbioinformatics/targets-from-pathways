@@ -1,362 +1,178 @@
-"""Stage 5 — Candidate scoring.
+"""Stage 5 - candidate scoring.
 
-Loads a Stage 3 *or* Stage 4 pathway-based gene-gene graph (the two share
-one serialization format — ``graph_weight.npz``, ``graph_sign.npz``,
-``graph_gene_index.json``, ``graph_metadata.json``, read via ``--graph-dir``)
-plus the target node, and scores every other node for proximity to the
-target. Never reads a raw source file or a Stage 1/2 artifact — everything
-it needs is in the graph directory.
-
-``--method`` is a comma-separated list drawn from ``{topology, rwr}``,
-**defaulting to ``topology`` only**:
-
-- **topology** (always computed — the output always carries a
-  ``topology_score`` column): direction- and weight-aware proximity from
-  two graph features combined into one score,
-  ``(1 + common_neighbours) / (1 + shortest_path_distance)`` —
-
-  - *shortest-path distance* from the target to the node along edge
-    directions, each edge costing ``1 / weight`` (``weight`` from
-    ``graph_weight.npz``: comembership + interaction-confidence on a Stage 3
-    graph, genetic-evidence-derived on a Stage 4 graph). A present edge with
-    a stored weight of ``0`` — which Stage 4 produces for an edge between
-    two genes with no genetic evidence — costs ``1.0`` (one plain hop), so
-    an unweighted or all-zero graph degrades to hop count rather than
-    becoming disconnected. A node the target cannot reach scores ``0.0``.
-  - *common-neighbour count* with the target in the undirected projection —
-    a graph-derived stand-in for shared-pathway membership, since Stage 3's
-    co-membership edges make every pair of genes in a pathway adjacent, so
-    two genes in the same pathway(s) share that pathway's other members as
-    neighbours.
-
-  Deterministic, cheap, no iteration — hence always-on.
-
-- **rwr** (opt-in): personalised random-walk-with-restart, i.e. personalised
-  PageRank (``networkx.pagerank``, *not* hand-rolled), restarting on the
-  target node, walking ``graph_weight.npz`` as edge weights. ``alpha`` (the
-  PageRank damping) is ``1 - --restart-prob``. The restart distribution
-  always puts a full unit of mass on the target; when the graph carries
-  node weights (a Stage 4 graph's ``genetic_evidence_score``), a further
-  ``--node-weight-mix`` units are spread over genes in proportion to their
-  genetic-evidence score before renormalising, so genetic evidence seeds
-  the walk without ever displacing the target as the primary restart point.
-  On a Stage 3 graph (no node weights) the restart is the target alone. The
-  result is a probability distribution over nodes (non-negative, sums to ~1).
-
-  ``networkx.pagerank`` is a deterministic power iteration with no random
-  step, so the ``seed`` recorded in ``graph_metadata.json`` has nothing to
-  seed here and is not used.
-
-Backtrack-free walk (non-backtracking RWR) was considered as a third method
-and removed from scope — see README.md plan update 5.
-
-**Output** — ``candidate_scores.tsv`` (or ``--out``), validated against
-``schemas.CandidateScoresSchema``: one row per non-target graph node,
-columns ``gene`` and ``topology_score`` always, plus ``rwr_score`` only
-when ``rwr`` was in ``--method``. Rows are ranked by ``rwr_score`` when
-present, else ``topology_score``, descending.
-
-**Wiring to Stage 6 — the ``gene`` column is an Ensembl gene ID**, the
-project's single canonical identifier (README.md Decision 2). It is not
-mapped or transformed here: it is copied verbatim from
-``graph_gene_index.json``, whose entries Stage 3 already constrained to
-``^ENSG\\d{11}$`` (``build_graph.validate_gene_index``) from
-Ensembl-keyed ``gene_sets.parquet`` / ``interactions.parquet``. Stage 5
-re-checks the format on load and ``CandidateScoresSchema`` re-checks it on
-write, so a stray symbol or Reactome physical-entity ID fails loudly rather
-than silently failing to join. This is the same namespace as
-``ot_disease_subset.gene_id``, ``genes.gene_id`` and
-``graph_metadata.json``'s ``genetic_evidence_score`` keys — all
-Open-Targets-canonicalised in Stage 1 — so Stage 6 joins
-``candidate_scores.gene`` straight onto Open Targets tractability/safety
-and the Stage 4 evidence scores with no ID-mapping step. Human-readable
-HGNC symbols are resolved from ``genes.parquet`` only at display time
-(Stages 6/8), never written into this file.
+Scores every non-target gene of the Stage 3 or Stage 4 graph by its proximity to the target and writes
+candidate_scores.tsv. Methods (--method):
+- topology (always computed): (1 + common neighbours with the target) / (1 + weighted shortest-path distance
+  from the target, each edge costing 1 / weight). Unreachable genes score 0.
+- rwr (opt-in): random walk with restart on the target (personalised PageRank).
 """
 
-from __future__ import annotations
-
 import argparse
-import json
 import logging
-import sys
 from pathlib import Path
 
 import networkx as nx
 import pandas as pd
-import scipy.sparse as sp
 
-from stage0_schemas import CandidateScoresSchema, ENSEMBL_GENE_ID_PATTERN
+from stage0_schemas import ENSEMBL_GENE_ID_PATTERN, CandidateScoresSchema, fail, load_graph
 
 logger = logging.getLogger("score_candidates")
 
-METHODS = ("topology", "rwr")
-# A present edge whose stored weight is 0 (Stage 4: an edge between two genes
-# with no genetic evidence) still exists structurally; give it a plain
-# one-hop traversal cost so the graph never silently disconnects.
+METHODS = ["topology", "rwr"]
+# Stage 4 stores weight 0 on edges between genes without evidence. Such an edge still exists, so it costs
+# one plain hop instead of disconnecting the graph.
 ZERO_WEIGHT_HOP_COST = 1.0
 
 
-# ==========================================================================
-# CLI
-# ==========================================================================
-
-
-def build_arg_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
         prog="stage5_score_candidates.py",
-        description="Stage 5 — candidate scoring. Ranks every non-target graph gene by proximity to the "
-        "target: topology (always) and, opt-in via --method, random-walk-with-restart. Reads the "
-        "graph_*.{npz,json} in --graph-dir (Stage 3 or Stage 4); writes candidate_scores.tsv.",
+        description="Stage 5 - candidate scoring. Ranks every non-target graph gene by proximity to the "
+        "target: topology (always) and, opt-in via --method, random-walk-with-restart. Reads the graph files "
+        "in --graph-dir (Stage 3 or Stage 4); writes candidate_scores.tsv.",
     )
-    p.add_argument(
-        "--graph-dir",
-        required=True,
-        type=Path,
-        help="Directory with graph_weight.npz / graph_sign.npz / graph_gene_index.json / "
-        "graph_metadata.json, as written by stage3_build_graph.py or stage4_genetic_evidence_weights.py.",
+    parser.add_argument("--graph-dir", required=True, type=Path, help="Directory with the Stage 3/4 graph files.")
+    parser.add_argument("--method", default="topology",
+                        help="Comma-separated subset of {topology, rwr}. Default: topology (always computed).")
+    parser.add_argument("--target", default=None,
+                        help="Target Ensembl gene ID. Default: resolved_target.gene_id from graph_metadata.json.")
+    parser.add_argument("--restart-prob", type=float, default=0.5,
+                        help="RWR restart probability (0 < p < 1); PageRank alpha = 1 - p. Default: 0.5.")
+    parser.add_argument(
+        "--node-weight-mix", type=float, default=0.5,
+        help="RWR on a Stage 4 graph only: extra restart mass (in units of the target's) spread over genes by "
+        "genetic-evidence score. 0 = restart on the target alone. Default: 0.5.",
     )
-    p.add_argument(
-        "--method",
-        default="topology",
-        help="Comma-separated subset of {topology, rwr}. Default: topology. rwr is opt-in "
-        "(e.g. --method topology,rwr or --method rwr); topology_score is always emitted regardless.",
-    )
-    p.add_argument(
-        "--target",
-        default=None,
-        help="Target gene's Ensembl ID. Defaults to graph_metadata.json's resolved_target.gene_id.",
-    )
-    p.add_argument(
-        "--restart-prob",
-        type=float,
-        default=0.5,
-        help="RWR restart probability (0 < p < 1); PageRank alpha = 1 - restart_prob. Default: 0.5.",
-    )
-    p.add_argument(
-        "--node-weight-mix",
-        type=float,
-        default=0.5,
-        help="RWR only, and only when the graph carries node weights (Stage 4): extra restart "
-        "mass (>= 0, in units of the target's) spread over genes by genetic-evidence score. "
-        "0 = restart on the target alone; 0.5 (default) = target keeps ~2/3 of the restart mass. "
-        "Ignored on a Stage 3 graph.",
-    )
-    p.add_argument(
-        "--out",
-        type=Path,
-        default=None,
-        help="Output TSV path. Defaults to <graph-dir>/candidate_scores.tsv.",
-    )
-    return p
+    parser.add_argument("--out", type=Path, default=None, help="Output TSV. Default: <graph-dir>/candidate_scores.tsv.")
+    return parser.parse_args(argv)
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    return build_arg_parser().parse_args(argv)
-
-
-def _fail(msg: str) -> None:
-    logger.error(msg)
-    sys.exit(1)
-
-
-def parse_methods(raw: str) -> list[str]:
-    """Ordered, de-duplicated method list. ``topology`` is always included
-    (the output always needs a ``topology_score``), even if only ``rwr`` was
-    asked for."""
-    requested = [m.strip().lower() for m in raw.split(",") if m.strip()]
-    unknown = [m for m in requested if m not in METHODS]
-    if unknown:
-        _fail(f"--method has unknown value(s) {unknown}; valid: {list(METHODS)}.")
-    methods = list(dict.fromkeys(requested)) or ["topology"]
-    if "topology" not in methods:
-        methods = ["topology", *methods]  # topology_score is always emitted
+def parse_methods(raw_methods):
+    methods = ["topology"]
+    for method in raw_methods.split(","):
+        method = method.strip().lower()
+        if not method:
+            continue
+        if method not in METHODS:
+            fail(f"--method has unknown value {method!r}; valid: {METHODS}.")
+        if method not in methods:
+            methods.append(method)
     return methods
 
 
-# ==========================================================================
-# Graph loading (Stage 3 / Stage 4 shared format)
-# ==========================================================================
-
-
-def load_graph(graph_dir: Path) -> tuple[sp.csr_matrix, sp.csr_matrix, list[str], dict]:
-    weight_path = graph_dir / "graph_weight.npz"
-    sign_path = graph_dir / "graph_sign.npz"
-    index_path = graph_dir / "graph_gene_index.json"
-    metadata_path = graph_dir / "graph_metadata.json"
-    for path in (weight_path, sign_path, index_path, metadata_path):
-        if not path.exists():
-            _fail(f"Graph artifact {path} does not exist (run stage3_build_graph.py first?).")
-
-    weight = sp.load_npz(weight_path).tocsr()
-    sign = sp.load_npz(sign_path).tocsr()
-    gene_index = json.loads(index_path.read_text())
-    metadata = json.loads(metadata_path.read_text())
-
-    n = len(gene_index)
-    if weight.shape != (n, n) or sign.shape != (n, n):
-        _fail(
-            f"Graph artifacts in {graph_dir} are misaligned: weight.shape={weight.shape}, "
-            f"sign.shape={sign.shape}, gene index has {n} entries."
-        )
-    return weight, sign, gene_index, metadata
-
-
-def resolve_target(args_target: str | None, metadata: dict, gene_index: list[str]) -> str:
-    target = args_target or metadata.get("resolved_target", {}).get("gene_id")
-    if not target:
-        _fail("No --target given and graph_metadata.json has no resolved_target.gene_id.")
-    if target not in set(gene_index):
-        _fail(f"Target {target} is not a node in this graph ({len(gene_index)} nodes).")
-    return target
-
-
-def build_digraph(weight: sp.csr_matrix, gene_index: list[str]) -> nx.DiGraph:
-    """Directed graph over *every* gene in the index (isolated nodes kept),
-    each edge carrying:
-
-    - ``weight``: the raw stored value, used as-is by RWR. A stored ``0``
-      (Stage 4: no genetic evidence on either endpoint) stays ``0`` — that
-      edge simply carries no diffusion flow, which is the intended meaning;
-      forcing it to a positive value would let no-evidence edges dominate a
-      Stage 4 walk.
-    - ``cost``: ``1 / weight`` for shortest paths, with a stored ``0``
-      costing one plain hop (``ZERO_WEIGHT_HOP_COST``) so a present-but-
-      unweighted edge keeps the graph connected for the topology method.
-    """
+def build_digraph(weight, gene_index):
+    """Each edge gets "weight" (used by RWR, 0 stays 0 so evidence-free edges carry no flow) and
+    "cost" (1 / weight, used for shortest paths)."""
     graph = nx.DiGraph()
     graph.add_nodes_from(gene_index)
-    coo = weight.tocoo()
-    for i, j, w in zip(coo.row, coo.col, coo.data):
-        w = float(w)
-        graph.add_edge(
-            gene_index[i], gene_index[j],
-            weight=max(w, 0.0),
-            cost=(1.0 / w) if w > 0 else ZERO_WEIGHT_HOP_COST,
-        )
+    edges = weight.tocoo()
+    for i, j, edge_weight in zip(edges.row, edges.col, edges.data):
+        edge_weight = max(float(edge_weight), 0.0)
+        if edge_weight > 0:
+            cost = 1.0 / edge_weight
+        else:
+            cost = ZERO_WEIGHT_HOP_COST
+        graph.add_edge(gene_index[i], gene_index[j], weight=edge_weight, cost=cost)
     return graph
 
 
-# ==========================================================================
-# Scoring methods
-# ==========================================================================
-
-
-def topology_scores(graph: nx.DiGraph, target: str) -> dict[str, float]:
-    """``(1 + common_neighbours) / (1 + shortest_path_distance)`` per node;
-    0.0 for a node unreachable from the target. See module docstring."""
-    dist = nx.single_source_dijkstra_path_length(graph, target, weight="cost")
+def topology_scores(graph, target):
+    distance_from_target = nx.single_source_dijkstra_path_length(graph, target, weight="cost")
+    # Co-membership links all genes of a pathway, so shared neighbours approximate shared pathways.
     undirected = graph.to_undirected(as_view=True)
     target_neighbours = set(undirected.neighbors(target))
 
-    scores: dict[str, float] = {}
-    for node in graph.nodes:
-        if node == target:
+    scores = {}
+    for gene in graph.nodes:
+        if gene == target:
             continue
-        if node not in dist:
-            scores[node] = 0.0
+        if gene not in distance_from_target:
+            scores[gene] = 0.0
             continue
-        common = len(target_neighbours.intersection(undirected.neighbors(node)))
-        scores[node] = (1.0 + common) / (1.0 + dist[node])
+        n_common = len(target_neighbours & set(undirected.neighbors(gene)))
+        scores[gene] = (1.0 + n_common) / (1.0 + distance_from_target[gene])
     return scores
 
 
-def _restart_distribution(
-    metadata: dict, gene_index: list[str], target: str, node_weight_mix: float
-) -> dict[str, float]:
-    """The RWR restart distribution: always a full unit of mass on the
-    target, plus — when the graph carries node weights (Stage 4) —
-    ``--node-weight-mix`` extra units spread over genes in proportion to
-    their ``genetic_evidence_score``, then renormalised. The target
-    therefore always keeps at least ``1 / (1 + mix)`` of the restart mass,
-    so "restart on the target" holds for any ``mix``; higher ``mix`` just
-    lets genetic evidence seed the walk more strongly. Returns a
-    normalised dict over every gene in ``gene_index``."""
-    restart = {g: (1.0 if g == target else 0.0) for g in gene_index}
-    node_weights = metadata.get("genetic_evidence_score")
-    if not node_weights:
-        return restart
+def restart_distribution(metadata, gene_index, target, node_weight_mix):
+    """The target always gets 1 unit of restart mass. On a Stage 4 graph, node_weight_mix more units are
+    spread over genes in proportion to their evidence score, so the target keeps at least 1 / (1 + mix)."""
+    restart = {}
+    for gene in gene_index:
+        restart[gene] = 0.0
+    restart[target] = 1.0
 
-    total = float(sum(max(0.0, float(node_weights.get(g, 0.0))) for g in gene_index))
-    if total <= 0:
+    evidence_scores = metadata.get("genetic_evidence_score")
+    if not evidence_scores:
+        return restart
+    total_evidence = 0.0
+    for gene in gene_index:
+        total_evidence += max(0.0, float(evidence_scores.get(gene, 0.0)))
+    if total_evidence <= 0:
         return restart
 
     mix = max(node_weight_mix, 0.0)
-    for g in gene_index:
-        restart[g] += mix * max(0.0, float(node_weights.get(g, 0.0))) / total
-    norm = sum(restart.values())
-    restart = {g: v / norm for g, v in restart.items()}
-    logger.info(
-        "RWR restart: target keeps %.2f of the mass (--node-weight-mix=%.2f).",
-        restart[target], mix,
-    )
+    for gene in gene_index:
+        restart[gene] += mix * max(0.0, float(evidence_scores.get(gene, 0.0))) / total_evidence
+    total_mass = sum(restart.values())
+    for gene in gene_index:
+        restart[gene] = restart[gene] / total_mass
+    logger.info("RWR restart: target keeps %.2f of the mass (--node-weight-mix=%.2f).", restart[target], mix)
     return restart
 
 
-def rwr_scores(
-    graph: nx.DiGraph,
-    gene_index: list[str],
-    target: str,
-    metadata: dict,
-    restart_prob: float,
-    node_weight_mix: float,
-) -> dict[str, float]:
+def rwr_scores(graph, gene_index, target, metadata, restart_prob, node_weight_mix):
     if not 0.0 < restart_prob < 1.0:
-        _fail(f"--restart-prob must be strictly between 0 and 1 (got {restart_prob}).")
-    personalization = _restart_distribution(metadata, gene_index, target, node_weight_mix)
-    pagerank = nx.pagerank(
-        graph, alpha=1.0 - restart_prob, personalization=personalization, weight="weight"
-    )
-    return {node: pagerank[node] for node in graph.nodes if node != target}
+        fail(f"--restart-prob must be strictly between 0 and 1 (got {restart_prob}).")
+    restart = restart_distribution(metadata, gene_index, target, node_weight_mix)
+    # networkx PageRank is a deterministic power iteration, so no seed is needed.
+    pagerank = nx.pagerank(graph, alpha=1.0 - restart_prob, personalization=restart, weight="weight")
+    scores = {}
+    for gene in graph.nodes:
+        if gene != target:
+            scores[gene] = pagerank[gene]
+    return scores
 
 
-# ==========================================================================
-# Orchestration
-# ==========================================================================
-
-
-def run(args: argparse.Namespace) -> Path:
+def run(args):
     methods = parse_methods(args.method)
-    # graph_sign.npz is loaded only for the shape/alignment check — neither
-    # topology nor RWR is sign-aware in this prototype (edge signs stay
-    # available in the artifact for a later stage that wants them).
-    weight, _sign, gene_index, metadata = load_graph(args.graph_dir)
-    bad = [g for g in gene_index if not ENSEMBL_GENE_ID_PATTERN.match(g)]
-    if bad:
-        _fail(f"Graph gene index has non-Ensembl ID(s): {bad[:10]}")
+    weight, _, gene_index, metadata = load_graph(args.graph_dir)
+    for gene in gene_index:
+        if not ENSEMBL_GENE_ID_PATTERN.match(gene):
+            fail(f"Graph gene index has a non-Ensembl ID: {gene}")
 
-    target = resolve_target(args.target, metadata, gene_index)
-    logger.info(
-        "Scoring %d candidates against %s (methods: %s).",
-        len(gene_index) - 1, target, ",".join(methods),
-    )
+    target = args.target or metadata.get("resolved_target", {}).get("gene_id")
+    if not target:
+        fail("No --target given and graph_metadata.json has no resolved_target.gene_id.")
+    if target not in gene_index:
+        fail(f"Target {target} is not a node in this graph ({len(gene_index)} nodes).")
+    logger.info("Scoring %d candidates against %s (methods: %s).", len(gene_index) - 1, target, ",".join(methods))
 
     graph = build_digraph(weight, gene_index)
-
-    candidates = [g for g in gene_index if g != target]
+    candidates = []
+    for gene in gene_index:
+        if gene != target:
+            candidates.append(gene)
     if not candidates:
-        logger.warning("Graph has no nodes other than the target — writing an empty ranking.")
+        logger.warning("Graph has no nodes other than the target - writing an empty ranking.")
+
     result = pd.DataFrame({"gene": pd.Series(candidates, dtype="object")})
-
-    topo = topology_scores(graph, target)
-    result["topology_score"] = result["gene"].map(topo).astype(float)
-
-    rank_col = "topology_score"
+    result["topology_score"] = result["gene"].map(topology_scores(graph, target)).astype(float)
+    rank_column = "topology_score"
     if "rwr" in methods:
-        rwr = rwr_scores(graph, gene_index, target, metadata, args.restart_prob, args.node_weight_mix)
-        result["rwr_score"] = result["gene"].map(rwr).astype(float)
-        rank_col = "rwr_score"
+        scores = rwr_scores(graph, gene_index, target, metadata, args.restart_prob, args.node_weight_mix)
+        result["rwr_score"] = result["gene"].map(scores).astype(float)
+        rank_column = "rwr_score"
 
-    result = result.sort_values(rank_col, ascending=False, kind="stable").reset_index(drop=True)
+    result = result.sort_values(rank_column, ascending=False, kind="stable").reset_index(drop=True)
     result = CandidateScoresSchema.validate(result)
-
-    out_path = args.out or (args.graph_dir / "candidate_scores.tsv")
+    out_path = args.out or args.graph_dir / "candidate_scores.tsv"
     result.to_csv(out_path, sep="\t", index=False)
-    logger.info("Stage 5 complete (%d candidates ranked by %s): %s", len(result), rank_col, out_path)
+    logger.info("Stage 5 complete (%d candidates ranked by %s): %s", len(result), rank_column, out_path)
     return out_path
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv=None):
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     run(parse_args(argv))
 

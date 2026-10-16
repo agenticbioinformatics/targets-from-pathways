@@ -1,8 +1,8 @@
 """Shared fixtures for stage1_ingest.py's test suite.
 
 The tests never touch the network or the real pinned registry: they patch
-stage1_ingest.py's two acquisition entry points (`_ensure_pinned_file`,
-`_ensure_directory_source`) to hand back the tiny committed fixtures under
+stage1_ingest.py's two acquisition entry points (`get_pinned_file`,
+`get_directory_files`) to hand back the tiny committed fixtures under
 tests/fixtures/ instead. Everything downstream of acquisition — extraction,
 identifier mapping, gene_sets/interactions construction, coverage/scale
 reporting, schema validation, and manifest writing — runs unmodified.
@@ -33,15 +33,15 @@ _DIRECTORY_FIXTURES = {
 }
 
 
-def _make_fake_ensure_pinned_file(tmp_path, overrides: dict | None = None):
-    """A fake `_ensure_pinned_file` that serves the committed fixtures (zip
+def _make_fake_get_pinned_file(tmp_path, overrides: dict | None = None):
+    """A fake `get_pinned_file` that serves the committed fixtures (zip
     fixtures copied+kept-zipped into tmp_path, so repeated/parallel test runs
     never write into tests/fixtures/), except for any `key` in `overrides`,
     which is served verbatim — used to swap in a single corrupt source file
     while leaving every other source as the normal tiny fixture."""
     overrides = overrides or {}
 
-    def fake_ensure_pinned_file(key, data_dir, no_download):
+    def fake_get_pinned_file(key, data_dir, no_download):
         if key in overrides:
             return overrides[key]
         src = _PINNED_FIXTURES[key]
@@ -51,23 +51,23 @@ def _make_fake_ensure_pinned_file(tmp_path, overrides: dict | None = None):
             return dest
         return src
 
-    return fake_ensure_pinned_file
+    return fake_get_pinned_file
 
 
-def _make_fake_ensure_directory_source(overrides: dict | None = None):
+def _make_fake_get_directory_files(overrides: dict | None = None):
     overrides = overrides or {}
 
-    def fake_ensure_directory_source(key, data_dir, no_download):
+    def fake_get_directory_files(key, data_dir, no_download):
         return overrides.get(key, _DIRECTORY_FIXTURES[key])
 
-    return fake_ensure_directory_source
+    return fake_get_directory_files
 
 
 @pytest.fixture
 def patched_acquisition(monkeypatch, tmp_path):
     """Redirect stage1_ingest.py's acquisition layer at the tiny fixtures."""
-    monkeypatch.setattr(ingest, "_ensure_pinned_file", _make_fake_ensure_pinned_file(tmp_path))
-    monkeypatch.setattr(ingest, "_ensure_directory_source", _make_fake_ensure_directory_source())
+    monkeypatch.setattr(ingest, "get_pinned_file", _make_fake_get_pinned_file(tmp_path))
+    monkeypatch.setattr(ingest, "get_directory_files", _make_fake_get_directory_files())
 
 
 def make_args(out_dir: Path, data_dir: Path, **overrides) -> argparse.Namespace:
