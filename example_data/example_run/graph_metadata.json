@@ -1,5 +1,5 @@
 {
-  "created_at": "2026-10-20T14:28:32.302567+00:00",
+  "created_at": "2026-10-20T15:17:07.298917+00:00",
   "disease": {
     "efo_id": "MONDO_0000001",
     "n_associated_genes": 19,
@@ -24,7 +24,7 @@
     "ENSG00000000019": 0.03,
     "ENSG00000000020": 0.02,
     "ENSG00000000021": 0.06,
-    "ENSG00000000022": 0.5,
+    "ENSG00000000022": 0.0,
     "ENSG00000000023": 0.0,
     "ENSG00000000024": 0.0,
     "ENSG00000000025": 0.0,
@@ -61,13 +61,12 @@
   "seed": 0,
   "stage4_genetic_evidence": {
     "datatypes": [
-      "genetic_association",
-      "known_drug"
+      "genetic_association"
     ],
     "edge_weight_mode": "avg",
     "holdout_genes": [],
     "n_edges_weighted": 258,
     "n_genes_total": 25,
-    "n_genes_with_evidence": 19
+    "n_genes_with_evidence": 18
   }
 }

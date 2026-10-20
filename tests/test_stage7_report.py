@@ -40,7 +40,7 @@ def _mini_run():
         "seeds": {T},
         "symbols": {T: "TGT", C: "CAND", X: "XG", Y: "YG"},
         "graph_index": {T, C, X},
-        "admitted_datatypes": {"genetic_association", "known_drug"},
+        "admitted_datatypes": {"genetic_association"},
         "holdout_genes": set(),
         "stage4_ran": True,
         "gene_sets": gene_sets,

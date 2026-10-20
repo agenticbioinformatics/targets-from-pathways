@@ -304,13 +304,13 @@ python3 pipeline/stage4_genetic_evidence_weights.py --manifest out/manifest.json
 
 Reads `ot_disease_subset.parquet` via the manifest and Stage 3's graph
 artifacts alongside it by default (override with `--graph-dir`/`--out-dir`).
-`--datatypes` (default `genetic_association,known_drug`) is an *inclusion*
-list — `affected_pathway` and any literature/pathway-derived datatype are
-excluded simply by not being named, which matters concretely: OT 26.06 maps
-its own `reactome` evidence datasource to `affected_pathway` (see
-`pipeline/stage1_ingest.py`'s `DATASOURCE_TO_DATATYPE`), so including it would let
-Reactome-derived evidence weight a graph whose topology already *is*
-Reactome pathway structure.
+Only `genetic_association` evidence counts; every other Open Targets
+datatype is ignored, and there is no option to add one:
+- `affected_pathway` would be circular: OT 26.06 maps its own `reactome`
+  evidence datasource to it (see `pipeline/stage1_ingest.py`'s
+  `DATASOURCE_TO_DATATYPE`), and the graph is built from Reactome.
+- `known_drug` would favour genes that are already drug targets for the
+  disease.
 
 Writes **exactly Stage 3's four filenames**, not a parallel set, so
 `stage5_score_candidates.py` (Stage 5) can point `--graph` at either a Stage 3 or
@@ -343,8 +343,8 @@ ENSG00000000003   0.95
 ENSG00000000004   0.92
 ```
 
-`ENSG...022` is not a seed but scores 0.5 from its `known_drug` row; the
-other non-seed genes score 0.
+Every non-seed gene scores 0: seeds are exactly the genes with
+`genetic_association` evidence. `ENSG...022`'s `known_drug` row is ignored.
 
 `--edge-weight-mode product` (default `avg`) changes only the values written
 into `graph_weight.npz`; e.g. the `ENSG...001`→`ENSG...002` edge is
@@ -426,18 +426,19 @@ python3 pipeline/stage5_score_candidates.py --graph-dir example_data/example_run
 
 ```
 gene             bfwalk_score
-ENSG00000000022  0.5050
-ENSG00000000024  0.3559
-ENSG00000000025  0.3332
-ENSG00000000023  0.3147
-ENSG00000000026  0.2222
-ENSG00000000027  0.2222
-ENSG00000000028  0.2222
+ENSG00000000024  0.3576
+ENSG00000000025  0.3346
+ENSG00000000022  0.3298
+ENSG00000000023  0.3298
+ENSG00000000026  0.2225
+ENSG00000000027  0.2225
+ENSG00000000028  0.2225
 ```
 
-`N22`, the only candidate with evidence of its own (`known_drug`), leads.
-`N25`'s interaction with seed `G2` lifts it above its pathway-mates
-`N26`–`N28`, which tie last. The 18 seeds are not in the table.
+No candidate has genetic evidence of its own, so the ranking comes from
+network position alone. `N25`'s interaction with seed `G2` lifts it above
+its pathway-mates `N26`–`N28`, which tie last. The 18 seeds are not in the
+table.
 
 The `gene` column is an **Ensembl gene ID** — the project's one canonical
 identifier (Decision 2), copied verbatim from `graph_gene_index.json`, not
@@ -523,19 +524,19 @@ order by `bfwalk_score`):
 
 ```
 gene             bfwalk_score  genetic_evidence_score  tractability  safety           n_safety_liabilities
-ENSG00000000022  0.5050        0.5                     clinical      has_liabilities  1
-ENSG00000000024  0.3559        0.0                     discovery     unknown          0
-ENSG00000000025  0.3332        0.0                     clinical      unknown          0
-ENSG00000000023  0.3147        0.0                     unknown       unknown          0
-ENSG00000000026  0.2222        0.0                     unknown       unknown          0
+ENSG00000000024  0.3576        0.0                     discovery     unknown          0
+ENSG00000000025  0.3346        0.0                     clinical      unknown          0
+ENSG00000000022  0.3298        0.0                     clinical      has_liabilities  1
+ENSG00000000023  0.3298        0.0                     unknown       unknown          0
+ENSG00000000026  0.2225        0.0                     unknown       unknown          0
 ```
 
 The order is exactly `candidate_scores.tsv`'s. `ENSG...022`'s safety
 liability and `ENSG...025`'s clinical tractability are shown, but do not
-move them. Candidates are non-seed genes, so their `genetic_evidence_score`
-can only come from datatypes other than `genetic_association` (here
-`known_drug`). Genes absent from the synthetic `ot_target_subset.parquet`
-are `unknown`/`unknown`.
+move them. `genetic_evidence_score` is 0 for every candidate: candidates
+are non-seed genes, and Stage 4 counts only `genetic_association`
+evidence, which is what makes a gene a seed. Genes absent from the
+synthetic `ot_target_subset.parquet` are `unknown`/`unknown`.
 
 `python3 -m pytest tests/test_annotate_context.py` runs the unit-level
 tests (7 tests):
@@ -618,9 +619,9 @@ ranked table — same ordering as Stage 6's `candidates_annotated.tsv`):
 
 ```
 #  symbol  gene             bfwalk  genetic ev.  tractability  safety
-1  GENE22  ENSG00000000022  0.5050  0.500        clinical      has_liabilities
-2  GENE24  ENSG00000000024  0.3559  0.000        discovery     unknown
-3  GENE25  ENSG00000000025  0.3332  0.000        clinical      unknown
+1  GENE24  ENSG00000000024  0.3576  0.000        discovery     unknown
+2  GENE25  ENSG00000000025  0.3346  0.000        clinical      unknown
+3  GENE22  ENSG00000000022  0.3298  0.000        clinical      has_liabilities
 ```
 
 Expanding `GENE25` shows: pathways shared with seed genes *Seed-Adjacent

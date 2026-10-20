@@ -15,8 +15,8 @@ genetic_association evidence, which Stage 2 writes to disease_seed_genes.tsv:
   near-duplicate *superset* of R-HSA-101.
 - G17..G21: weak seeds forming an unrelated pathway.
 - N22..N28 (ENSG00000000022-28): non-seed genes on pathways with seeds - the
-  candidates Stage 5 should rank. N22 has a known_drug row only (so it gets a
-  Stage 4 genetic-evidence score without being a seed).
+  candidates Stage 5 should rank. N22 has a known_drug row only, which Stage 4
+  ignores (it counts genetic_association evidence only).
 - N29..N33: non-seed genes on a pathway with no seed gene at all - they must
   stay out of the Stage 3 graph.
 
@@ -179,7 +179,7 @@ def build_ot_disease_subset() -> pd.DataFrame:
         }
         for gene_id, score in genetic_scores.items()
     ]
-    # N22 is not a seed (no genetic_association row) but has known_drug evidence, which Stage 4 counts.
+    # N22 is not a seed (no genetic_association row); its known_drug evidence must not count in Stage 4.
     rows.append(
         {"gene_id": N[22], "disease_id": DISEASE_ID, "datatype_id": "known_drug", "datasource_id": "chembl",
          "score": 0.50}

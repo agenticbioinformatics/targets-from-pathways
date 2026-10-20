@@ -21,7 +21,7 @@ python pipeline/run_pipeline.py --from-manifest example_data/example_run/manifes
 
 Expected: the log ends with `Scoring 7 candidates from 18 seeds` and
 `Report written (7 candidates)`; `example_data/example_run/candidates_annotated.tsv`
-ranks the 7 non-seed graph genes, led by `ENSG00000000022`.
+ranks the 7 non-seed graph genes, led by `ENSG00000000024`.
 The 5 genes of the seedless pathway (`ENSG...029`-`033`) are not in the graph.
 
 Run `python -m pytest` to check if the pipeline is set up correctly (~120 tests).

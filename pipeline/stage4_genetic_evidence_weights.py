@@ -1,6 +1,6 @@
 """Stage 4 - genetic-evidence weights.
 
-Scores each graph gene with its Open Targets evidence for the disease (only the datatypes in --datatypes)
+Scores each graph gene with its Open Targets genetic_association evidence for the disease (no other datatype)
 and re-weights the existing graph edges from the two endpoint scores. Writes the same four graph files
 as Stage 3 (so Stage 5 reads either the same way) plus gene_weights.tsv for inspection.
 graph_weight.npz is replaced; use a different --out-dir to keep Stage 3's structural weights.
@@ -28,25 +28,22 @@ from stage0_schemas import (
 
 logger = logging.getLogger("genetic_evidence_weights")
 
-# An inclusion list. affected_pathway must stay out: Open Targets files its Reactome evidence under it,
-# and weighting a Reactome-built graph with Reactome evidence would be circular.
-DEFAULT_DATATYPES = ["genetic_association", "known_drug"]
+# The only Open Targets datatype counted as evidence. affected_pathway would be circular (Open Targets files its
+# Reactome evidence under it, and the graph is built from Reactome), and known_drug would favour genes that are
+# already drug targets for the disease.
+EVIDENCE_DATATYPES = ["genetic_association"]
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         prog="stage4_genetic_evidence_weights.py",
-        description="Stage 4 - genetic-evidence weighting. Scores each graph gene from non-pathway-derived "
-        "Open Targets datatypes (--datatypes) and rewrites graph_weight.npz with edge weights derived from "
-        "those scores; extends graph_metadata.json and writes gene_weights.tsv.",
+        description="Stage 4 - genetic-evidence weighting. Scores each graph gene from its Open Targets "
+        "genetic_association evidence and rewrites graph_weight.npz with edge weights derived from those "
+        "scores; extends graph_metadata.json and writes gene_weights.tsv.",
     )
     parser.add_argument("--manifest", required=True, type=Path, help="Path to Stage 1's manifest.json.")
     parser.add_argument("--graph-dir", type=Path, default=None, help="Stage 3 graph directory. Default: next to --manifest.")
     parser.add_argument("--out-dir", type=Path, default=None, help="Output directory. Default: --graph-dir.")
-    parser.add_argument(
-        "--datatypes", default=",".join(DEFAULT_DATATYPES),
-        help=f"Comma-separated OT datatype_id values counted as evidence. Default: {','.join(DEFAULT_DATATYPES)}.",
-    )
     parser.add_argument(
         "--holdout-genes", type=Path, default=None,
         help="Stage 2's benchmark_holdout_genes.tsv; these genes' evidence is ignored. Default: next to --manifest "
@@ -61,7 +58,7 @@ def compute_genetic_evidence_scores(ot_disease_subset, datatypes, gene_index):
     """One score per graph gene: its strongest admitted evidence row, or 0.0 if it has none."""
     admitted = ot_disease_subset[ot_disease_subset["datatype_id"].isin(datatypes)]
     if admitted.empty:
-        logger.warning("No ot_disease_subset rows match --datatypes %s - every gene scores 0.0.", datatypes)
+        logger.warning("No ot_disease_subset rows of datatype %s - every gene scores 0.0.", datatypes)
     best_score_per_gene = admitted.groupby("gene_id")["score"].max()
 
     scores = pd.Series(0.0, index=gene_index, name="genetic_evidence_score")
@@ -107,14 +104,7 @@ def run(args):
         logger.info("Benchmark holdout: ignoring the evidence of %d gene(s).", len(holdout_gene_ids))
         ot_disease_subset = ot_disease_subset[~ot_disease_subset["gene_id"].isin(holdout_gene_ids)]
 
-    datatypes = []
-    for datatype in args.datatypes.split(","):
-        if datatype.strip():
-            datatypes.append(datatype.strip())
-    if not datatypes:
-        fail("--datatypes resolved to an empty list.")
-
-    scores = compute_genetic_evidence_scores(ot_disease_subset, datatypes, gene_index)
+    scores = compute_genetic_evidence_scores(ot_disease_subset, EVIDENCE_DATATYPES, gene_index)
     node_scores = scores.to_numpy()
     edge_weight = compute_edge_weights(weight, node_scores, args.edge_weight_mode)
     n_genes_with_evidence = int((node_scores > 0).sum())
@@ -132,7 +122,7 @@ def run(args):
     for gene_id, score in zip(gene_index, node_scores):
         metadata["genetic_evidence_score"][gene_id] = float(score)
     metadata["stage4_genetic_evidence"] = {
-        "datatypes": datatypes,
+        "datatypes": EVIDENCE_DATATYPES,
         "edge_weight_mode": args.edge_weight_mode,
         "n_genes_with_evidence": n_genes_with_evidence,
         "n_genes_total": len(gene_index),

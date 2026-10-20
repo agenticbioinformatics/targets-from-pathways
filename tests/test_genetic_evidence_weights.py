@@ -18,15 +18,15 @@ Open Targets association fixture (a mix of datatypes across genes A-D):
 - A: ``genetic_association``=0.9, ``known_drug``=0.5, and a decoy
   ``affected_pathway``=0.99 — the max of the *allowed* rows must win
   (0.9), never the higher disallowed one.
-- B: ``known_drug``=0.7 only.
+- B: ``genetic_association``=0.7 and a decoy ``known_drug``=0.95 — only
+  genetic_association counts, so B scores 0.7.
 - C: ``affected_pathway``=0.99 only — the case the task calls out
   explicitly: a gene with *only* excluded-datatype evidence must still get
   genetic_evidence_score 0.0 by default, not 0.99 and not null.
 - D: no rows at all — the plain "no evidence" case, kept distinct from C's
   "has evidence, wrong datatype" case.
 
-Expected node scores with the default --datatypes (genetic_association,
-known_drug): A=0.9, B=0.7, C=0.0, D=0.0.
+Expected node scores (genetic_association only): A=0.9, B=0.7, C=0.0, D=0.0.
 
 Expected edge weights (avg mode) at the graph's existing edges: (A,B)=0.8,
 (B,C)=0.35, (C,D)=0.0 — the last one a real, present-but-zero edge, not a
@@ -53,8 +53,11 @@ OT_DISEASE_SUBSET = pd.DataFrame(
         # Decoy: A's disallowed-datatype evidence is higher than its allowed max.
         {"gene_id": A, "disease_id": "EFO_TEST", "datatype_id": "affected_pathway",
          "datasource_id": "reactome", "score": 0.99},
+        {"gene_id": B, "disease_id": "EFO_TEST", "datatype_id": "genetic_association",
+         "datasource_id": "gwas_credible_sets", "score": 0.7},
+        # Decoy: B's known_drug evidence is higher than its genetic_association score.
         {"gene_id": B, "disease_id": "EFO_TEST", "datatype_id": "known_drug",
-         "datasource_id": "clinical_precedence", "score": 0.7},
+         "datasource_id": "clinical_precedence", "score": 0.95},
         # C has *only* excluded-datatype evidence.
         {"gene_id": C, "disease_id": "EFO_TEST", "datatype_id": "affected_pathway",
          "datasource_id": "reactome", "score": 0.99},
@@ -72,7 +75,7 @@ def _chain_weight_matrix() -> sp.csr_matrix:
 
 
 def test_node_weights_reflect_only_allowed_datatypes():
-    scores = gew.compute_genetic_evidence_scores(OT_DISEASE_SUBSET, gew.DEFAULT_DATATYPES, GENE_INDEX)
+    scores = gew.compute_genetic_evidence_scores(OT_DISEASE_SUBSET, gew.EVIDENCE_DATATYPES, GENE_INDEX)
     assert scores[A] == pytest.approx(0.9)  # max of allowed rows, not the 0.99 decoy
     assert scores[B] == pytest.approx(0.7)
     assert scores[C] == pytest.approx(0.0)
@@ -87,13 +90,22 @@ def test_node_weights_reflect_only_allowed_datatypes():
     assert scores_pathway_only[D] == pytest.approx(0.0)
 
 
-def test_gene_with_only_affected_pathway_evidence_gets_zero_weight_by_default():
-    scores = gew.compute_genetic_evidence_scores(OT_DISEASE_SUBSET, gew.DEFAULT_DATATYPES, GENE_INDEX)
+def test_gene_with_only_affected_pathway_evidence_gets_zero_weight():
+    scores = gew.compute_genetic_evidence_scores(OT_DISEASE_SUBSET, gew.EVIDENCE_DATATYPES, GENE_INDEX)
     assert scores[C] == 0.0
 
 
+def test_known_drug_evidence_is_never_counted():
+    # Only genetic_association counts: known_drug would favour genes already drugged for the disease.
+    assert gew.EVIDENCE_DATATYPES == ["genetic_association"]
+    known_drug_only = pd.DataFrame([{"gene_id": D, "disease_id": "EFO_TEST", "datatype_id": "known_drug",
+                                     "datasource_id": "clinical_precedence", "score": 0.8}])
+    scores = gew.compute_genetic_evidence_scores(known_drug_only, gew.EVIDENCE_DATATYPES, GENE_INDEX)
+    assert scores[D] == 0.0
+
+
 def test_edge_weights_computed_from_endpoint_node_weights():
-    scores = gew.compute_genetic_evidence_scores(OT_DISEASE_SUBSET, gew.DEFAULT_DATATYPES, GENE_INDEX)
+    scores = gew.compute_genetic_evidence_scores(OT_DISEASE_SUBSET, gew.EVIDENCE_DATATYPES, GENE_INDEX)
     node_scores = scores.to_numpy()
     weight_matrix = _chain_weight_matrix()
 

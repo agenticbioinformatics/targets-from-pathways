@@ -23,8 +23,8 @@ REPO_DIR = PIPELINE_DIR.parent
 logger = logging.getLogger("stage7_report")
 
 SIGN_LABELS = {1: "activating (+)", -1: "inhibiting (−)", 0: "unsigned (0)"}
-# Stage 4's default --datatypes, used when graph_metadata.json does not record them.
-DEFAULT_ADMITTED_DATATYPES = ["genetic_association", "known_drug"]
+# Stage 4's evidence datatypes, used when graph_metadata.json does not record them.
+DEFAULT_ADMITTED_DATATYPES = ["genetic_association"]
 # Evidence traces are rendered for the top candidates only: one per candidate made a report of thousands
 # of candidates tens of MB and slow to build.
 DEFAULT_N_TRACES = 100
