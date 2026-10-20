@@ -24,7 +24,7 @@ Expected: the log ends with `Scoring 7 candidates from 18 seeds` and
 ranks the 7 non-seed graph genes, led by `ENSG00000000022` (composite 0.80).
 The 5 genes of the seedless pathway (`ENSG...029`–`033`) are not in the graph.
 
-**Tests:** `python3 -m pytest` — ~100 offline tests to check if the pipeline is set up correctly.
+**Tests:** `python3 -m pytest` — ~120 offline tests to check if the pipeline is set up correctly.
 
 
 ## Overview
@@ -64,7 +64,7 @@ each reads the previous stage's output from the run directory.
 | 4 | `stage4_genetic_evidence_weights.py` | Scores each graph gene from non-pathway-derived Open Targets datatypes and re-derives the graph's edge weights from those scores, preserving Stage 3's sparsity. Overwrites `graph_weight.npz`, extends `graph_metadata.json`, and writes `gene_weights.tsv`. |
 | 5 | `stage5_score_candidates.py` | Propagates from the seed genes over the graph and ranks every non-seed graph gene — a deterministic topology score always, random-walk-with-restart and [BFWalk](https://github.com/jedrzejkubica/BFWalk) opt-in via `--method topology,rwr,bfwalk`. Writes `candidate_scores.tsv`. |
 | 6 | `stage6_annotate_context.py` | Joins an Open Targets tractability bucket and a safety flag onto each candidate and computes a configurable weighted `composite_score` (`--weights`). Writes `candidates_annotated.tsv`; uses no tissue-expression data. |
-| 7 | `run_pipeline.py` + `stage7_report.py` | `run_pipeline.py` chains Stages 1–6 for a disease (subprocess per stage, `--from-manifest` to skip Stage 1). `stage7_report.py` turns the finished run directory into one self-contained interactive HTML report — sortable ranked table, click-to-expand evidence trace per candidate (pathways and interactions shared with seed genes). |
+| 7 | `run_pipeline.py` + `stage7_report.py` | `run_pipeline.py` chains Stages 1–6 for a disease (subprocess per stage, `--from-manifest` to skip Stage 1). `stage7_report.py` turns the finished run directory into one self-contained interactive HTML report — sortable ranked table, click-to-expand evidence trace for the top 100 candidates (pathways and interactions shared with seed genes). |
 
 **Run pipeline**, one disease → an interactive HTML report:
 

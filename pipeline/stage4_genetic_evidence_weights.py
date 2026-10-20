@@ -4,6 +4,8 @@ Scores each graph gene with its Open Targets evidence for the disease (only the 
 and re-weights the existing graph edges from the two endpoint scores. Writes the same four graph files
 as Stage 3 (so Stage 5 reads either the same way) plus gene_weights.tsv for inspection.
 graph_weight.npz is replaced; use a different --out-dir to keep Stage 3's structural weights.
+Genes in Stage 2's benchmark_holdout_genes.tsv score 0.0: their own Open Targets evidence is what a benchmark
+is meant to recover, so it must not weight their edges or Stage 6's composite.
 """
 
 import argparse
@@ -14,7 +16,15 @@ from pathlib import Path
 import pandas as pd
 import scipy.sparse as sp
 
-from stage0_schemas import GeneWeightsSchema, OTAssociationsSchema, fail, find_artifact, load_graph, load_manifest
+from stage0_schemas import (
+    GeneWeightsSchema,
+    HoldoutGenesSchema,
+    OTAssociationsSchema,
+    fail,
+    find_artifact,
+    load_graph,
+    load_manifest,
+)
 
 logger = logging.getLogger("genetic_evidence_weights")
 
@@ -37,6 +47,11 @@ def parse_args(argv=None):
         "--datatypes", default=",".join(DEFAULT_DATATYPES),
         help=f"Comma-separated OT datatype_id values counted as evidence. Default: {','.join(DEFAULT_DATATYPES)}.",
     )
+    parser.add_argument(
+        "--holdout-genes", type=Path, default=None,
+        help="Stage 2's benchmark_holdout_genes.tsv; these genes' evidence is ignored. Default: next to --manifest "
+        "(skipped with a warning if absent).",
+    )
     parser.add_argument("--edge-weight-mode", choices=["avg", "product"], default="avg",
                         help="How to combine the two endpoint gene scores into an edge weight.")
     return parser.parse_args(argv)
@@ -54,6 +69,15 @@ def compute_genetic_evidence_scores(ot_disease_subset, datatypes, gene_index):
         if gene_id in scores.index:
             scores[gene_id] = score
     return scores
+
+
+def read_holdout_genes(holdout_path, explicit):
+    if not holdout_path.exists():
+        if explicit:
+            fail(f"--holdout-genes {holdout_path} does not exist.")
+        logger.warning("No %s (Stage 2 from before holdout tracking?) - no gene's evidence is excluded.", holdout_path)
+        return set()
+    return set(HoldoutGenesSchema.validate(pd.read_csv(holdout_path, sep="\t"))["gene_id"])
 
 
 def compute_edge_weights(existing_weight, node_scores, mode):
@@ -77,6 +101,11 @@ def run(args):
     )
     graph_dir = args.graph_dir or args.manifest.parent
     weight, sign, gene_index, metadata = load_graph(graph_dir)
+    holdout_gene_ids = read_holdout_genes(args.holdout_genes or args.manifest.parent / "benchmark_holdout_genes.tsv",
+                                          args.holdout_genes is not None)
+    if holdout_gene_ids:
+        logger.info("Benchmark holdout: ignoring the evidence of %d gene(s).", len(holdout_gene_ids))
+        ot_disease_subset = ot_disease_subset[~ot_disease_subset["gene_id"].isin(holdout_gene_ids)]
 
     datatypes = []
     for datatype in args.datatypes.split(","):
@@ -108,6 +137,7 @@ def run(args):
         "n_genes_with_evidence": n_genes_with_evidence,
         "n_genes_total": len(gene_index),
         "n_edges_weighted": int(edge_weight.nnz),
+        "holdout_genes": sorted(holdout_gene_ids),
     }
     (out_dir / "graph_metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True))
 

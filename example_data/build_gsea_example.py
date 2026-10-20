@@ -272,7 +272,8 @@ def main() -> None:
     build_target_annotations().to_parquet(target_subset_path, index=False)
 
     def artifact(path: Path) -> OutputArtifact:
-        return OutputArtifact(path=str(path), sha256=_sha256_bytes(path.read_bytes()))
+        # repo-root-relative, so the checked-in manifest holds no machine-specific absolute path.
+        return OutputArtifact(path=f"example_data/example_run/{path.name}", sha256=_sha256_bytes(path.read_bytes()))
 
     n_associated = int(ot_subset_df["gene_id"].nunique())
 

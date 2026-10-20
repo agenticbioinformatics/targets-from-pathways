@@ -3,6 +3,7 @@
 Tables are validated with pandera on read and on write; manifest.json is validated with pydantic.
 """
 
+import hashlib
 import json
 import logging
 import re
@@ -123,6 +124,13 @@ SeedGenesSchema = DataFrameSchema(
         "gene_id": ensembl_column(unique=True),
         "score": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True, required=False),
     },
+    strict=True,
+)
+
+# Stage 2's benchmark holdout, resolved to Ensembl IDs (empty when there is none). Stage 4 must not use these
+# genes' own evidence, or a held-out gene would be ranked by the very association it is meant to recover.
+HoldoutGenesSchema = DataFrameSchema(
+    {"gene_id": ensembl_column(unique=True)},
     strict=True,
 )
 
@@ -271,19 +279,36 @@ def load_manifest(manifest_path):
     return Manifest.model_validate(json.loads(Path(manifest_path).read_text()))
 
 
+def sha256_of_file(path):
+    hasher = hashlib.sha256()
+    with open(path, "rb") as file:
+        while True:
+            chunk = file.read(1024 * 1024)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
 def find_artifact(manifest, manifest_path, filename):
-    """Return the path of a Stage 1 output file listed in the manifest."""
+    """Return the path of a Stage 1 output file listed in the manifest. The file next to the manifest wins:
+    the listed path is relative to whatever directory Stage 1 ran in, and in a copied or moved run directory
+    it would point at another run's file. The file's sha256 must match the manifest."""
     for artifact in manifest.output_artifacts:
         listed_path = Path(artifact.path)
         if listed_path.name != filename:
             continue
-        if listed_path.exists():
-            return listed_path
-        # The listed path may be relative to another working directory, so also look next to the manifest.
         next_to_manifest = Path(manifest_path).parent / filename
         if next_to_manifest.exists():
-            return next_to_manifest
-        fail(f"Manifest artifact {filename!r} listed at {listed_path} does not exist (also checked {next_to_manifest}).")
+            path = next_to_manifest
+        elif listed_path.exists():
+            path = listed_path
+        else:
+            fail(f"Manifest artifact {filename!r} not found next to {manifest_path} (also checked {listed_path}).")
+        if sha256_of_file(path) != artifact.sha256:
+            fail(f"{path} does not match the sha256 recorded in {manifest_path} - it was changed after Stage 1 "
+                 f"or belongs to another run.")
+        return path
     fail(f"Manifest {manifest_path} lists no output artifact named {filename!r}.")
 
 

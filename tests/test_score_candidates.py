@@ -35,6 +35,7 @@ import pandas as pd
 import pytest
 import scipy.sparse as sp
 
+import stage4_genetic_evidence_weights as gew
 import stage5_score_candidates as sc
 
 S1, S2, A, B, C, D = (f"ENSG{n:011d}" for n in (1, 2, 3, 4, 5, 6))
@@ -93,6 +94,18 @@ def test_unreachable_node_scores_zero():
     dense[:6, :6] = _weight_matrix().toarray()
     graph = sc.build_digraph(sp.csr_matrix(dense), GENE_INDEX + [E])
     assert sc.topology_scores(graph, SEEDS)[E] == 0.0
+
+
+def test_zero_weight_edge_is_never_cheaper_than_an_evidence_edge():
+    """Stage 4 (avg mode) weights: seed P (score 1.0); Q and R have no evidence, W has 0.4. R and W both
+    hang off Q, so with more evidence W must score at least as high as R. A zero-weight edge once cost
+    1.0 - as cheap as the strongest edge - which ranked R (0.25) above W (0.125)."""
+    P, Q, R, W = (f"ENSG{n:011d}" for n in (11, 12, 13, 14))
+    scores = np.array([1.0, 0.0, 0.0, 0.4])
+    structure = sp.csr_matrix(np.array([[0, 1, 0, 0], [1, 0, 1, 1], [0, 1, 0, 0], [0, 1, 0, 0]], dtype=float))
+    weight = gew.compute_edge_weights(structure, scores, "avg")
+    topology = sc.topology_scores(sc.build_digraph(weight, [P, Q, R, W]), [P])
+    assert topology[W] >= topology[R]
 
 
 # --------------------------------------------------------------------------
@@ -217,6 +230,21 @@ def test_missing_seed_file_exits(tmp_path):
     (tmp_path / "disease_seed_genes.tsv").unlink()
     with pytest.raises(SystemExit):
         _run(tmp_path)
+
+
+def test_every_graph_gene_a_seed_writes_an_empty_valid_ranking(tmp_path):
+    _write_graph_dir(tmp_path, seeds_tsv="gene_id\n" + "\n".join(GENE_INDEX) + "\n")
+    df = _run(tmp_path, "topology,rwr")
+    assert len(df) == 0
+    assert list(df.columns) == ["gene", "topology_score", "rwr_score"]
+
+
+@pytest.mark.parametrize("restart_prob", ["0", "1", "1.5"])
+def test_restart_prob_outside_open_interval_exits(tmp_path, restart_prob):
+    _write_graph_dir(tmp_path)
+    with pytest.raises(SystemExit) as excinfo:
+        _run(tmp_path, "rwr", extra=["--restart-prob", restart_prob])
+    assert excinfo.value.code != 0
 
 
 def test_unknown_method_exits(tmp_path):

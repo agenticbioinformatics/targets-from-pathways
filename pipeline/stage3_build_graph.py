@@ -81,8 +81,14 @@ def add_comembership_edges(graph, gene_sets_df, pathway_ids):
 
 def add_interaction_edges(graph, interactions_df, pathway_genes):
     """Add interactions whose two genes are both already in the graph. Adding all interactions would turn
-    the pathway graph into the whole interactome. Returns (n_added, n_out_of_scope, n_duplicates)."""
-    # A DiGraph holds one edge per ordered pair: keep the highest-confidence row for each pair.
+    the pathway graph into the whole interactome. Returns (n_added, n_out_of_scope, n_duplicates), counted
+    over directed edges (an undirected row counts as two)."""
+    # Stage 1 stores an undirected interaction as one row; it connects the genes in both directions.
+    undirected = interactions_df[~interactions_df["directed"]]
+    reversed_rows = undirected.rename(columns={"gene_a": "gene_b", "gene_b": "gene_a"})
+    interactions_df = pd.concat([interactions_df, reversed_rows], ignore_index=True)
+    # A DiGraph holds one edge per ordered pair: keep the highest-confidence row for each pair (on a tie the
+    # original row wins over a reversed undirected copy).
     by_confidence = interactions_df.assign(rank=interactions_df["confidence"].fillna(-1.0))
     by_confidence = by_confidence.sort_values("rank", ascending=False, kind="stable")
     unique_pairs = by_confidence.drop_duplicates(subset=["gene_a", "gene_b"], keep="first")

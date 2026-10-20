@@ -37,7 +37,7 @@ def test_from_manifest_chains_stages_and_writes_report(tmp_path):
 
     # every artifact Stages 2-6 + the report are expected to drop
     expected = {
-        "stage 2": ["disease_pathways.tsv", "disease_seed_genes.tsv"],
+        "stage 2": ["disease_pathways.tsv", "disease_seed_genes.tsv", "benchmark_holdout_genes.tsv"],
         "stage 3": ["graph_weight.npz", "graph_sign.npz", "graph_gene_index.json", "graph_metadata.json"],
         "stage 4": ["gene_weights.tsv"],  # + graph_* rewritten in place
         "stage 5": ["candidate_scores.tsv"],

@@ -4,7 +4,8 @@ Seeds are the disease's genetic-association genes (Stage 2's disease_seed_genes.
 Stage 3 or Stage 4 graph. Every other graph gene is a candidate, scored by its proximity to the seeds, and
 written to candidate_scores.tsv. Methods (--method):
 - topology (always computed): (1 + number of seed neighbours) / (1 + weighted shortest-path distance from
-  the nearest seed, each edge costing 1 / weight). Unreachable genes score 0.
+  the nearest seed, each edge costing 1 / weight; a zero-weight edge costs as much as the weakest
+  positive-weight edge). Unreachable genes score 0.
 - rwr (opt-in): random walk with restart, restarting uniformly on the seeds (personalised PageRank).
 - bfwalk (opt-in): BFWalk backtrack-free network propagation from the seeds
   (https://github.com/jedrzejkubica/BFWalk). Needs the bfwalk package (for now from TestPyPI, see README).
@@ -23,9 +24,6 @@ from stage0_schemas import ENSEMBL_GENE_ID_PATTERN, CandidateScoresSchema, SeedG
 logger = logging.getLogger("score_candidates")
 
 METHODS = ["topology", "rwr", "bfwalk"]
-# Stage 4 stores weight 0 on edges between genes without evidence. Such an edge still exists, so it costs
-# one plain hop instead of disconnecting the graph.
-ZERO_WEIGHT_HOP_COST = 1.0
 
 
 def parse_args(argv=None):
@@ -80,16 +78,22 @@ def read_seeds(seeds_path, gene_index):
 
 def build_digraph(weight, gene_index):
     """Each edge gets "weight" (used by RWR, 0 stays 0 so evidence-free edges carry no flow) and
-    "cost" (1 / weight, used for shortest paths)."""
+    "cost" (1 / weight, used for shortest paths). Stage 4 stores weight 0 on edges between genes without
+    evidence. Such an edge still exists, so it is kept, but it costs as much as the weakest positive-weight
+    edge: it must never be cheaper than an edge that has evidence."""
     graph = nx.DiGraph()
     graph.add_nodes_from(gene_index)
     edges = weight.tocoo()
+    positive = edges.data > 0
+    zero_weight_cost = 1.0
+    if positive.any():
+        zero_weight_cost = 1.0 / float(edges.data[positive].min())
     for i, j, edge_weight in zip(edges.row, edges.col, edges.data):
         edge_weight = max(float(edge_weight), 0.0)
         if edge_weight > 0:
             cost = 1.0 / edge_weight
         else:
-            cost = ZERO_WEIGHT_HOP_COST
+            cost = zero_weight_cost
         graph.add_edge(gene_index[i], gene_index[j], weight=edge_weight, cost=cost)
     return graph
 

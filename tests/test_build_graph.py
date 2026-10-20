@@ -23,15 +23,16 @@ disease-relevant, exercising the union's other half (pathways with seed genes).
 R-NOSEED = {D, Y} is neither, so Y must stay out of the graph even though D,
 a gene of R-LARGE, is in it.
 
-Interactions (each deliberately touching only one direction of a
+Interactions (each directed one deliberately touching only one direction of a
 co-membership pair, so the untouched reverse direction proves
 co-membership's sign=0 default survives independently):
 - A -> B: sign=+1, confidence=0.9 — overrides (A, B) only, not (B, A).
 - C -> D: sign=-1, confidence=0.7 — overrides (C, D) only, not (D, C).
-- B -> C: sign=0, confidence=0.5 — sign is numerically unchanged from
-  co-membership's default, but confidence/evidence_type must still update;
-  catches a bug class where a sign==0 interaction row gets skipped as if
-  it carried no information.
+- B - C: undirected, sign=0, confidence=0.5 — sign is numerically unchanged
+  from co-membership's default, but confidence/evidence_type must still
+  update in *both* directions (an undirected row connects B and C both
+  ways); catches a bug class where a sign==0 interaction row gets skipped
+  as if it carried no information.
 - Z -> A: Z is not a member of any pathway at all, so this row must be
   dropped as out of scope — which also makes the "exactly these edges"
   assertion below a real test of that scoping, not just an incidental pass.
@@ -94,7 +95,7 @@ EXPECTED_EDGES = {
     (A, D): (WEIGHT_LARGE, 0, None, None, "reactome"),
     (D, A): (WEIGHT_LARGE, 0, None, None, "reactome"),
     (B, C): (WEIGHT_LARGE, 0, 0.5, "predicted", "reactome"),
-    (C, B): (WEIGHT_LARGE, 0, None, None, "reactome"),
+    (C, B): (WEIGHT_LARGE, 0, 0.5, "predicted", "reactome"),
     (B, D): (WEIGHT_LARGE, 0, None, None, "reactome"),
     (D, B): (WEIGHT_LARGE, 0, None, None, "reactome"),
     (C, D): (WEIGHT_LARGE, -1, 0.7, "curated", "reactome"),
@@ -161,3 +162,24 @@ def test_sparse_serialization_matches_graph(graph_and_stats):
     assert weight[i, j] == pytest.approx(graph[A][B]["comembership_weight"] + graph[A][B]["confidence"])
     assert sign[i, j] == graph[A][B]["sign"]
     assert F in gene_index  # the isolated node must survive serialization too
+
+
+def test_undirected_interaction_connects_both_directions():
+    """An undirected interaction between genes of two different pathways (no co-membership edge) must
+    come out symmetric, or propagation would cross it only one way, chosen by the FI file's row order."""
+    gene_sets = pd.DataFrame([
+        {"set_id": "R-P1", "gene_id": A, "source_db": "reactome"},
+        {"set_id": "R-P1", "gene_id": C, "source_db": "reactome"},
+        {"set_id": "R-P2", "gene_id": B, "source_db": "reactome"},
+        {"set_id": "R-P2", "gene_id": D, "source_db": "reactome"},
+    ])
+    interactions = pd.DataFrame([
+        {"gene_a": A, "gene_b": B, "directed": False, "sign": 0, "source_db": "reactome",
+         "evidence_type": "curated", "confidence": 1.0},
+    ])
+    graph, stats = bg.build_graph(gene_sets, pd.DataFrame({"set_id": ["R-P1", "R-P2"]}), interactions, {A})
+    weight, _sign, gene_index = bg.graph_to_sparse(graph)
+    i, j = gene_index.index(A), gene_index.index(B)
+    assert weight[i, j] == pytest.approx(1.0)
+    assert weight[j, i] == pytest.approx(1.0)
+    assert stats["n_interaction_edges_added"] == 2

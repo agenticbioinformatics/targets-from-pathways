@@ -1,7 +1,7 @@
 """Stage 7 - HTML report.
 
 Turns a run directory into one self-contained interactive HTML file (no server, no external assets):
-a sortable ranked table and an evidence trace per candidate.
+a sortable ranked table of every candidate and an evidence trace for the top candidates (--n-traces).
 Only manifest.json and candidates_annotated.tsv are required; a missing optional file only hides the
 report sections that need it.
 """
@@ -25,6 +25,9 @@ logger = logging.getLogger("stage7_report")
 SIGN_LABELS = {1: "activating (+)", -1: "inhibiting (−)", 0: "unsigned (0)"}
 # Stage 4's default --datatypes, used when graph_metadata.json does not record them.
 DEFAULT_ADMITTED_DATATYPES = ["genetic_association", "known_drug"]
+# Evidence traces are rendered for the top candidates only: one per candidate made a report of thousands
+# of candidates tens of MB and slow to build.
+DEFAULT_N_TRACES = 100
 
 CSS = """
 :root { color-scheme: light dark; }
@@ -125,6 +128,8 @@ def load_run(run_dir):
         "annotated": annotated,
         "symbols": symbols,
         "admitted_datatypes": set(stage4_info.get("datatypes", DEFAULT_ADMITTED_DATATYPES)),
+        # Stage 4 ignores the evidence of benchmark holdout genes.
+        "holdout_genes": set(stage4_info.get("holdout_genes", [])),
         "gene_sets": optional["gene_sets.parquet"],
         "interactions": optional["interactions.parquet"],
         "ot": optional["ot_disease_subset.parquet"],
@@ -177,8 +182,10 @@ def evidence_trace(gene_id, run):
                 "datatype": str(datatype),
                 "score": float(rows["score"].max()),
                 "datasources": sorted(rows["datasource_id"].astype(str).unique()),
-                # "Feeds" the genetic-evidence score only if Stage 4 ran with this datatype.
-                "feeds": run["stage4_ran"] and str(datatype) in run["admitted_datatypes"],
+                # "Feeds" the genetic-evidence score only if Stage 4 ran with this datatype and did not
+                # exclude the gene as a benchmark holdout.
+                "feeds": run["stage4_ran"] and str(datatype) in run["admitted_datatypes"]
+                and gene_id not in run["holdout_genes"],
             })
         # Datatypes that feed the score first, then by score.
         datatypes.sort(key=lambda entry: (not entry["feeds"], -entry["score"]))
@@ -301,7 +308,7 @@ def trace_html(gene_id, symbol, row, trace):
     return "".join(parts)
 
 
-def render_html(run):
+def render_html(run, n_traces=DEFAULT_N_TRACES):
     manifest = run["manifest"]
     candidates = run["annotated"].reset_index(drop=True)
     symbols = run["symbols"]
@@ -346,9 +353,15 @@ def render_html(run):
         rank += 1
         gene_id = row.gene
         symbol = symbol_of(gene_id, symbols)
+        has_trace = rank <= n_traces
+        if has_trace:
+            symbol_cell = (f'<td class="txt"><a href="#" onclick="openGene(\'g-{escape(gene_id)}\');return false;">'
+                           f'{escape(symbol)}</a></td>')
+        else:
+            symbol_cell = f'<td class="txt">{escape(symbol)}</td>'
         cells = [
             f'<td data-v="{rank}">{rank}</td>',
-            f'<td class="txt"><a href="#" onclick="openGene(\'g-{escape(gene_id)}\');return false;">{escape(symbol)}</a></td>',
+            symbol_cell,
             f'<td class="txt ens">{escape(gene_id)}</td>',
             f'<td data-v="{row.composite_score}">{row.composite_score:.3f}</td>',
             f'<td data-v="{row.topology_score}">{row.topology_score:.3f}</td>',
@@ -362,12 +375,17 @@ def render_html(run):
         cells.append(f'<td class="txt">{escape(row.tractability)}</td>')
         cells.append(f'<td class="txt">{escape(row.safety)}</td>')
         table_rows.append("<tr>" + "".join(cells) + "</tr>")
-        details.append(trace_html(gene_id, symbol, row, evidence_trace(gene_id, run)))
+        if has_trace:
+            details.append(trace_html(gene_id, symbol, row, evidence_trace(gene_id, run)))
 
     missing_note = ""
     if run["missing"]:
         missing_note = (f'<p class="warn">Partial run: {escape(", ".join(run["missing"]))} not in the run directory — '
                         "the affected columns / trace sections are shown as unavailable below.</p>")
+    trace_note = f"Evidence traces for all {len(details)} candidates."
+    if len(details) < len(candidates):
+        trace_note = (f"Evidence traces for the top {len(details)} of {len(candidates)} candidates "
+                      f"(by composite score; <code>--n-traces</code> to change).")
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     table_html = "\n".join(table_rows)
     details_html = "\n".join(details)
@@ -401,6 +419,7 @@ its evidence trace.
 </table>
 
 <h2>Evidence trace</h2>
+<p class="lead">{trace_note}</p>
 {details_html}
 
 <script>{JAVASCRIPT}</script>
@@ -408,10 +427,10 @@ its evidence trace.
 """
 
 
-def build_report(run_dir, out_path):
+def build_report(run_dir, out_path, n_traces=DEFAULT_N_TRACES):
     run = load_run(run_dir)
     out_path = Path(out_path)
-    out_path.write_text(render_html(run))
+    out_path.write_text(render_html(run, n_traces))
     logger.info("Report written (%d candidates): %s", len(run["annotated"]), out_path)
     return out_path
 
@@ -421,17 +440,21 @@ def parse_args(argv=None):
         prog="stage7_report.py",
         description="Stage 7 - output/report. Turns a finished run directory (manifest.json + "
         "candidates_annotated.tsv required; other files optional) into ONE self-contained interactive HTML "
-        "file: sortable ranked table and click-to-expand evidence trace per candidate.",
+        "file: sortable ranked table and click-to-expand evidence traces for the top candidates.",
     )
     parser.add_argument("--run-dir", required=True, type=Path, help="Directory with the Stage 1-6 outputs.")
     parser.add_argument("--out", type=Path, default=None, help="Output HTML path. Default: <run-dir>/report.html.")
+    parser.add_argument("--n-traces", type=int, default=DEFAULT_N_TRACES,
+                        help=f"Render evidence traces for this many top-ranked candidates. Default: {DEFAULT_N_TRACES}.")
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     args = parse_args(argv)
-    build_report(args.run_dir, args.out or args.run_dir / "report.html")
+    if args.n_traces < 0:
+        fail(f"--n-traces must be >= 0 (got {args.n_traces}).")
+    build_report(args.run_dir, args.out or args.run_dir / "report.html", args.n_traces)
 
 
 if __name__ == "__main__":

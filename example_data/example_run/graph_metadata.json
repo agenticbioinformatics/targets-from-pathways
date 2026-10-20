@@ -1,5 +1,5 @@
 {
-  "created_at": "2026-10-20T13:15:43.804011+00:00",
+  "created_at": "2026-10-20T14:16:45.139290+00:00",
   "disease": {
     "efo_id": "MONDO_0000001",
     "n_associated_genes": 19,
@@ -65,6 +65,7 @@
       "known_drug"
     ],
     "edge_weight_mode": "avg",
+    "holdout_genes": [],
     "n_edges_weighted": 258,
     "n_genes_total": 25,
     "n_genes_with_evidence": 19

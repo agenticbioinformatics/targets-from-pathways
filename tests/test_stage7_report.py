@@ -41,6 +41,7 @@ def _mini_run():
         "symbols": {T: "TGT", C: "CAND", X: "XG", Y: "YG"},
         "graph_index": {T, C, X},
         "admitted_datatypes": {"genetic_association", "known_drug"},
+        "holdout_genes": set(),
         "stage4_ran": True,
         "gene_sets": gene_sets,
         "disease_pathways": pd.DataFrame([{"set_id": "P2"}]),
@@ -92,6 +93,14 @@ def test_evidence_trace_feeds_false_when_stage4_absent():
     assert all(d["feeds"] is False for d in tr["datatypes"])
 
 
+def test_evidence_trace_feeds_false_for_benchmark_holdout_gene():
+    # Stage 4 ignores a held-out gene's evidence, so none of its datatypes feed the score.
+    run, (T, C, X, Y) = _mini_run()
+    run["holdout_genes"] = {C}
+    tr = rep.evidence_trace(C, run)
+    assert all(d["feeds"] is False for d in tr["datatypes"])
+
+
 # --------------------------------------------------------------------------
 # build_report end to end (against the checked-in example run)
 # --------------------------------------------------------------------------
@@ -124,6 +133,23 @@ def test_build_report_is_self_contained_and_symbol_labelled(tmp_path):
         # the ranked table shows the SYMBOL (as a link), with the Ensembl id in its own cell
         assert f">{sym}</a>" in tbody
         assert f'class="txt ens">{gid}<' in tbody
+
+
+@pytest.mark.skipif(
+    not (EXAMPLE_RUN / "candidates_annotated.tsv").exists(),
+    reason="example_data/example_run not populated",
+)
+def test_build_report_traces_only_top_candidates(tmp_path):
+    html = rep.build_report(EXAMPLE_RUN, tmp_path / "report.html", n_traces=3).read_text()
+    annotated = pd.read_csv(EXAMPLE_RUN / "candidates_annotated.tsv", sep="\t")
+    tbody = html.split("<tbody", 1)[1].split("</tbody>", 1)[0]
+    assert tbody.count("<tr>") == len(annotated)          # the table still lists every candidate
+    assert html.count("<details ") == 3
+    for rank, gid in enumerate(annotated["gene"], start=1):
+        has_trace = f'id="g-{gid}"' in html
+        assert has_trace == (rank <= 3)
+        assert (f"openGene('g-{gid}')" in tbody) == has_trace  # no link to a trace that is not there
+    assert f"top 3 of {len(annotated)} candidates" in html
 
 
 # --------------------------------------------------------------------------

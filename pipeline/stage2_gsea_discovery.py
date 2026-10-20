@@ -3,7 +3,8 @@
 Runs preranked GSEA of the disease's genetic-association genes against the Reactome gene sets listed in
 Stage 1's manifest and writes the significant pathways to disease_pathways.tsv next to the manifest.
 The same genetic-association genes (minus any benchmark holdout) are written to disease_seed_genes.tsv:
-Stage 3 builds the graph around them and Stage 5 propagates from them.
+Stage 3 builds the graph around them and Stage 5 propagates from them. The holdout itself is written to
+benchmark_holdout_genes.tsv (empty without --benchmark-holdout-file), so Stage 4 can ignore its evidence.
 """
 
 import argparse
@@ -17,6 +18,7 @@ from stage0_schemas import (
     DiseasePathwaysSchema,
     GeneSetsSchema,
     GenesSchema,
+    HoldoutGenesSchema,
     OTAssociationsSchema,
     SeedGenesSchema,
     fail,
@@ -37,7 +39,7 @@ def parse_args(argv=None):
         description="Stage 2 - disease-pathway discovery. FDR-corrected GSEA of the disease's "
         "genetic-association genes against Reactome gene sets (size-capped, redundancy-collapsed). "
         "Reads gene_sets.parquet + ot_disease_subset.parquet via --manifest; writes "
-        "disease_pathways.tsv and disease_seed_genes.tsv next to it.",
+        "disease_pathways.tsv, disease_seed_genes.tsv and benchmark_holdout_genes.tsv next to it.",
     )
     parser.add_argument("--manifest", required=True, type=Path, help="Path to Stage 1's manifest.json.")
     parser.add_argument("--pval-threshold", type=float, default=0.05, help="Nominal p-value cutoff.")
@@ -162,6 +164,7 @@ def run(args):
         pd.read_parquet(find_artifact(manifest, args.manifest, "ot_disease_subset.parquet"))
     )
 
+    holdout_gene_ids = set()
     if args.benchmark_holdout_file is not None:
         genes_df = GenesSchema.validate(pd.read_parquet(find_artifact(manifest, args.manifest, "genes.parquet")))
         holdout_gene_ids = read_holdout_genes(args.benchmark_holdout_file, genes_df)
@@ -188,7 +191,11 @@ def run(args):
     seeds = seeds.sort_values(["score", "gene_id"], ascending=[False, True])
     seeds_path = args.manifest.parent / "disease_seed_genes.tsv"
     seeds.to_csv(seeds_path, sep="\t", index=False)
-    logger.info("Stage 2 complete: %s, %s (%d seed genes)", output_path, seeds_path, len(seeds))
+    # Always written, so a later run without a holdout replaces an earlier run's file.
+    holdout = HoldoutGenesSchema.validate(pd.DataFrame({"gene_id": pd.Series(sorted(holdout_gene_ids), dtype="object")}))
+    holdout.to_csv(args.manifest.parent / "benchmark_holdout_genes.tsv", sep="\t", index=False)
+    logger.info("Stage 2 complete: %s, %s (%d seed genes, %d held out)", output_path, seeds_path, len(seeds),
+                len(holdout))
     return output_path
 
 

@@ -40,6 +40,7 @@ from stage0_schemas import (
     SourceFile,
     assert_foreign_key,
     fail,
+    sha256_of_file,
 )
 
 logger = logging.getLogger("ingest")
@@ -173,17 +174,6 @@ def parse_args(argv=None):
         help="Do not fail on <90%% identifier-mapping coverage or too few genetic_association genes.",
     )
     return parser.parse_args(argv)
-
-
-def sha256_of_file(path):
-    hasher = hashlib.sha256()
-    with open(path, "rb") as file:
-        while True:
-            chunk = file.read(1024 * 1024)
-            if not chunk:
-                break
-            hasher.update(chunk)
-    return hasher.hexdigest()
 
 
 def open_url(url, timeout):
