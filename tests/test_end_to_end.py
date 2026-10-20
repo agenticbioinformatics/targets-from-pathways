@@ -24,8 +24,8 @@ It has two links, joined at Stage 1's output contract:
   (``disease_pathways`` + ``disease_seed_genes`` → graph artifacts → ``gene_weights`` →
   ``candidate_scores`` → ``candidates_annotated``) validates; Ensembl ids
   and ``source_db`` survive to the final table; and the final table carries
-  a ``composite_score`` in [0, 1] for **every** non-seed graph gene
-  (candidates == graph nodes − seeds, none missing).
+  a propagation score for **every** non-seed graph gene (candidates == graph
+  nodes − seeds, none missing), ranked by it.
 """
 
 from __future__ import annotations
@@ -159,7 +159,8 @@ def test_pipeline_schema_conformance_end_to_end(tmp_path, patched_acquisition):
     assert _all_ensembl(annotated["gene"])
     assert set(annotated["gene"]) <= gene_universe
 
-    # a composite_score for every candidate: candidates == graph nodes − seeds
+    # a propagation score for every candidate: candidates == graph nodes − seeds, in Stage 5's ranking
     assert set(annotated["gene"]) == set(graph_index) - seed_ids
-    assert annotated["composite_score"].notna().all()
-    assert annotated["composite_score"].between(0.0, 1.0).all()
+    assert "composite_score" not in annotated.columns
+    assert annotated["bfwalk_score"].notna().all()
+    assert annotated["bfwalk_score"].is_monotonic_decreasing

@@ -392,7 +392,7 @@ and `--bfwalk-threads` (default 0 = all cores). BFWalk is not on PyPI yet:
 `requirements.txt` installs it from TestPyPI (see the top-level README); it
 will be available via `pip install bfwalk` shortly. Until it is installed,
 run Stage 5 with `--method rwr`. Stages 6 and 7 carry whichever of
-`bfwalk_score` / `rwr_score` was produced into the composite and the report.
+`bfwalk_score` / `rwr_score` was produced through, and keep its ranking.
 
 Against the checked-in example (after Stages 1–4 have run, so
 `example_data/example_run/` holds a **Stage 4** graph):
@@ -467,41 +467,21 @@ optional), and the Open Targets `target` parquet (from
 with `--target-parquet`). Writes `candidates_annotated.tsv` alongside the
 candidates file.
 
-Per candidate it adds:
+Per candidate it adds the columns below. They are for reading only: there
+is no composite score, and candidates keep Stage 5's ranking (by
+`bfwalk_score`, else `rwr_score`).
 
+- **`genetic_evidence_score`** — Stage 4's score for the gene (0.0 for a
+  benchmark holdout gene); left out when Stage 4 did not run.
 - **`tractability`** — `clinical` (an Open Targets `value==true` flag for a
   clinical stage), `discovery` (some other true flag), or `unknown` (no
   true flag, or the gene is absent from the `target` parquet).
 - **`safety`** — `has_liabilities` (one or more `safetyLiabilities`
   entries) or `unknown`. **There is no `safe` value**: Open Targets records
   known liabilities or says nothing, and its safety coverage is sparse, so
-  a gene with no annotation is `unknown` (a neutral 0.5 in the composite),
-  never rewarded as if confirmed safe. `n_safety_liabilities` carries the
-  count.
-- **`composite_score`** ∈ [0, 1] — `--weights` (default
-  `rwr:0.3,bfwalk:0.3,genetic_evidence:0.2,tractability:0.1,safety:0.1`)
-  weighted-averaged over: min-max-scaled `bfwalk_score` and `rwr_score`
-  (proximity numbers only meaningful ranked within the candidate set),
-  as-is `genetic_evidence_score`, and the tractability
-  (`clinical`=1/`discovery`=0.5/`unknown`=0) and safety
-  (`has_liabilities`=0/`unknown`=0.5) ordinals. Weights need not sum to 1.
-  A component with no data is dropped and the rest renormalised:
-  - the Stage 5 method that did not run (`rwr` on a default run); this is
-    only logged at INFO;
-  - `genetic_evidence` when Stage 4 did not run; this logs a warning.
+  a gene with no annotation is `unknown`, never presented as confirmed
+  safe. `n_safety_liabilities` carries the count.
 
-  So with one method its share is 0.3 / 0.7 ≈ 0.43.
-- **`composite_breakdown`** — `k=contribution|...`, each component's
-  *weighted contribution* to `composite_score` (the terms sum to it), so
-  the trace shows what built the rank, not just the number.
-- **`composite_weights`** — the renormalised weights actually used
-  (`k:fraction,...`, sum 1), repeated on every row so one row is a
-  self-contained explanation for the Stage 7 report.
-
-Per-candidate **evidence trace**: the passthrough score columns
-(`bfwalk_score` / `rwr_score` / `genetic_evidence_score`), the annotation
-buckets (`tractability` / `safety` / `n_safety_liabilities`), and
-`composite_breakdown` + `composite_weights` together explain every rank.
 Two provenance items are deliberately **not** here — *which shared
 pathways/interactions* (not in this stage's inputs; Stage 7 assembles it
 from `gene_sets.parquet` at drill-down time) and *which Open Targets
@@ -519,38 +499,36 @@ python3 pipeline/stage6_annotate_context.py --manifest example_data/example_run/
 ```
 
 **Expected output** (`example_data/example_run/candidates_annotated.tsv`,
-top rows; columns per `schemas.AnnotatedCandidatesSchema`, ranked by
-`composite_score`):
+top rows; columns per `schemas.AnnotatedCandidatesSchema`, in Stage 5's
+order by `bfwalk_score`):
 
 ```
-gene             bfwalk_score  genetic_evidence_score  tractability  safety           n_safety_liabilities  composite_score
-ENSG00000000022  0.5050        0.5                     clinical      has_liabilities  1                     0.714
-ENSG00000000025  0.3332        0.0                     clinical      unknown          0                     0.383
-ENSG00000000024  0.3559        0.0                     discovery     unknown          0                     0.345
-ENSG00000000023  0.3147        0.0                     unknown       unknown          0                     0.212
-ENSG00000000026  0.2222        0.0                     unknown       unknown          0                     0.071
+gene             bfwalk_score  genetic_evidence_score  tractability  safety           n_safety_liabilities
+ENSG00000000022  0.5050        0.5                     clinical      has_liabilities  1
+ENSG00000000024  0.3559        0.0                     discovery     unknown          0
+ENSG00000000025  0.3332        0.0                     clinical      unknown          0
+ENSG00000000023  0.3147        0.0                     unknown       unknown          0
+ENSG00000000026  0.2222        0.0                     unknown       unknown          0
 ```
 
-`ENSG...022` stays on top despite a safety liability because its proximity
-term and its `known_drug` evidence dominate. `ENSG...025` and `ENSG...024`
-have similar BFWalk scores, so `025`'s clinical tractability lifts it above
-`024`. Candidates are
-non-seed genes, so their `genetic_evidence_score` can only come from
-datatypes other than `genetic_association` (here `known_drug`). Genes absent
-from the synthetic `ot_target_subset.parquet` are `unknown`/`unknown` and
-ranked purely on the score terms, never penalised for missing annotation.
+The order is exactly `candidate_scores.tsv`'s. `ENSG...022`'s safety
+liability and `ENSG...025`'s clinical tractability are shown, but do not
+move them. Candidates are non-seed genes, so their `genetic_evidence_score`
+can only come from datatypes other than `genetic_association` (here
+`known_drug`). Genes absent from the synthetic `ot_target_subset.parquet`
+are `unknown`/`unknown`.
 
 `python3 -m pytest tests/test_annotate_context.py` runs the unit-level
-tests (10 tests): a scores table with neither `rwr_score` nor
-`bfwalk_score` rejected by the schema, tractability bucketing and the safety flag/count, weight
-parsing and rejection of junk, a hand-computed composite for a known
-two-row input (with `composite_breakdown` contributions that sum back to
-the score), a second hand-computed composite driven end-to-end from a
-small fixture tractability/safety table, component-drop-and-renormalise
-when `rwr`/`genetic_evidence` data is absent, and — the case the spec
-calls out — a gene with an empty `safetyLiabilities` list and a gene absent
-from the `target` parquet both coming out `unknown` rather than defaulting
-to a numeric or `safe` value, in `build_annotations` and end-to-end.
+tests (7 tests):
+- tractability bucketing and the safety flag/count;
+- a scores table with neither `rwr_score` nor `bfwalk_score` rejected by
+  the schema;
+- a gene with an empty `safetyLiabilities` list and a gene absent from the
+  `target` parquet both coming out `unknown`, never `safe`, in
+  `build_annotations` and end-to-end;
+- `run()` restoring Stage 5's ranking (by `bfwalk_score`, else
+  `rwr_score`) from an unsorted candidates file, with or without Stage 4;
+- the annotations never changing that order.
 
 ## Running Stage 7 (`pipeline/run_pipeline.py` + `pipeline/stage7_report.py`)
 
@@ -590,13 +568,13 @@ python3 pipeline/stage7_report.py --run-dir out/
 - header — disease, number of seed genes and candidates, random seed, Reactome / Open
   Targets versions, whether the graph is Stage 3 (structural) or Stage 4
   (genetic-evidence-weighted);
-- a **sortable** ranked table — `symbol`, `gene` (Ensembl), `composite`,
-  `rwr`, `bfwalk`, `genetic ev.`, `tractability`, `safety` (click a
+- a **sortable** ranked table, in Stage 5's order — `symbol`, `gene`
+  (Ensembl), `rwr`, `bfwalk`, `genetic ev.`, `tractability`, `safety` (click a
   header to sort; `rwr`/`bfwalk`/`genetic ev.` columns appear only if
   those methods/stages ran);
 - a **click-to-expand evidence trace** for each of the top 100 candidates
-  (`--n-traces`; the table still lists every candidate) — its
-  `composite_breakdown` + weights, the graph pathways it shares with seed
+  (`--n-traces`; the table still lists every candidate) — its ranking
+  score, the graph pathways it shares with seed
   genes (with the number of seeds in each; and the disease-relevant pathways
   without seeds it is a member of), its Open
   Targets datatypes + scores (with the ones feeding `genetic_evidence_score`
@@ -620,10 +598,10 @@ header line lists whatever was missing.
 ranked table — same ordering as Stage 6's `candidates_annotated.tsv`):
 
 ```
-#  symbol  gene             composite  bfwalk  genetic ev.  tractability  safety
-1  GENE22  ENSG00000000022  0.714      0.5050  0.500        clinical      has_liabilities
-2  GENE25  ENSG00000000025  0.383      0.3332  0.000        clinical      unknown
-3  GENE24  ENSG00000000024  0.345      0.3559  0.000        discovery     unknown
+#  symbol  gene             bfwalk  genetic ev.  tractability  safety
+1  GENE22  ENSG00000000022  0.5050  0.500        clinical      has_liabilities
+2  GENE24  ENSG00000000024  0.3559  0.000        discovery     unknown
+3  GENE25  ENSG00000000025  0.3332  0.000        clinical      unknown
 ```
 
 Expanding `GENE25` shows: pathways shared with seed genes *Seed-Adjacent

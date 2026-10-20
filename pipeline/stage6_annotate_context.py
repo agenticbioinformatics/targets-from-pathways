@@ -1,13 +1,9 @@
 """Stage 6 - contextual annotation.
 
-Adds an Open Targets tractability bucket and safety flag to each Stage 5 candidate and computes
-composite_score = sum(weight * component) / sum(weights) over the components that have data:
-- rwr, bfwalk: min-max normalised within the candidate set (their raw values are only meaningful as ranks);
-  a method Stage 5 did not run is dropped, so with one method its weight share is 0.3 / 0.7 by default
-- genetic_evidence: Stage 4 score, already in [0, 1]
-- tractability: clinical 1.0, discovery 0.5, unknown 0.0
-- safety: has_liabilities 0.0, unknown 0.5 (no annotation is not proof of safety, so it is never rewarded)
-Writes candidates_annotated.tsv. No rows are filtered and no tissue-expression data is used.
+Adds to each Stage 5 candidate its Stage 4 genetic_evidence_score, an Open Targets tractability bucket
+(clinical / discovery / unknown) and a safety flag (has_liabilities / unknown - no annotation is not proof of
+safety). The annotations are for reading only: candidates keep Stage 5's ranking (bfwalk_score, else
+rwr_score). Writes candidates_annotated.tsv. No rows are filtered and no tissue-expression data is used.
 """
 
 import argparse
@@ -25,15 +21,11 @@ from stage0_schemas import (
     CandidateScoresSchema,
     fail,
     load_manifest,
+    ranking_column,
 )
 
 logger = logging.getLogger("annotate_context")
 
-DEFAULT_WEIGHTS = "rwr:0.3,bfwalk:0.3,genetic_evidence:0.2,tractability:0.1,safety:0.1"
-COMPONENTS = ["rwr", "bfwalk", "genetic_evidence", "tractability", "safety"]
-PROPAGATION_COMPONENTS = ["rwr", "bfwalk"]
-TRACTABILITY_SCORE = {"clinical": 1.0, "discovery": 0.5, "unknown": 0.0}
-SAFETY_SCORE = {"has_liabilities": 0.0, "unknown": 0.5}
 CLINICAL_TRACTABILITY_IDS = {
     "approved drug",
     "phase 1 clinical",
@@ -45,7 +37,6 @@ CLINICAL_TRACTABILITY_IDS = {
 OUTPUT_COLUMNS = [
     "gene", "rwr_score", "bfwalk_score", "genetic_evidence_score",
     "tractability", "safety", "n_safety_liabilities",
-    "composite_score", "composite_breakdown", "composite_weights",
 ]
 
 
@@ -53,7 +44,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         prog="stage6_annotate_context.py",
         description="Stage 6 - contextual annotation. Joins an Open Targets tractability bucket and a safety "
-        "flag onto Stage 5's candidates and computes a weighted composite_score (--weights). Reads "
+        "flag onto Stage 5's candidates, keeping Stage 5's ranking. Reads "
         "candidate_scores.tsv + graph_metadata.json + the OT target parquet (via --manifest); writes "
         "candidates_annotated.tsv.",
     )
@@ -63,34 +54,9 @@ def parse_args(argv=None):
                         help="Directory with Stage 4's graph_metadata.json. Default: --manifest's directory.")
     parser.add_argument("--target-parquet", type=Path, default=None,
                         help="Open Targets target parquet file or directory. Default: taken from manifest.sources.")
-    parser.add_argument("--weights", default=DEFAULT_WEIGHTS,
-                        help=f"Comma-separated component:weight pairs (need not sum to 1). Default: {DEFAULT_WEIGHTS}.")
     parser.add_argument("--out", type=Path, default=None, help="Output TSV. Default: <candidates dir>/candidates_annotated.tsv.")
     return parser.parse_args(argv)
 
-
-def parse_weights(raw_weights):
-    weights = {}
-    for entry in raw_weights.split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        if ":" not in entry:
-            fail(f"--weights entry {entry!r} is not `component:weight`.")
-        component, value = entry.split(":", 1)
-        component = component.strip().lower()
-        if component not in COMPONENTS:
-            fail(f"--weights has unknown component {component!r}; valid: {COMPONENTS}.")
-        try:
-            weight = float(value)
-        except ValueError:
-            fail(f"--weights entry {entry!r} has a non-numeric weight.")
-        if weight < 0:
-            fail(f"--weights {component!r} is negative ({weight}).")
-        weights[component] = weight
-    if sum(weights.values()) <= 0:
-        fail("--weights resolved to nothing positive.")
-    return weights
 
 
 def find_next_to_manifest(path, manifest_path):
@@ -189,69 +155,7 @@ def build_annotations(target_parquet_paths, genes):
     return pd.DataFrame(rows, columns=["gene", "tractability", "safety", "n_safety_liabilities"])
 
 
-def min_max_normalise(series):
-    lowest = series.min()
-    highest = series.max()
-    if highest == lowest:
-        return pd.Series(0.0, index=series.index)
-    return (series - lowest) / (highest - lowest)
-
-
-def compute_composite(candidates, weights):
-    """Return (composite_score, composite_breakdown, used_weights). Components without data are dropped and
-    the remaining weights rescaled to sum to 1; the breakdown lists each component's share of the score."""
-    components = {}
-    if "rwr" in weights and "rwr_score" in candidates.columns:
-        components["rwr"] = min_max_normalise(candidates["rwr_score"])
-    if "bfwalk" in weights and "bfwalk_score" in candidates.columns:
-        components["bfwalk"] = min_max_normalise(candidates["bfwalk_score"])
-    if "genetic_evidence" in weights and "genetic_evidence_score" in candidates.columns:
-        components["genetic_evidence"] = candidates["genetic_evidence_score"].astype(float).clip(0.0, 1.0)
-    if "tractability" in weights:
-        components["tractability"] = candidates["tractability"].map(TRACTABILITY_SCORE).astype(float)
-    if "safety" in weights:
-        components["safety"] = candidates["safety"].map(SAFETY_SCORE).astype(float)
-
-    # A propagation method Stage 5 was not asked to run is expected to be missing; anything else is not.
-    not_run = []
-    dropped = []
-    for component in weights:
-        if component in components:
-            continue
-        if component in PROPAGATION_COMPONENTS:
-            not_run.append(component)
-        else:
-            dropped.append(component)
-    if not_run:
-        logger.info("Stage 5 did not run %s - its weight is dropped and the rest renormalised.", not_run)
-    if dropped:
-        logger.warning("Dropping weighted component(s) with no data: %s - weights renormalised.", dropped)
-
-    total_weight = 0.0
-    for component in components:
-        total_weight += weights[component]
-    if total_weight <= 0:
-        fail("Every weighted component was unavailable - nothing to score.")
-
-    used_weights = {}
-    contributions = {}
-    composite = pd.Series(0.0, index=candidates.index)
-    for component in components:
-        used_weights[component] = weights[component] / total_weight
-        contributions[component] = used_weights[component] * components[component]
-        composite = composite + contributions[component]
-
-    breakdown = []
-    for i in range(len(candidates)):
-        parts = []
-        for component in used_weights:
-            parts.append(f"{component}={contributions[component].iloc[i]:.3f}")
-        breakdown.append("|".join(parts))
-    return composite.clip(0.0, 1.0), pd.Series(breakdown, index=candidates.index), used_weights
-
-
 def run(args):
-    weights = parse_weights(args.weights)
     manifest = load_manifest(args.manifest)
     candidates_path = find_next_to_manifest(args.candidates or args.manifest.parent / "candidate_scores.tsv", args.manifest)
     graph_dir = args.graph_dir or args.manifest.parent
@@ -277,16 +181,9 @@ def run(args):
                 (candidates["tractability"] != "unknown").sum(), len(candidates),
                 (candidates["safety"] != "unknown").sum(), len(candidates))
 
-    composite, breakdown, used_weights = compute_composite(candidates, weights)
-    weight_parts = []
-    for component, weight in used_weights.items():
-        weight_parts.append(f"{component}:{weight:.3f}")
-    weights_text = ",".join(weight_parts)
-    candidates["composite_score"] = composite
-    candidates["composite_breakdown"] = breakdown
-    # Repeated on every row so a single row explains itself.
-    candidates["composite_weights"] = weights_text
-    candidates = candidates.sort_values("composite_score", ascending=False, kind="stable").reset_index(drop=True)
+    # Stage 5's ranking, restored in case --candidates points at a re-sorted file.
+    rank_column = ranking_column(candidates.columns)
+    candidates = candidates.sort_values(rank_column, ascending=False, kind="stable").reset_index(drop=True)
 
     columns = []
     for column in OUTPUT_COLUMNS:
@@ -296,7 +193,7 @@ def run(args):
 
     out_path = args.out or candidates_path.parent / "candidates_annotated.tsv"
     candidates.to_csv(out_path, sep="\t", index=False)
-    logger.info("Stage 6 complete (weights %s): %s", weights_text, out_path)
+    logger.info("Stage 6 complete (ranked by %s): %s", rank_column, out_path)
     return out_path
 
 

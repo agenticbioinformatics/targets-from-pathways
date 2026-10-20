@@ -5,7 +5,7 @@ and re-weights the existing graph edges from the two endpoint scores. Writes the
 as Stage 3 (so Stage 5 reads either the same way) plus gene_weights.tsv for inspection.
 graph_weight.npz is replaced; use a different --out-dir to keep Stage 3's structural weights.
 Genes in Stage 2's benchmark_holdout_genes.tsv score 0.0: their own Open Targets evidence is what a benchmark
-is meant to recover, so it must not weight their edges or Stage 6's composite.
+is meant to recover, so it must not weight their edges or show as their genetic_evidence_score.
 """
 
 import argparse

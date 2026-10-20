@@ -51,8 +51,9 @@ def test_from_manifest_chains_stages_and_writes_report(tmp_path):
     annotated = pd.read_csv(run_dir / "candidates_annotated.tsv", sep="\t")
     assert len(annotated) == 7  # 25 graph genes minus 18 seed genes
     assert (run_dir / "disease_seed_genes.tsv").exists()
-    assert {"composite_score", "composite_breakdown", "composite_weights"} <= set(annotated.columns)
-    assert annotated["composite_score"].between(0.0, 1.0).all()
+    # default Stage 5 method, and Stage 6 keeps its ranking - there is no composite score
+    assert "bfwalk_score" in annotated.columns and annotated["bfwalk_score"].is_monotonic_decreasing
+    assert not any(column.startswith("composite") for column in annotated.columns)
 
     html = (run_dir / "report.html").read_text()
     assert "http://" not in html and "https://" not in html

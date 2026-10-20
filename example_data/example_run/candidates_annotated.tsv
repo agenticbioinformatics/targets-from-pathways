@@ -1,8 +1,8 @@
-gene	bfwalk_score	genetic_evidence_score	tractability	safety	n_safety_liabilities	composite_score	composite_breakdown	composite_weights
-ENSG00000000022	0.5049978494644165	0.5	clinical	has_liabilities	1	0.7142857142857144	bfwalk=0.429|genetic_evidence=0.143|tractability=0.143|safety=0.000	bfwalk:0.429,genetic_evidence:0.286,tractability:0.143,safety:0.143
-ENSG00000000025	0.3332154750823974	0.0	clinical	unknown	0	0.3825290529379384	bfwalk=0.168|genetic_evidence=0.000|tractability=0.143|safety=0.071	bfwalk:0.429,genetic_evidence:0.286,tractability:0.143,safety:0.143
-ENSG00000000024	0.3558933138847351	0.0	discovery	unknown	0	0.3454676770970776	bfwalk=0.203|genetic_evidence=0.000|tractability=0.071|safety=0.071	bfwalk:0.429,genetic_evidence:0.286,tractability:0.143,safety:0.143
-ENSG00000000023	0.3146727681159973	0.0	unknown	unknown	0	0.21157131184503292	bfwalk=0.140|genetic_evidence=0.000|tractability=0.000|safety=0.071	bfwalk:0.429,genetic_evidence:0.286,tractability:0.143,safety:0.143
-ENSG00000000026	0.222196951508522	0.0	unknown	unknown	0	0.07142857142857144	bfwalk=0.000|genetic_evidence=0.000|tractability=0.000|safety=0.071	bfwalk:0.429,genetic_evidence:0.286,tractability:0.143,safety:0.143
-ENSG00000000027	0.222196951508522	0.0	unknown	unknown	0	0.07142857142857144	bfwalk=0.000|genetic_evidence=0.000|tractability=0.000|safety=0.071	bfwalk:0.429,genetic_evidence:0.286,tractability:0.143,safety:0.143
-ENSG00000000028	0.222196951508522	0.0	unknown	unknown	0	0.07142857142857144	bfwalk=0.000|genetic_evidence=0.000|tractability=0.000|safety=0.071	bfwalk:0.429,genetic_evidence:0.286,tractability:0.143,safety:0.143
+gene	bfwalk_score	genetic_evidence_score	tractability	safety	n_safety_liabilities
+ENSG00000000022	0.5049978494644165	0.5	clinical	has_liabilities	1
+ENSG00000000024	0.3558933138847351	0.0	discovery	unknown	0
+ENSG00000000025	0.3332154750823974	0.0	clinical	unknown	0
+ENSG00000000023	0.3146727681159973	0.0	unknown	unknown	0
+ENSG00000000026	0.222196951508522	0.0	unknown	unknown	0
+ENSG00000000027	0.222196951508522	0.0	unknown	unknown	0
+ENSG00000000028	0.222196951508522	0.0	unknown	unknown	0

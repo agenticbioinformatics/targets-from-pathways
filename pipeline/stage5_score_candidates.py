@@ -16,7 +16,14 @@ from pathlib import Path
 import networkx as nx
 import pandas as pd
 
-from stage0_schemas import ENSEMBL_GENE_ID_PATTERN, CandidateScoresSchema, SeedGenesSchema, fail, load_graph
+from stage0_schemas import (
+    ENSEMBL_GENE_ID_PATTERN,
+    CandidateScoresSchema,
+    SeedGenesSchema,
+    fail,
+    load_graph,
+    ranking_column,
+)
 
 logger = logging.getLogger("score_candidates")
 
@@ -159,11 +166,10 @@ def run(args):
     if "rwr" in methods:
         graph = build_digraph(weight, gene_index)
         result["rwr_score"] = result["gene"].map(rwr_scores(graph, seeds, args.restart_prob)).astype(float)
-        rank_column = "rwr_score"
     if "bfwalk" in methods:
         scores = bfwalk_scores(weight, gene_index, seeds, args.bfwalk_alpha, args.bfwalk_threads)
         result["bfwalk_score"] = result["gene"].map(scores).astype(float)
-        rank_column = "bfwalk_score"
+    rank_column = ranking_column(result.columns)
 
     result = result.sort_values(rank_column, ascending=False, kind="stable").reset_index(drop=True)
     result = CandidateScoresSchema.validate(result)

@@ -32,7 +32,7 @@ def run_stage(label, script, args, python_exe):
 
 
 def run_pipeline(disease=None, data_dir=None, out_dir=None, from_manifest=None,
-                 method="bfwalk", weights=None, stage1_args=None, python_exe=None):
+                 method="bfwalk", stage1_args=None, python_exe=None):
     """Return the path of candidates_annotated.tsv. stage1_args are extra options for stage1_ingest.py."""
     python_exe = python_exe or sys.executable
     stage1_args = stage1_args or []
@@ -60,10 +60,7 @@ def run_pipeline(disease=None, data_dir=None, out_dir=None, from_manifest=None,
               ["--manifest", manifest], python_exe)
     run_stage("Stage 5 (candidate scoring)", "stage5_score_candidates.py",
               ["--graph-dir", run_dir, "--method", method], python_exe)
-    stage6_args = ["--manifest", manifest]
-    if weights:
-        stage6_args += ["--weights", weights]
-    run_stage("Stage 6 (contextual annotation)", "stage6_annotate_context.py", stage6_args, python_exe)
+    run_stage("Stage 6 (contextual annotation)", "stage6_annotate_context.py", ["--manifest", manifest], python_exe)
 
     annotated = run_dir / "candidates_annotated.tsv"
     if not annotated.exists():
@@ -87,12 +84,11 @@ def main(argv=None):
                         help="Skip Stage 1 and start from this manifest.json (its directory is the run directory).")
     parser.add_argument("--method", default="bfwalk",
                         help="Stage 5 --method: bfwalk and/or rwr, comma-separated (default: bfwalk).")
-    parser.add_argument("--weights", default=None, help="Stage 6 --weights (default: Stage 6's own default).")
     parser.add_argument("--report", action="store_true", help="Also write report.html in the run directory (Stage 7).")
     args, stage1_args = parser.parse_known_args(argv)
 
     annotated = run_pipeline(disease=args.disease, data_dir=args.data_dir, out_dir=args.out_dir,
-                             from_manifest=args.from_manifest, method=args.method, weights=args.weights,
+                             from_manifest=args.from_manifest, method=args.method,
                              stage1_args=stage1_args)
     if args.report:
         build_report(annotated.parent, annotated.parent / "report.html")

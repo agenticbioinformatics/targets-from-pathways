@@ -155,6 +155,14 @@ def has_a_propagation_score(df):
 
 HAS_PROPAGATION_SCORE = Check(has_a_propagation_score, error=f"needs at least one of {PROPAGATION_SCORE_COLUMNS}")
 
+
+def ranking_column(columns):
+    """The score candidates are ranked by: the last of PROPAGATION_SCORE_COLUMNS present (bfwalk over rwr)."""
+    present = [column for column in PROPAGATION_SCORE_COLUMNS if column in columns]
+    if not present:
+        raise ValueError(f"no propagation score column; expected one of {PROPAGATION_SCORE_COLUMNS}")
+    return present[-1]
+
 CandidateScoresSchema = DataFrameSchema(
     {
         "gene": ensembl_column(unique=True),
@@ -176,11 +184,6 @@ AnnotatedCandidatesSchema = DataFrameSchema(
         "tractability": Column(str, checks=Check.isin(TRACTABILITY_BUCKETS), nullable=False),
         "safety": Column(str, checks=Check.isin(SAFETY_FLAGS), nullable=False),
         "n_safety_liabilities": Column(int, checks=Check.greater_than_or_equal_to(0), nullable=False, coerce=True),
-        "composite_score": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True),
-        # "component=contribution|...": the contributions add up to composite_score.
-        "composite_breakdown": Column(str, nullable=False),
-        # "component:weight,...": the weights actually used, repeated on every row.
-        "composite_weights": Column(str, nullable=False),
     },
     checks=HAS_PROPAGATION_SCORE,
     strict=True,

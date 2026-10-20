@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from stage0_schemas import AnnotatedCandidatesSchema, fail
+from stage0_schemas import AnnotatedCandidatesSchema, fail, ranking_column
 
 PIPELINE_DIR = Path(__file__).resolve().parent
 REPO_DIR = PIPELINE_DIR.parent
@@ -237,14 +237,12 @@ def html_list(items):
     return text + "</ul>"
 
 
-def trace_html(gene_id, symbol, row, trace):
+def trace_html(gene_id, symbol, row, trace, rank_column):
     parts = [
         f'<details id="g-{escape(gene_id)}">',
         f"<summary><b>{escape(symbol)}</b> <span class=ens>{escape(gene_id)}</span> "
-        f"&mdash; composite <b>{row.composite_score:.3f}</b></summary>",
+        f"&mdash; {escape(rank_column)} <b>{getattr(row, rank_column):.4f}</b></summary>",
         '<div class="trace">',
-        '<p class="k">Composite breakdown</p>',
-        f"<p><code>{escape(row.composite_breakdown)}</code><br>weights <code>{escape(row.composite_weights)}</code></p>",
         '<p class="k">Pathways shared with seed genes</p>',
     ]
     if not trace["pathways_available"]:
@@ -324,13 +322,13 @@ def render_html(run, n_traces=DEFAULT_N_TRACES):
     else:
         graph_kind = "unknown (no graph_metadata.json)"
 
+    rank_column = ranking_column(candidates.columns)
     has_rwr = "rwr_score" in candidates.columns
     has_bfwalk = "bfwalk_score" in candidates.columns
     has_genetic_evidence = "genetic_evidence_score" in candidates.columns
 
     # (column title, sort numerically, left-aligned text)
-    headers = [("#", True, False), ("symbol", False, True), ("gene", False, True),
-               ("composite", True, False)]
+    headers = [("#", True, False), ("symbol", False, True), ("gene", False, True)]
     if has_rwr:
         headers.append(("rwr", True, False))
     if has_bfwalk:
@@ -363,7 +361,6 @@ def render_html(run, n_traces=DEFAULT_N_TRACES):
             f'<td data-v="{rank}">{rank}</td>',
             symbol_cell,
             f'<td class="txt ens">{escape(gene_id)}</td>',
-            f'<td data-v="{row.composite_score}">{row.composite_score:.3f}</td>',
         ]
         if has_rwr:
             cells.append(f'<td data-v="{row.rwr_score}">{row.rwr_score:.4f}</td>')
@@ -375,7 +372,7 @@ def render_html(run, n_traces=DEFAULT_N_TRACES):
         cells.append(f'<td class="txt">{escape(row.safety)}</td>')
         table_rows.append("<tr>" + "".join(cells) + "</tr>")
         if has_trace:
-            details.append(trace_html(gene_id, symbol, row, evidence_trace(gene_id, run)))
+            details.append(trace_html(gene_id, symbol, row, evidence_trace(gene_id, run), rank_column))
 
     missing_note = ""
     if run["missing"]:
@@ -384,7 +381,7 @@ def render_html(run, n_traces=DEFAULT_N_TRACES):
     trace_note = f"Evidence traces for all {len(details)} candidates."
     if len(details) < len(candidates):
         trace_note = (f"Evidence traces for the top {len(details)} of {len(candidates)} candidates "
-                      f"(by composite score; <code>--n-traces</code> to change).")
+                      f"(by <code>{escape(rank_column)}</code>; <code>--n-traces</code> to change).")
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     table_html = "\n".join(table_rows)
     details_html = "\n".join(details)
@@ -404,10 +401,9 @@ graph: {escape(graph_kind)} &middot; generated {generated}
 </p>
 {missing_note}
 <p class="lead">
-<code>composite_score</code> is a weighted average of the normalised components; each
-candidate's <i>breakdown</i> below shows every component's weighted contribution
-(the terms sum to the score). Click a header to sort; click a gene symbol to open
-its evidence trace.
+Candidates are ranked by <code>{escape(rank_column)}</code>, Stage 5's network propagation
+from the seed genes; genetic evidence, tractability and safety annotate them and do not
+change the order. Click a header to sort; click a gene symbol to open its evidence trace.
 </p>
 
 <table id="ranktable">

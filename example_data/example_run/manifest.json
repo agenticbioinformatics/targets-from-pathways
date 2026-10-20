@@ -14,7 +14,7 @@
       "source": "reactome_gmt"
     }
   },
-  "created_at": "2026-10-20T14:17:24.264605Z",
+  "created_at": "2026-10-20T14:28:30.220793Z",
   "disease": {
     "efo_id": "MONDO_0000001",
     "n_associated_genes": 19,

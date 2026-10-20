@@ -180,7 +180,7 @@ def test_partial_run_dir_degrades_gracefully(tmp_path):
 
     thead = html.split("<thead>", 1)[1].split("</thead>", 1)[0]
     assert ">rwr<" not in thead and "genetic ev." not in thead   # optional columns dropped
-    assert ">composite<" in thead and ">bfwalk<" in thead        # the score that ran is shown
+    assert ">composite<" not in thead and ">bfwalk<" in thead    # the score that ran is shown
     assert html.count("<details ") == len(ann)                   # every candidate still rendered
 
     assert "Partial run:" in html
