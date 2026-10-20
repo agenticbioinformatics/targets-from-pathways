@@ -2,5 +2,6 @@
 *cache*
 data/
 out*/
-validation/
+validation/*
+!validation/*.py
 example_data/example_run/
