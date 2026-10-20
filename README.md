@@ -113,36 +113,6 @@ python pipeline/stage6_annotate_context.py --manifest out/manifest.json
 python pipeline/stage7_report.py --run-dir out/
 ```
 
-### Validation
-
-`validation/leave_one_out.py` holds out each seed gene of one disease in turn, reruns Stages 2-5 as if
-the gene were not associated with the disease, and records its score and rank among the candidates.
-It writes `validation/scores_left_out.tsv` (`gene`, `score`), a details file, and AUROC and recall@k
-next to a random ranking in `validation/leave_one_out.log`. `validation/compare_scores.py` then asks
-whether the pipeline beats sorting the Open Targets data by score: it ranks the same genes by their
-non-genetic Open Targets evidence (genetic evidence is what was hidden) and correlates genetic
-evidence, Open Targets, BFWalk and RWR scores. Its answer ends `validation/compare_scores.log`.
-
-On the example data (18 seeds, about 20 seconds):
-
-```
-python validation/leave_one_out.py --disease MONDO_0000001 --from-manifest example_data/example_run/manifest.json --k 1,3 --jobs 4
-python validation/compare_scores.py --k 1,3
-```
-
-Expected: the leave-one-out log ends with an AUROC of about 0.40 for BFWalk and 0.86 for RWR (random
-0.50), and `compare_scores.log` ends with:
-
-```
-bfwalk: NO significant difference from sorting Open Targets by score (mean AUROC 0.402 vs 0.478; ...)
-rwr: YES, better than sorting Open Targets by score (mean AUROC 0.860 vs 0.478; ...)
-```
-
-For a real disease, run Stage 1 through it (`--disease MONDO_0005265 --data-dir data/`, or
-`--from-manifest out/manifest.json`). Each held-out gene costs a full Stage 2-5 run: about 40 seconds
-on IBD, so its 502 seeds in the graph take about 5-6 hours one at a time. Use `--jobs` and, to try it
-out, `--max-genes 50`.
-
 ### More detail
 
 - **[`docs/README.md`](docs/README.md)** - per-stage reference file: inputs, all
