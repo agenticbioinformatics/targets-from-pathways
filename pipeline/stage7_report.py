@@ -330,7 +330,7 @@ def render_html(run, n_traces=DEFAULT_N_TRACES):
 
     # (column title, sort numerically, left-aligned text)
     headers = [("#", True, False), ("symbol", False, True), ("gene", False, True),
-               ("composite", True, False), ("topology", True, False)]
+               ("composite", True, False)]
     if has_rwr:
         headers.append(("rwr", True, False))
     if has_bfwalk:
@@ -364,7 +364,6 @@ def render_html(run, n_traces=DEFAULT_N_TRACES):
             symbol_cell,
             f'<td class="txt ens">{escape(gene_id)}</td>',
             f'<td data-v="{row.composite_score}">{row.composite_score:.3f}</td>',
-            f'<td data-v="{row.topology_score}">{row.topology_score:.3f}</td>',
         ]
         if has_rwr:
             cells.append(f'<td data-v="{row.rwr_score}">{row.rwr_score:.4f}</td>')

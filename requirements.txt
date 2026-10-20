@@ -20,7 +20,7 @@ scipy
 pandas
 pyarrow
 
-# Stage 5 — candidate scoring (topology + random-walk-with-restart + BFWalk)
+# Stage 5 — candidate scoring (random-walk-with-restart and/or BFWalk)
 networkx
 numpy
 scipy

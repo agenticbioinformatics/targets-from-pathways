@@ -163,22 +163,24 @@ def test_build_report_traces_only_top_candidates(tmp_path):
 )
 def test_partial_run_dir_degrades_gracefully(tmp_path):
     """Only manifest.json + candidates_annotated.tsv present, and the table
-    lacks rwr_score / genetic_evidence_score (a Stage-3-only run). The
-    report still renders: those columns are omitted, every trace section
+    has bfwalk_score but no rwr_score or genetic_evidence_score (a default,
+    bfwalk-only Stage 5 on a Stage 3 graph). The report still renders: the
+    missing columns are omitted, every trace section
     says which artifact is missing, and a header note lists them."""
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "manifest.json").write_text((EXAMPLE_RUN / "manifest.json").read_text())
     ann = pd.read_csv(EXAMPLE_RUN / "candidates_annotated.tsv", sep="\t").drop(
-        columns=["rwr_score", "genetic_evidence_score"]
+        columns=["rwr_score", "genetic_evidence_score"], errors="ignore"
     )
+    assert "bfwalk_score" in ann.columns
     ann.to_csv(run_dir / "candidates_annotated.tsv", sep="\t", index=False)
 
     html = rep.build_report(run_dir, run_dir / "report.html").read_text()
 
     thead = html.split("<thead>", 1)[1].split("</thead>", 1)[0]
     assert ">rwr<" not in thead and "genetic ev." not in thead   # optional columns dropped
-    assert ">composite<" in thead and ">topology<" in thead      # required ones stay
+    assert ">composite<" in thead and ">bfwalk<" in thead        # the score that ran is shown
     assert html.count("<details ") == len(ann)                   # every candidate still rendered
 
     assert "Partial run:" in html

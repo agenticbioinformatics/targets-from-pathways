@@ -2,14 +2,11 @@
 
 Seeds are the disease's genetic-association genes (Stage 2's disease_seed_genes.tsv) that are nodes of the
 Stage 3 or Stage 4 graph. Every other graph gene is a candidate, scored by its proximity to the seeds, and
-written to candidate_scores.tsv. Methods (--method):
-- topology (always computed): (1 + number of seed neighbours) / (1 + weighted shortest-path distance from
-  the nearest seed, each edge costing 1 / weight; a zero-weight edge costs as much as the weakest
-  positive-weight edge). Unreachable genes score 0.
-- rwr (opt-in): random walk with restart, restarting uniformly on the seeds (personalised PageRank).
-- bfwalk (opt-in): BFWalk backtrack-free network propagation from the seeds
+written to candidate_scores.tsv. Methods (--method, at least one):
+- bfwalk (default): BFWalk backtrack-free network propagation from the seeds
   (https://github.com/jedrzejkubica/BFWalk). Needs the bfwalk package (for now from TestPyPI, see README).
-The output is ranked by the last requested method in the order topology, rwr, bfwalk.
+- rwr (opt-in): random walk with restart, restarting uniformly on the seeds (personalised PageRank).
+The output is ranked by the last requested method in the order rwr, bfwalk.
 """
 
 import argparse
@@ -23,23 +20,22 @@ from stage0_schemas import ENSEMBL_GENE_ID_PATTERN, CandidateScoresSchema, SeedG
 
 logger = logging.getLogger("score_candidates")
 
-METHODS = ["topology", "rwr", "bfwalk"]
+METHODS = ["rwr", "bfwalk"]
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         prog="stage5_score_candidates.py",
         description="Stage 5 - candidate scoring. Propagates from the disease's seed genes over the graph and "
-        "ranks every non-seed graph gene: topology (always) and, opt-in via --method, random-walk-with-restart "
-        "and/or BFWalk. Reads the graph files in --graph-dir (Stage 3 or Stage 4) and the seed genes "
+        "ranks every non-seed graph gene by BFWalk and/or random-walk-with-restart (--method). Reads the graph files in --graph-dir (Stage 3 or Stage 4) and the seed genes "
         "(--seed-genes); writes candidate_scores.tsv.",
     )
     parser.add_argument("--graph-dir", required=True, type=Path, help="Directory with the Stage 3/4 graph files.")
     parser.add_argument("--seed-genes", type=Path, default=None,
                         help="Seed genes: a TSV with a gene_id column (Stage 2's disease_seed_genes.tsv). "
                         "Default: <graph-dir>/disease_seed_genes.tsv.")
-    parser.add_argument("--method", default="topology",
-                        help="Comma-separated subset of {topology, rwr, bfwalk}. Default: topology (always computed).")
+    parser.add_argument("--method", default="bfwalk",
+                        help="Comma-separated non-empty subset of {bfwalk, rwr}. Default: bfwalk.")
     parser.add_argument("--restart-prob", type=float, default=0.5,
                         help="RWR restart probability (0 < p < 1); PageRank alpha = 1 - p. Default: 0.5.")
     parser.add_argument("--bfwalk-alpha", type=float, default=0.5,
@@ -51,7 +47,8 @@ def parse_args(argv=None):
 
 
 def parse_methods(raw_methods):
-    methods = ["topology"]
+    """Return the requested methods in METHODS order (the last one ranks the output)."""
+    methods = []
     for method in raw_methods.split(","):
         method = method.strip().lower()
         if not method:
@@ -60,7 +57,9 @@ def parse_methods(raw_methods):
             fail(f"--method has unknown value {method!r}; valid: {METHODS}.")
         if method not in methods:
             methods.append(method)
-    return methods
+    if not methods:
+        fail(f"--method must name at least one of {METHODS}.")
+    return [method for method in METHODS if method in methods]
 
 
 def read_seeds(seeds_path, gene_index):
@@ -77,43 +76,14 @@ def read_seeds(seeds_path, gene_index):
 
 
 def build_digraph(weight, gene_index):
-    """Each edge gets "weight" (used by RWR, 0 stays 0 so evidence-free edges carry no flow) and
-    "cost" (1 / weight, used for shortest paths). Stage 4 stores weight 0 on edges between genes without
-    evidence. Such an edge still exists, so it is kept, but it costs as much as the weakest positive-weight
-    edge: it must never be cheaper than an edge that has evidence."""
+    """Each edge gets "weight" for RWR; Stage 4's weight 0 (both genes without evidence) stays 0, so such an
+    edge carries no flow."""
     graph = nx.DiGraph()
     graph.add_nodes_from(gene_index)
     edges = weight.tocoo()
-    positive = edges.data > 0
-    zero_weight_cost = 1.0
-    if positive.any():
-        zero_weight_cost = 1.0 / float(edges.data[positive].min())
     for i, j, edge_weight in zip(edges.row, edges.col, edges.data):
-        edge_weight = max(float(edge_weight), 0.0)
-        if edge_weight > 0:
-            cost = 1.0 / edge_weight
-        else:
-            cost = zero_weight_cost
-        graph.add_edge(gene_index[i], gene_index[j], weight=edge_weight, cost=cost)
+        graph.add_edge(gene_index[i], gene_index[j], weight=max(float(edge_weight), 0.0))
     return graph
-
-
-def topology_scores(graph, seeds):
-    distance_from_seeds = nx.multi_source_dijkstra_path_length(graph, set(seeds), weight="cost")
-    # Co-membership links all genes of a pathway, so seed neighbours approximate pathways shared with seeds.
-    undirected = graph.to_undirected(as_view=True)
-    seed_set = set(seeds)
-
-    scores = {}
-    for gene in graph.nodes:
-        if gene in seed_set:
-            continue
-        if gene not in distance_from_seeds:
-            scores[gene] = 0.0
-            continue
-        n_seed_neighbours = len(seed_set & set(undirected.neighbors(gene)))
-        scores[gene] = (1.0 + n_seed_neighbours) / (1.0 + distance_from_seeds[gene])
-    return scores
 
 
 def rwr_scores(graph, seeds, restart_prob):
@@ -185,11 +155,9 @@ def run(args):
     if not candidates:
         logger.warning("Every graph gene is a seed - writing an empty ranking.")
 
-    graph = build_digraph(weight, gene_index)
     result = pd.DataFrame({"gene": pd.Series(candidates, dtype="object")})
-    result["topology_score"] = result["gene"].map(topology_scores(graph, seeds)).astype(float)
-    rank_column = "topology_score"
     if "rwr" in methods:
+        graph = build_digraph(weight, gene_index)
         result["rwr_score"] = result["gene"].map(rwr_scores(graph, seeds, args.restart_prob)).astype(float)
         rank_column = "rwr_score"
     if "bfwalk" in methods:

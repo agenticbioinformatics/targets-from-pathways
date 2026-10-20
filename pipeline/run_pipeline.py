@@ -32,7 +32,7 @@ def run_stage(label, script, args, python_exe):
 
 
 def run_pipeline(disease=None, data_dir=None, out_dir=None, from_manifest=None,
-                 method="topology,rwr", weights=None, stage1_args=None, python_exe=None):
+                 method="bfwalk", weights=None, stage1_args=None, python_exe=None):
     """Return the path of candidates_annotated.tsv. stage1_args are extra options for stage1_ingest.py."""
     python_exe = python_exe or sys.executable
     stage1_args = stage1_args or []
@@ -85,7 +85,8 @@ def main(argv=None):
     parser.add_argument("--out-dir", type=Path, help="Run directory Stage 1 writes into.")
     parser.add_argument("--from-manifest", type=Path,
                         help="Skip Stage 1 and start from this manifest.json (its directory is the run directory).")
-    parser.add_argument("--method", default="topology,rwr", help="Stage 5 --method (default: topology,rwr).")
+    parser.add_argument("--method", default="bfwalk",
+                        help="Stage 5 --method: bfwalk and/or rwr, comma-separated (default: bfwalk).")
     parser.add_argument("--weights", default=None, help="Stage 6 --weights (default: Stage 6's own default).")
     parser.add_argument("--report", action="store_true", help="Also write report.html in the run directory (Stage 7).")
     args, stage1_args = parser.parse_known_args(argv)

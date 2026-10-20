@@ -7,16 +7,16 @@ graph_metadata.json + manifest.json + a tiny Open Targets `target` parquet).
 
 Composite fixture (two candidates, so min-max maps them to the endpoints):
 
-    gene  topology_score  rwr_score  genetic_evidence_score  tractability  safety
-    A     1.0             0.4        0.8                     clinical      has_liabilities
-    B     3.0             0.2        0.5                     unknown       unknown
+    gene  bfwalk_score  rwr_score  genetic_evidence_score  tractability  safety
+    A     1.0           0.4        0.8                     clinical      has_liabilities
+    B     3.0           0.2        0.5                     unknown       unknown
 
-Normalised components: topology = min-max(topology_score) -> A=0, B=1;
+Normalised components: bfwalk = min-max(bfwalk_score) -> A=0, B=1;
 rwr = min-max(rwr_score) -> A=1, B=0; genetic_evidence as-is -> A=0.8,
 B=0.5; tractability {clinical:1, unknown:0}; safety {has_liabilities:0,
 unknown:0.5}.
 
-With weights topology:0.4, rwr:0.3, genetic_evidence:0.2, tractability:0.05,
+With weights bfwalk:0.4, rwr:0.3, genetic_evidence:0.2, tractability:0.05,
 safety:0.05 (sum 1):
     composite A = .3*1 + .2*.8 + .05*1            = 0.510
     composite B = .4*1 + .2*.5 + .05*.5           = 0.525
@@ -28,9 +28,11 @@ from __future__ import annotations
 import json
 
 import pandas as pd
+import pandera.errors
 import pytest
 
 import stage6_annotate_context as ac
+from stage0_schemas import AnnotatedCandidatesSchema, CandidateScoresSchema
 
 A = "ENSG00000000001"
 B = "ENSG00000000002"
@@ -69,14 +71,14 @@ def test_safety_flag_and_count():
 
 
 def test_parse_weights_ok_and_rejects_junk():
-    w = ac.parse_weights("topology:0.5,safety:0.5")
-    assert w == {"topology": 0.5, "safety": 0.5}
+    w = ac.parse_weights("bfwalk:0.5,safety:0.5")
+    assert w == {"bfwalk": 0.5, "safety": 0.5}
     with pytest.raises(SystemExit):
         ac.parse_weights("bogus:0.5")
     with pytest.raises(SystemExit):
-        ac.parse_weights("topology:-1")
+        ac.parse_weights("bfwalk:-1")
     with pytest.raises(SystemExit):
-        ac.parse_weights("topology:0")  # nothing positive
+        ac.parse_weights("bfwalk:0")  # nothing positive
 
 
 # --------------------------------------------------------------------------
@@ -88,7 +90,7 @@ def _composite_fixture() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "gene": [A, B],
-            "topology_score": [1.0, 3.0],
+            "bfwalk_score": [1.0, 3.0],
             "rwr_score": [0.4, 0.2],
             "genetic_evidence_score": [0.8, 0.5],
             "tractability": ["clinical", "unknown"],
@@ -99,14 +101,14 @@ def _composite_fixture() -> pd.DataFrame:
 
 def test_composite_matches_hand_computed():
     df = _composite_fixture()
-    weights = {"topology": 0.4, "rwr": 0.3, "genetic_evidence": 0.2, "tractability": 0.05, "safety": 0.05}
+    weights = {"bfwalk": 0.4, "rwr": 0.3, "genetic_evidence": 0.2, "tractability": 0.05, "safety": 0.05}
     composite, breakdown, fractions = ac.compute_composite(df, weights)
 
     # weights already sum to 1, so the renormalised fractions equal them
     assert fractions == pytest.approx(weights)
     assert composite.tolist() == pytest.approx([0.510, 0.525])
     # breakdown is each component's *weighted contribution*; the terms sum to composite
-    assert breakdown.iloc[0] == "topology=0.000|rwr=0.300|genetic_evidence=0.160|tractability=0.050|safety=0.000"
+    assert breakdown.iloc[0] == "rwr=0.300|bfwalk=0.000|genetic_evidence=0.160|tractability=0.050|safety=0.000"
     contrib_sum = sum(float(kv.split("=")[1]) for kv in breakdown.iloc[0].split("|"))
     assert contrib_sum == pytest.approx(0.510)
 
@@ -115,12 +117,25 @@ def test_composite_drops_unavailable_components_and_renormalises():
     df = _composite_fixture().drop(columns=["rwr_score", "genetic_evidence_score"])
     # rwr + genetic_evidence are weighted but have no column -> dropped, divisor = 0.2 + 0.3
     composite, breakdown, used = ac.compute_composite(
-        df, {"topology": 0.2, "rwr": 0.3, "genetic_evidence": 0.4, "safety": 0.3}
+        df, {"bfwalk": 0.2, "rwr": 0.3, "genetic_evidence": 0.4, "safety": 0.3}
     )
-    assert set(used) == {"topology", "safety"}
+    assert set(used) == {"bfwalk", "safety"}
     # A: (.2*0 + .3*0)/.5 = 0 ; B: (.2*1 + .3*.5)/.5 = 0.7
     assert composite.tolist() == pytest.approx([0.0, 0.7])
     assert "rwr" not in breakdown.iloc[0] and "genetic_evidence" not in breakdown.iloc[0]
+
+
+def test_scores_without_any_propagation_method_are_rejected():
+    # Stage 5 always runs rwr and/or bfwalk, so a scores table with neither is malformed.
+    with pytest.raises(pandera.errors.SchemaError, match="rwr_score"):
+        CandidateScoresSchema.validate(pd.DataFrame({"gene": [A]}))
+    annotated = pd.DataFrame({
+        "gene": [A], "tractability": ["unknown"], "safety": ["unknown"], "n_safety_liabilities": [0],
+        "composite_score": [0.5], "composite_breakdown": ["safety=0.500"], "composite_weights": ["safety:1.000"],
+    })
+    with pytest.raises(pandera.errors.SchemaError, match="rwr_score"):
+        AnnotatedCandidatesSchema.validate(annotated)
+    AnnotatedCandidatesSchema.validate(annotated.assign(rwr_score=0.1))
 
 
 # --------------------------------------------------------------------------
@@ -172,7 +187,7 @@ def test_build_annotations_absent_gene_is_unknown_not_penalised(tmp_path):
 
 
 def _write_run_dir(path, *, with_rwr=True, with_stage4=True):
-    cols = {"gene": [A, B, CAND], "topology_score": [1.0, 3.0, 0.5]}
+    cols = {"gene": [A, B, CAND], "bfwalk_score": [1.0, 3.0, 0.5]}
     if with_rwr:
         cols["rwr_score"] = [0.4, 0.2, 0.1]
     pd.DataFrame(cols).to_csv(path / "candidate_scores.tsv", sep="\t", index=False)
@@ -207,7 +222,7 @@ def test_run_end_to_end_columns_ranking_and_unknown_gene(tmp_path):
     df = pd.read_csv(out, sep="\t")
 
     assert list(df.columns) == [
-        "gene", "topology_score", "rwr_score", "genetic_evidence_score",
+        "gene", "rwr_score", "bfwalk_score", "genetic_evidence_score",
         "tractability", "safety", "n_safety_liabilities",
         "composite_score", "composite_breakdown", "composite_weights",
     ]
@@ -243,31 +258,31 @@ def test_run_without_rwr_or_stage4_drops_those_components(tmp_path):
 #
 # Three candidates E1/E2/E3, chosen so min-max lands them on 0 / 0.5 / 1:
 #
-#   gene  topology  rwr   genetic_evidence   in target table?
+#   gene  bfwalk    rwr   genetic_evidence   in target table?
 #   E1    1.0       0.3   0.9                yes: clinical flag, 1 liability
 #   E2    2.0       0.2   0.6                yes: discovery flag, EMPTY liabilities
 #   E3    3.0       0.1   0.3                NO (absent entirely)
 #
 # Normalised components:
-#   topology (min-max)         E1=0.0  E2=0.5  E3=1.0
+#   bfwalk   (min-max)         E1=0.0  E2=0.5  E3=1.0
 #   rwr      (min-max)          E1=1.0  E2=0.5  E3=0.0
 #   genetic_evidence (as-is)    E1=0.9  E2=0.6  E3=0.3
 #   tractability {clin1,disc.5,unk0}  E1=1.0  E2=0.5  E3=0.0
 #   safety {has_liab 0, unknown .5}   E1=0.0  E2=0.5  E3=0.5
 #
-# weights topology:0.4 rwr:0.2 genetic_evidence:0.2 tractability:0.1 safety:0.1 (sum 1):
+# weights bfwalk:0.4 rwr:0.2 genetic_evidence:0.2 tractability:0.1 safety:0.1 (sum 1):
 #   E1 = .2*1 + .2*.9 + .1*1            = 0.48
 #   E2 = .4*.5 + .2*.5 + .2*.6 + .1*.5 + .1*.5 = 0.52
 #   E3 = .4*1 + .2*.3 + .1*.5           = 0.51
 # -> ranking E2, E3, E1.
 
 E1, E2, E3 = "ENSG00000000011", "ENSG00000000012", "ENSG00000000013"
-_WEIGHTS = "topology:0.4,rwr:0.2,genetic_evidence:0.2,tractability:0.1,safety:0.1"
+_WEIGHTS = "bfwalk:0.4,rwr:0.2,genetic_evidence:0.2,tractability:0.1,safety:0.1"
 
 
 def _write_fixture_run_dir(path):
     pd.DataFrame(
-        {"gene": [E1, E2, E3], "topology_score": [1.0, 2.0, 3.0], "rwr_score": [0.3, 0.2, 0.1]}
+        {"gene": [E1, E2, E3], "bfwalk_score": [1.0, 2.0, 3.0], "rwr_score": [0.3, 0.2, 0.1]}
     ).to_csv(path / "candidate_scores.tsv", sep="\t", index=False)
 
     (path / "graph_metadata.json").write_text(

@@ -199,7 +199,8 @@ size — so it disappears from `disease_pathways.tsv` entirely (`3/7 gene sets
 tested`, down from 4) rather than merely losing significance. G17 is no
 longer a seed (17 seeds), but `R-HSA-300` still contains seeds (G18–G21), so
 it stays in the Stage 3 graph and G17 is ranked as a candidate in Stage 5
-(4th of 8 with `--method topology` on the Stage 3 graph).
+(2nd of 8 with the default BFWalk on the Stage 3 graph; 8th of 8 after
+Stage 4, which ignores G17's own evidence).
 
 `python3 -m pytest tests/test_gsea_discovery.py` runs the unit-level GSEA
 tests (`tests/test_gsea_discovery.py`, 8 tests): a deliberately-enriched
@@ -351,20 +352,35 @@ and writes `candidate_scores.tsv` alongside (override with `--out`). Seed
 genes that are not graph nodes are dropped (logged); every graph gene that
 is not a seed is a candidate, so seeds never appear in the ranking.
 
-`--method` is a comma-separated subset of `{topology, rwr, bfwalk}`,
-**default `topology`**. `topology_score` is always emitted; `rwr_score` /
-`bfwalk_score` appear only when `rwr` / `bfwalk` is requested (e.g.
-`--method topology,rwr` or `--method rwr,bfwalk`). The output is ranked by
-the last requested method in the order topology, rwr, bfwalk. All three
-start from the seed set:
+`--method` is a comma-separated, non-empty subset of `{bfwalk, rwr}`,
+**default `bfwalk`**; anything else (including an empty list) exits
+non-zero. Each requested method writes its own column (`bfwalk_score`,
+`rwr_score`). With both (`--method bfwalk,rwr`) the output is ranked by
+`bfwalk_score`. Both start from the seed set:
 
-- `topology` = (1 + number of seed neighbours) / (1 + weighted
-  shortest-path distance from the nearest seed, each edge costing
-  1 / weight); unreachable genes score 0. A zero-weight edge (Stage 4,
-  both genes without evidence) costs as much as the weakest positive-weight
-  edge, so it is never cheaper than an edge with evidence.
 - `rwr` = personalised PageRank restarting uniformly on the seeds.
   `--restart-prob` (default 0.5; PageRank `alpha = 1 - restart_prob`).
+  Zero-weight edges (Stage 4, both genes without evidence) carry no flow.
+
+Hub bias, measured on inflammatory bowel disease (`--disease MONDO_0005265`, Open Targets 26.06 +
+Reactome 97, Stage 4 graph, 9,127 candidates from 502 seeds) as the rank correlation of each score with
+the candidate's number of graph neighbours and of Reactome pathways:
+
+| Method | Spearman ρ with node degree | Spearman ρ with no. of Reactome pathways |
+|---|---|---|
+| `rwr` | 0.74 | 0.62 |
+| `bfwalk` | 0.13 | 0.13 |
+
+RWR's top IBD candidates mix existing drug targets (PPARG, TNF, ALOX5) with
+ubiquitin hubs (RPS27A, UBA52, UBB, UBC). BFWalk's top 100 have a median
+degree of 48, against 174 for all candidates, and its top hits are
+small metabolic modules (PDK2, PDK3, MPC1). There is no topology score
+any more: its (seed neighbours / distance) formula had ρ = 0.85 with node
+degree and ranked ubiquitin and proteasome genes first.
+
+**Which to use:** use `bfwalk` (the default) to find candidates beyond well-connected hub genes, and
+add `rwr` when you prefer well-connected, well-studied genes close to the seeds, e.g. to recover
+established targets.
 
 `bfwalk` runs [BFWalk](https://github.com/jedrzejkubica/BFWalk)
 (backtrack-free network propagation with in-degree normalisation) with the
@@ -374,37 +390,35 @@ as in RWR, they carry no flow — and the remaining weights are divided by the
 largest one. Knobs: `--bfwalk-alpha` (attenuation coefficient, default 0.5)
 and `--bfwalk-threads` (default 0 = all cores). BFWalk is not on PyPI yet:
 `requirements.txt` installs it from TestPyPI (see the top-level README); it
-will be available via `pip install bfwalk` shortly. Stage 6 carries
-`bfwalk_score` through and can use it as a composite component
-(`--weights ...,bfwalk:0.3`; it is not in the default weights), and Stage 7
-shows it as a `bfwalk` column.
+will be available via `pip install bfwalk` shortly. Until it is installed,
+run Stage 5 with `--method rwr`. Stages 6 and 7 carry whichever of
+`bfwalk_score` / `rwr_score` was produced into the composite and the report.
 
 Against the checked-in example (after Stages 1–4 have run, so
 `example_data/example_run/` holds a **Stage 4** graph):
 
 ```
-python3 pipeline/stage5_score_candidates.py --graph-dir example_data/example_run --method topology,rwr
+python3 pipeline/stage5_score_candidates.py --graph-dir example_data/example_run
 ```
 
 **Expected output** (`example_data/example_run/candidate_scores.tsv`, all
 7 candidates; columns per `schemas.CandidateScoresSchema`, ranked by
-`rwr_score` since `rwr` was requested — else by `topology_score`):
+`bfwalk_score`):
 
 ```
-gene             topology_score  rwr_score
-ENSG00000000022  5.5287          0.0207
-ENSG00000000023  4.2752          0.0127
-ENSG00000000024  2.3020          0.0068
-ENSG00000000025  0.9866          0.0023
-ENSG00000000026  0.4615          0.0011
-ENSG00000000027  0.4615          0.0011
-ENSG00000000028  0.4615          0.0011
+gene             bfwalk_score
+ENSG00000000022  0.5050
+ENSG00000000024  0.3559
+ENSG00000000025  0.3332
+ENSG00000000023  0.3147
+ENSG00000000026  0.2222
+ENSG00000000027  0.2222
+ENSG00000000028  0.2222
 ```
 
-`N22`/`N23` share two pathways with 10–12 strong seeds and lead;
-`N24` shares one pathway with six seeds; `N25`–`N28` share a pathway with
-a single mid-strength seed, and `N25` is lifted above its pathway-mates by
-its interaction with seed `G2`. The 18 seeds are not in the table.
+`N22`, the only candidate with evidence of its own (`known_drug`), leads.
+`N25`'s interaction with seed `G2` lifts it above its pathway-mates
+`N26`–`N28`, which tie last. The 18 seeds are not in the table.
 
 The `gene` column is an **Ensembl gene ID** — the project's one canonical
 identifier (Decision 2), copied verbatim from `graph_gene_index.json`, not
@@ -418,19 +432,23 @@ are a display-time lookup (`genes.parquet`) in Stages 6/7, never written
 here.
 
 `python3 -m pytest tests/test_score_candidates.py` runs the unit-level
-tests (21 tests): hand-computed `topology_score` values on a small
-two-seed cycle+chain graph (both at the function level and end-to-end
-through a default `run()` with no `--method`), an isolated node scoring 0,
-a zero-weight edge never being cheaper than an edge with evidence, an
-all-seed graph writing an empty ranking, `--restart-prob` outside ]0, 1[
-exiting non-zero,
-RWR restarting on the seeds and reconstructed as a full stationary
-distribution (sums to 1), BFWalk following edge direction and ignoring
-zero-weight edges, `--seed-genes` overriding the default seed file (and a
-seed list without a `score` column), seeds outside the graph dropped, no
-seed in the graph / missing seed file exiting non-zero, and the
-output-column contract (`topology_score` always, `rwr_score`/`bfwalk_score`
-only when requested, seed rows excluded, unknown `--method` exits non-zero).
+tests (23 tests) on a small two-seed cycle+chain graph:
+- RWR restarting on the seeds, reconstructed as a full stationary
+  distribution (sums to 1), with an unreachable node scoring 0.
+- BFWalk following edge direction and ignoring zero-weight edges.
+- The output-column contract:
+  - the default `run()` writes `bfwalk_score` only, and `--method rwr`
+    writes `rwr_score` only;
+  - both methods write both columns, ranked by `bfwalk_score` whatever
+    order they are given in;
+  - seed rows are excluded;
+  - an empty, unknown or `topology` `--method` exits non-zero.
+- `--seed-genes` overriding the default seed file, including a seed list
+  without a `score` column.
+- Seeds outside the graph dropped; no seed in the graph, or a missing seed
+  file, exiting non-zero.
+- An all-seed graph writing an empty ranking.
+- `--restart-prob` outside ]0, 1[ exiting non-zero.
 
 ## Running Stage 6 (`pipeline/stage6_annotate_context.py`)
 
@@ -461,15 +479,18 @@ Per candidate it adds:
   never rewarded as if confirmed safe. `n_safety_liabilities` carries the
   count.
 - **`composite_score`** ∈ [0, 1] — `--weights` (default
-  `topology:0.3,rwr:0.3,genetic_evidence:0.2,tractability:0.1,safety:0.1`)
-  weighted-averaged over: min-max-scaled `topology_score` and `rwr_score`
+  `rwr:0.3,bfwalk:0.3,genetic_evidence:0.2,tractability:0.1,safety:0.1`)
+  weighted-averaged over: min-max-scaled `bfwalk_score` and `rwr_score`
   (proximity numbers only meaningful ranked within the candidate set),
   as-is `genetic_evidence_score`, and the tractability
   (`clinical`=1/`discovery`=0.5/`unknown`=0) and safety
-  (`has_liabilities`=0/`unknown`=0.5) ordinals. Weights need not sum to 1;
-  a component with no data (`rwr` on a topology-only Stage 5 run,
-  `genetic_evidence` with no Stage 4) is dropped and the rest
-  renormalised.
+  (`has_liabilities`=0/`unknown`=0.5) ordinals. Weights need not sum to 1.
+  A component with no data is dropped and the rest renormalised:
+  - the Stage 5 method that did not run (`rwr` on a default run); this is
+    only logged at INFO;
+  - `genetic_evidence` when Stage 4 did not run; this logs a warning.
+
+  So with one method its share is 0.3 / 0.7 ≈ 0.43.
 - **`composite_breakdown`** — `k=contribution|...`, each component's
   *weighted contribution* to `composite_score` (the terms sum to it), so
   the trace shows what built the rank, not just the number.
@@ -478,7 +499,7 @@ Per candidate it adds:
   self-contained explanation for the Stage 7 report.
 
 Per-candidate **evidence trace**: the passthrough score columns
-(`topology_score` / `rwr_score` / `genetic_evidence_score`), the annotation
+(`bfwalk_score` / `rwr_score` / `genetic_evidence_score`), the annotation
 buckets (`tractability` / `safety` / `n_safety_liabilities`), and
 `composite_breakdown` + `composite_weights` together explain every rank.
 Two provenance items are deliberately **not** here — *which shared
@@ -502,25 +523,26 @@ top rows; columns per `schemas.AnnotatedCandidatesSchema`, ranked by
 `composite_score`):
 
 ```
-gene             topology_score  genetic_evidence_score  tractability  safety           n_safety_liabilities  composite_score
-ENSG00000000022  5.5287          0.5                     clinical      has_liabilities  1                     0.800
-ENSG00000000023  4.2752          0.0                     unknown       unknown          0                     0.453
-ENSG00000000024  2.3020          0.0                     discovery     unknown          0                     0.296
-ENSG00000000025  0.9866          0.0                     clinical      unknown          0                     0.199
-ENSG00000000026  0.4615          0.0                     unknown       unknown          0                     0.050
+gene             bfwalk_score  genetic_evidence_score  tractability  safety           n_safety_liabilities  composite_score
+ENSG00000000022  0.5050        0.5                     clinical      has_liabilities  1                     0.714
+ENSG00000000025  0.3332        0.0                     clinical      unknown          0                     0.383
+ENSG00000000024  0.3559        0.0                     discovery     unknown          0                     0.345
+ENSG00000000023  0.3147        0.0                     unknown       unknown          0                     0.212
+ENSG00000000026  0.2222        0.0                     unknown       unknown          0                     0.071
 ```
 
 `ENSG...022` stays on top despite a safety liability because its proximity
-terms and its `known_drug` evidence dominate; `ENSG...025`, clinically
-tractable but close to only one seed, stays below `ENSG...023`/`024` —
-tractability alone can't lift a low-proximity candidate. Candidates are
+term and its `known_drug` evidence dominate. `ENSG...025` and `ENSG...024`
+have similar BFWalk scores, so `025`'s clinical tractability lifts it above
+`024`. Candidates are
 non-seed genes, so their `genetic_evidence_score` can only come from
 datatypes other than `genetic_association` (here `known_drug`). Genes absent
 from the synthetic `ot_target_subset.parquet` are `unknown`/`unknown` and
 ranked purely on the score terms, never penalised for missing annotation.
 
 `python3 -m pytest tests/test_annotate_context.py` runs the unit-level
-tests (9 tests): tractability bucketing and the safety flag/count, weight
+tests (10 tests): a scores table with neither `rwr_score` nor
+`bfwalk_score` rejected by the schema, tractability bucketing and the safety flag/count, weight
 parsing and rejection of junk, a hand-computed composite for a known
 two-row input (with `composite_breakdown` contributions that sum back to
 the score), a second hand-computed composite driven end-to-end from a
@@ -569,9 +591,9 @@ python3 pipeline/stage7_report.py --run-dir out/
   Targets versions, whether the graph is Stage 3 (structural) or Stage 4
   (genetic-evidence-weighted);
 - a **sortable** ranked table — `symbol`, `gene` (Ensembl), `composite`,
-  `topology`, `rwr`, `genetic ev.`, `tractability`, `safety` (click a
-  header to sort; `rwr`/`genetic ev.` columns appear only if those stages
-  ran);
+  `rwr`, `bfwalk`, `genetic ev.`, `tractability`, `safety` (click a
+  header to sort; `rwr`/`bfwalk`/`genetic ev.` columns appear only if
+  those methods/stages ran);
 - a **click-to-expand evidence trace** for each of the top 100 candidates
   (`--n-traces`; the table still lists every candidate) — its
   `composite_breakdown` + weights, the graph pathways it shares with seed
@@ -590,7 +612,7 @@ Only `manifest.json` and `candidates_annotated.tsv` are required; every
 other artifact is optional. A partial run directory still produces a
 report — missing trace inputs (`gene_sets.parquet`, `interactions.parquet`,
 `ot_disease_subset.parquet`, …) show that section as unavailable, a
-Stage-3-only run (no Stage 4) just drops the `rwr`/`genetic ev.` columns,
+Stage-3-only run (no Stage 4) just drops the `genetic ev.` column,
 and no `genes.parquet` falls the symbol column back to Ensembl ids — a
 header line lists whatever was missing.
 
@@ -598,10 +620,10 @@ header line lists whatever was missing.
 ranked table — same ordering as Stage 6's `candidates_annotated.tsv`):
 
 ```
-#  symbol  gene             composite  topology  rwr     genetic ev.  tractability  safety
-1  GENE22  ENSG00000000022  0.800      5.529     0.0207  0.500        clinical      has_liabilities
-2  GENE23  ENSG00000000023  0.453      4.275     0.0127  0.000        unknown       unknown
-3  GENE24  ENSG00000000024  0.296      2.302     0.0068  0.000        discovery     unknown
+#  symbol  gene             composite  bfwalk  genetic ev.  tractability  safety
+1  GENE22  ENSG00000000022  0.714      0.5050  0.500        clinical      has_liabilities
+2  GENE25  ENSG00000000025  0.383      0.3332  0.000        clinical      unknown
+3  GENE24  ENSG00000000024  0.345      0.3559  0.000        discovery     unknown
 ```
 
 Expanding `GENE25` shows: pathways shared with seed genes *Seed-Adjacent

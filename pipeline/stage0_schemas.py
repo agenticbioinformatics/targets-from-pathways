@@ -142,20 +142,32 @@ GeneWeightsSchema = DataFrameSchema(
     strict=True,
 )
 
+# Stage 5 writes a score column per requested --method; at least one method is always requested.
+PROPAGATION_SCORE_COLUMNS = ["rwr_score", "bfwalk_score"]
+
+
+def has_a_propagation_score(df):
+    for column in PROPAGATION_SCORE_COLUMNS:
+        if column in df.columns:
+            return True
+    return False
+
+
+HAS_PROPAGATION_SCORE = Check(has_a_propagation_score, error=f"needs at least one of {PROPAGATION_SCORE_COLUMNS}")
+
 CandidateScoresSchema = DataFrameSchema(
     {
         "gene": ensembl_column(unique=True),
-        "topology_score": Column(float, checks=Check.greater_than_or_equal_to(0.0), nullable=False, coerce=True),
         "rwr_score": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True, required=False),
         "bfwalk_score": Column(float, checks=Check.greater_than_or_equal_to(0.0), nullable=False, coerce=True, required=False),
     },
+    checks=HAS_PROPAGATION_SCORE,
     strict=True,
 )
 
 AnnotatedCandidatesSchema = DataFrameSchema(
     {
         "gene": ensembl_column(unique=True),
-        "topology_score": Column(float, checks=Check.greater_than_or_equal_to(0.0), nullable=False, coerce=True),
         "rwr_score": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True, required=False),
         "bfwalk_score": Column(float, checks=Check.greater_than_or_equal_to(0.0), nullable=False, coerce=True, required=False),
         "genetic_evidence_score": Column(
@@ -170,6 +182,7 @@ AnnotatedCandidatesSchema = DataFrameSchema(
         # "component:weight,...": the weights actually used, repeated on every row.
         "composite_weights": Column(str, nullable=False),
     },
+    checks=HAS_PROPAGATION_SCORE,
     strict=True,
 )
 
