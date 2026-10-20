@@ -183,3 +183,13 @@ def test_undirected_interaction_connects_both_directions():
     assert weight[i, j] == pytest.approx(1.0)
     assert weight[j, i] == pytest.approx(1.0)
     assert stats["n_interaction_edges_added"] == 2
+
+
+def test_without_comembership_edges_pathways_choose_genes_and_interactions_are_the_only_edges():
+    graph, stats = bg.build_graph(GENE_SETS, DISEASE_PATHWAYS, INTERACTIONS, SEED_GENE_IDS, comembership_edges=False)
+    assert set(graph.nodes) == {A, B, C, D, F}  # the same genes as with co-membership edges
+    # A->B, C->D directed; B-C undirected (both ways); Z->A out of scope
+    assert set(graph.edges) == {(A, B), (C, D), (B, C), (C, B)}
+    assert stats["n_comembership_unordered_pairs"] == 0 and stats["comembership_edges"] is False
+    weight, _sign, gene_index = bg.graph_to_sparse(graph)
+    assert weight[gene_index.index(A), gene_index.index(B)] == pytest.approx(0.9)  # the interaction confidence

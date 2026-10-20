@@ -50,15 +50,22 @@ def parse_args(argv=None):
         help="Path to Stage 2's disease_seed_genes.tsv. Default: next to --manifest.",
     )
     parser.add_argument("--out-dir", type=Path, default=None, help="Output directory. Default: --manifest's directory.")
+    parser.add_argument(
+        "--comembership-edges", action=argparse.BooleanOptionalAction, default=True,
+        help="Connect every pair of genes that share a pathway (default). With --no-comembership-edges the "
+        "pathways only choose the genes, and the edges are Reactome functional interactions alone.",
+    )
     return parser.parse_args(argv)
 
 
-def add_comembership_edges(graph, gene_sets_df, pathway_ids):
-    """Connect every pair of genes in each pathway, in both directions, with sign 0 (unknown effect).
-    Each pathway adds 1 / (size - 1) to a pair, so a few large pathways cannot dominate the graph.
-    Returns the number of distinct gene pairs."""
+def add_comembership_edges(graph, gene_sets_df, pathway_ids, add_edges=True):
+    """Add every gene of the pathways as a node and, if add_edges, connect every pair of genes in each pathway,
+    in both directions, with sign 0 (unknown effect). Each pathway adds 1 / (size - 1) to a pair, so a few
+    large pathways cannot dominate the graph. Returns the number of distinct gene pairs."""
     selected = gene_sets_df[gene_sets_df["set_id"].isin(pathway_ids)]
     graph.add_nodes_from(selected["gene_id"].unique())
+    if not add_edges:
+        return 0
 
     gene_pairs = set()
     for _, pathway in selected.groupby("set_id"):
@@ -112,7 +119,7 @@ def add_interaction_edges(graph, interactions_df, pathway_genes):
     return int(in_scope.sum()), n_out_of_scope, n_duplicates
 
 
-def build_graph(gene_sets_df, disease_pathways_df, interactions_df, seed_gene_ids):
+def build_graph(gene_sets_df, disease_pathways_df, interactions_df, seed_gene_ids, comembership_edges=True):
     disease_pathway_ids = set(disease_pathways_df["set_id"])
     seed_pathway_ids = set(gene_sets_df.loc[gene_sets_df["gene_id"].isin(seed_gene_ids), "set_id"])
     pathway_ids = disease_pathway_ids | seed_pathway_ids
@@ -120,10 +127,11 @@ def build_graph(gene_sets_df, disease_pathways_df, interactions_df, seed_gene_id
     seed_pathway_genes = set(gene_sets_df.loc[gene_sets_df["set_id"].isin(seed_pathway_ids), "gene_id"])
 
     graph = nx.DiGraph()
-    n_gene_pairs = add_comembership_edges(graph, gene_sets_df, pathway_ids)
+    n_gene_pairs = add_comembership_edges(graph, gene_sets_df, pathway_ids, comembership_edges)
     n_added, n_out_of_scope, n_duplicates = add_interaction_edges(graph, interactions_df, set(graph.nodes))
 
     stats = {
+        "comembership_edges": comembership_edges,
         "n_pathways_union": len(pathway_ids),
         "n_disease_pathways": len(disease_pathway_ids),
         "n_seed_pathways": len(seed_pathway_ids),
@@ -174,7 +182,8 @@ def run(args):
         fail(f"--seed-genes {seed_genes_path} does not exist (run stage2_gsea_discovery.py first?).")
     seed_gene_ids = set(SeedGenesSchema.validate(pd.read_csv(seed_genes_path, sep="\t"))["gene_id"])
 
-    graph, stats = build_graph(gene_sets_df, disease_pathways_df, interactions_df, seed_gene_ids)
+    graph, stats = build_graph(gene_sets_df, disease_pathways_df, interactions_df, seed_gene_ids,
+                               args.comembership_edges)
     # A seed is a graph node exactly when it is in a pathway; without one, Stage 5 has nothing to propagate from.
     if stats["n_seed_pathways"] == 0:
         fail(f"None of the {len(seed_gene_ids)} seed gene(s) in {seed_genes_path} is in a pathway of "
