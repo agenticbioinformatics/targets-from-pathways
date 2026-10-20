@@ -109,9 +109,10 @@ DiseasePathwaysSchema = DataFrameSchema(
         "set_id": Column(str, nullable=False, unique=True),
         "gene_set": Column(str, nullable=False),
         "source_db": Column(str, checks=Check.isin(SUPPORTED_SOURCE_DBS), nullable=False),
-        "pval": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False),
+        # Coerced so that an empty table (no pathway could be tested) read back from TSV still validates.
+        "pval": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True),
         # FDR is corrected over the pathways tested in this run only, so it is not comparable across runs.
-        "fdr": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False),
+        "fdr": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True),
     },
     strict=True,
 )

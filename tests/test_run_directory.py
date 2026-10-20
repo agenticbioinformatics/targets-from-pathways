@@ -3,6 +3,8 @@
 - ``find_artifact`` (stage0_schemas.py): a stage reads the Stage 1 files next to its --manifest, even when
   the manifest lists a path that exists elsewhere (a copied or moved run directory), and refuses a file
   whose sha256 no longer matches the manifest.
+- Small diseases (Stages 2 + 3): too few seed genes for GSEA still give a ranking from the seed genes'
+  pathways, and seed genes in no pathway stop Stage 3 with a message instead of a traceback.
 - Benchmark holdout (Stages 2 + 4): a held-out gene is not a seed, and its own Open Targets evidence does
   not feed Stage 4's scores or edge weights - otherwise it would be ranked by the very association the
   benchmark is meant to recover.
@@ -17,6 +19,7 @@ import pandas as pd
 import pytest
 import scipy.sparse as sp
 
+import run_pipeline
 import stage2_gsea_discovery as gsea
 import stage3_build_graph as bg
 import stage4_genetic_evidence_weights as gew
@@ -147,3 +150,40 @@ def test_stage4_rerun_gives_the_same_graph(tmp_path):
     second = sp.load_npz(run_dir / "graph_weight.npz")
     assert first.nnz == second.nnz
     assert abs(first - second).max() == 0
+
+
+# --------------------------------------------------------------------------
+# diseases with few genetic-association genes
+# --------------------------------------------------------------------------
+
+
+def test_disease_too_small_for_gsea_still_gets_a_ranking(tmp_path):
+    # Three seed genes: GSEA cannot test any pathway, so disease_pathways.tsv is empty and the graph comes
+    # from the seed genes' pathways alone.
+    run_dir = _copy_run(tmp_path)
+    ot = pd.read_parquet(run_dir / "ot_disease_subset.parquet")
+    genetic = ot["datatype_id"] == "genetic_association"
+    keep = set(ot.loc[genetic, "gene_id"].sort_values().head(3))
+    _replace_artifact(run_dir, "ot_disease_subset.parquet", ot[~genetic | ot["gene_id"].isin(keep)])
+
+    run_pipeline.run_pipeline(from_manifest=run_dir / "manifest.json", method="rwr")
+
+    disease_pathways = pd.read_csv(run_dir / "disease_pathways.tsv", sep="\t")
+    assert disease_pathways.empty and list(disease_pathways.columns) == ["set_id", "gene_set", "source_db", "pval", "fdr"]
+    metadata = json.loads((run_dir / "graph_metadata.json").read_text())
+    assert metadata["n_disease_pathways"] == 0 and metadata["n_seed_genes_in_graph"] == 3
+    annotated = pd.read_csv(run_dir / "candidates_annotated.tsv", sep="\t")
+    assert len(annotated) == metadata["n_nodes"] - 3
+
+
+def test_no_seed_gene_in_any_pathway_stops_stage3_with_a_message(tmp_path, caplog):
+    # A disease whose only seed gene is in no Reactome pathway (e.g. AURKC for spermatogenic failure 5) gave an
+    # empty graph and a networkx traceback.
+    run_dir = _copy_run(tmp_path)
+    gsea.run(gsea.parse_args(["--manifest", str(run_dir / "manifest.json")]))
+    seeds = run_dir / "no_pathway_seed.tsv"
+    seeds.write_text("gene_id\nENSG99999999999\n")
+    with pytest.raises(SystemExit) as excinfo:
+        bg.run(bg.parse_args(["--manifest", str(run_dir / "manifest.json"), "--seed-genes", str(seeds)]))
+    assert excinfo.value.code != 0
+    assert "is in a pathway of gene_sets.parquet" in caplog.text

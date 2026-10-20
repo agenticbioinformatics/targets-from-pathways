@@ -227,3 +227,42 @@ def test_build_signature_ignores_non_genetic_association_rows():
     )
     signature = gd.build_signature(ot_disease_subset)
     assert signature.set_index("gene").loc["G1", "score"] == 0.20
+
+
+# ==========================================================================
+# GSEA that cannot run: Stage 2 warns and returns no tested pathways
+# ==========================================================================
+#
+# Stage 3 then builds the graph from the seed genes' pathways only, so a small disease still gets a ranking.
+
+
+def _assert_nothing_tested(result, caplog, reason):
+    assert result.empty
+    assert list(result.columns) == ["set_id", "gene_set", "source_db", "pval", "fdr"]
+    assert gd.filter_results(result, PVAL_THRESHOLD, FDR_THRESHOLD).empty
+    assert reason in caplog.text and "disease_pathways.tsv is written empty" in caplog.text
+
+
+def test_fewer_seed_genes_than_gsea_min_size_skips_gsea(caplog, monkeypatch):
+    # A Mendelian disease with one genetic-association gene crashed blitzgsea's calibration.
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("blitzgsea must not be called")
+    monkeypatch.setattr(gd.blitzgsea, "gsea", must_not_run)
+    result, _ = gd.run_gsea(_signature().head(gd.BLITZGSEA_MIN_SIZE - 1), _all_gene_sets(), seed=0)
+    _assert_nothing_tested(result, caplog, f"Only {gd.BLITZGSEA_MIN_SIZE - 1} seed gene(s)")
+
+
+@pytest.mark.parametrize("error", [ZeroDivisionError("float division by zero"),
+                                   ValueError("The function value at x=nan is NaN; solver cannot continue.")])
+def test_blitzgsea_calibration_failure_skips_gsea(caplog, monkeypatch, error):
+    def calibration_fails(*args, **kwargs):
+        raise error
+    monkeypatch.setattr(gd.blitzgsea, "gsea", calibration_fails)
+    result, _ = gd.run_gsea(_signature(), _all_gene_sets(), seed=0)
+    _assert_nothing_tested(result, caplog, "could not calibrate GSEA")
+
+
+def test_no_gene_set_with_enough_seed_genes_skips_gsea(caplog, monkeypatch):
+    monkeypatch.setattr(gd.blitzgsea, "gsea", lambda *args, **kwargs: pd.DataFrame())
+    result, _ = gd.run_gsea(_signature(), _all_gene_sets(), seed=0)
+    _assert_nothing_tested(result, caplog, "GSEA tested nothing")

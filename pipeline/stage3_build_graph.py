@@ -115,8 +115,6 @@ def add_interaction_edges(graph, interactions_df, pathway_genes):
 def build_graph(gene_sets_df, disease_pathways_df, interactions_df, seed_gene_ids):
     disease_pathway_ids = set(disease_pathways_df["set_id"])
     seed_pathway_ids = set(gene_sets_df.loc[gene_sets_df["gene_id"].isin(seed_gene_ids), "set_id"])
-    if not seed_pathway_ids:
-        logger.warning("None of the %d seed genes is in a pathway of gene_sets.parquet.", len(seed_gene_ids))
     pathway_ids = disease_pathway_ids | seed_pathway_ids
     disease_pathway_genes = set(gene_sets_df.loc[gene_sets_df["set_id"].isin(disease_pathway_ids), "gene_id"])
     seed_pathway_genes = set(gene_sets_df.loc[gene_sets_df["set_id"].isin(seed_pathway_ids), "gene_id"])
@@ -177,6 +175,12 @@ def run(args):
     seed_gene_ids = set(SeedGenesSchema.validate(pd.read_csv(seed_genes_path, sep="\t"))["gene_id"])
 
     graph, stats = build_graph(gene_sets_df, disease_pathways_df, interactions_df, seed_gene_ids)
+    # A seed is a graph node exactly when it is in a pathway; without one, Stage 5 has nothing to propagate from.
+    if stats["n_seed_pathways"] == 0:
+        fail(f"None of the {len(seed_gene_ids)} seed gene(s) in {seed_genes_path} is in a pathway of "
+             f"gene_sets.parquet, so there is nothing to propagate from. Either the genes are in no Reactome "
+             f"pathway, or only in pathways outside Stage 1's --min-set-size/--max-set-size (see "
+             f"scale_report.json); relaxing those limits helps only in the second case.")
     # The two gene sets overlap (seed pathways can also be disease pathways), so the node count is their union.
     logger.info("Genes on the %d disease-relevant pathways: %d.", stats["n_disease_pathways"],
                 stats["n_disease_pathway_genes"])

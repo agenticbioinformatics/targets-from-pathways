@@ -31,6 +31,10 @@ logger = logging.getLogger("gsea_discovery")
 
 # Placeholder threshold, not tuned.
 JACCARD_COLLAPSE_THRESHOLD = 0.7
+# blitzgsea tests only gene sets with at least this many signature genes (its min_size default).
+BLITZGSEA_MIN_SIZE = 5
+NO_GSEA_CONSEQUENCE = ("disease_pathways.tsv is written empty, and Stage 3 builds the graph from the pathways "
+                       "that contain a seed gene only.")
 
 
 def parse_args(argv=None):
@@ -130,17 +134,38 @@ def collapse_near_duplicate_sets(gene_sets, jaccard_threshold=JACCARD_COLLAPSE_T
     return gene_sets[gene_sets["set_id"].isin(kept_ids)]
 
 
+def no_tested_pathways():
+    return pd.DataFrame({"set_id": pd.Series(dtype="object"), "gene_set": pd.Series(dtype="object"),
+                         "source_db": pd.Series(dtype="object"), "pval": pd.Series(dtype="float64"),
+                         "fdr": pd.Series(dtype="float64")})
+
+
 def run_gsea(signature, gene_sets, seed):
-    """Return every tested pathway's statistics (unfiltered) and the gene sets as {set_id: genes}."""
+    """Return every tested pathway's statistics (unfiltered) and the gene sets as {set_id: genes}. When no
+    pathway can be tested the statistics table is empty and a warning says why."""
     sets_by_id = gene_sets_as_dict(gene_sets)
+    if len(signature) < BLITZGSEA_MIN_SIZE:
+        logger.warning("Only %d seed gene(s): GSEA tests a pathway only if it holds at least %d of them, so "
+                       "nothing can be tested. %s", len(signature), BLITZGSEA_MIN_SIZE, NO_GSEA_CONSEQUENCE)
+        return no_tested_pathways(), sets_by_id
+
     library = {}
     for set_id, genes in sets_by_id.items():
         library[set_id] = sorted(genes)
     # Scores are one-sided (0-1), so the sign of the enrichment score means top vs bottom of the ranking,
     # not up- vs down-regulation.
-    result = blitzgsea.gsea(signature, library, seed=seed, verbose=False, progress=False)
+    try:
+        result = blitzgsea.gsea(signature, library, seed=seed, verbose=False, progress=False)
+    except (ZeroDivisionError, ValueError) as error:
+        # blitzgsea's null-distribution calibration breaks on small signatures: below ~7 genes, and whenever
+        # the signature length equals one of its calibration set sizes (up to ~230 genes).
+        logger.warning("blitzgsea could not calibrate GSEA on the %d-gene signature (%s: %s). %s",
+                       len(signature), type(error).__name__, error, NO_GSEA_CONSEQUENCE)
+        return no_tested_pathways(), sets_by_id
     if result.empty:
-        fail("blitzgsea returned no tested pathways (no gene set had enough overlap with the signature).")
+        logger.warning("No gene set holds %d or more of the %d seed genes, so GSEA tested nothing. %s",
+                       BLITZGSEA_MIN_SIZE, len(signature), NO_GSEA_CONSEQUENCE)
+        return no_tested_pathways(), sets_by_id
 
     result = result.reset_index().rename(columns={"Term": "set_id"})
     set_names = gene_sets.drop_duplicates("set_id").set_index("set_id")[["set_name", "source_db"]]

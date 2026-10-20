@@ -59,12 +59,13 @@ an HGNC symbol where an Ensembl gene ID is required — the `GRB2-1` bug
 class) with an error naming the offending column, as loudly as it accepts a
 valid one.
 
-`python3 -m pytest tests/test_run_directory.py` (6 tests) checks run-directory
+`python3 -m pytest tests/test_run_directory.py` (8 tests) checks run-directory
 integrity on copies of the example run: a copied run reads its own Stage 1
 files even when the manifest lists the original's, an artifact changed after
 Stage 1 is refused, a benchmark holdout gene's own evidence never feeds Stage
-4 (and a re-run without a holdout clears it), and re-running Stage 4 gives
-the same graph.
+4 (and a re-run without a holdout clears it), re-running Stage 4 gives
+the same graph, a disease with only three seed genes still gets a ranking,
+and seed genes in no pathway stop Stage 3 with a message.
 
 ## Running Stage 1 (`pipeline/stage1_ingest.py`)
 
@@ -202,8 +203,26 @@ it stays in the Stage 3 graph and G17 is ranked as a candidate in Stage 5
 (2nd of 8 with the default BFWalk on the Stage 3 graph; 8th of 8 after
 Stage 4, which ignores G17's own evidence).
 
+**Diseases with few genetic-association genes** (e.g. a Mendelian disease
+run with Stage 1's `--allow-low-coverage`): GSEA cannot always run. Stage 2
+then logs a warning saying why, writes an empty `disease_pathways.tsv`, and
+the pipeline goes on: Stage 3 builds the graph from the pathways that
+contain a seed gene only. This happens when:
+- there are fewer than 5 seed genes (blitzgsea's minimum overlap per gene
+  set);
+- no gene set holds 5 of them;
+- blitzgsea's calibration fails. It breaks on small signatures, including
+  whenever the seed count equals one of its calibration set sizes (up to
+  about 230 genes).
+
+If no seed gene is in any pathway, Stage 3 stops with a message: there is
+nothing to propagate from. Spermatogenic failure 5 (`MONDO_0009461`) is an
+example: its one seed gene, AURKC, is in no Reactome pathway.
+
 `python3 -m pytest tests/test_gsea_discovery.py` runs the unit-level GSEA
-tests (`tests/test_gsea_discovery.py`, 8 tests): a deliberately-enriched
+tests (`tests/test_gsea_discovery.py`, 12 tests): GSEA skipped with a
+warning and an empty result when there are too few seed genes, when
+blitzgsea's calibration fails, or when no gene set can be tested; a deliberately-enriched
 pathway is returned significant, an individually-significant pathway is
 correctly excluded once BH-FDR is applied across the tested library, non-
 enriched pathways are tested but excluded from output, and a near-duplicate
