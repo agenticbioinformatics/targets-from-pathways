@@ -14,18 +14,18 @@ It has two links, joined at Stage 1's output contract:
   ``ot_disease_subset`` / ``manifest.json`` all validate; every gene id is
   an Ensembl id; ``source_db == "reactome"`` on every normalized row.
 
-- **link 2** — Stages 2→6 via ``run_pipeline`` on the shared 17-gene
+- **link 2** — Stages 2→6 via ``run_pipeline`` on the shared 30-gene
   synthetic Stage 1 output the Stage 2-6 unit tests are built around
   (``example_data/example_run``, copied into ``tmp_path``). blitzgsea
   (Stage 2) cannot calibrate a GSEA on the 3-gene signature the
   ``tests/fixtures/`` inputs produce, so the chain continues from that
   larger synthetic Stage 1 output — which is emitted and schema-validated
   exactly like ``stage1_ingest``'s. Every remaining hand-off
-  (``disease_pathways`` → graph artifacts → ``gene_weights`` →
+  (``disease_pathways`` + ``disease_seed_genes`` → graph artifacts → ``gene_weights`` →
   ``candidate_scores`` → ``candidates_annotated``) validates; Ensembl ids
   and ``source_db`` survive to the final table; and the final table carries
-  a ``composite_score`` in [0, 1] for **every** graph gene (candidates ==
-  graph nodes − target, none missing).
+  a ``composite_score`` in [0, 1] for **every** non-seed graph gene
+  (candidates == graph nodes − seeds, none missing).
 """
 
 from __future__ import annotations
@@ -51,6 +51,7 @@ from stage0_schemas import (
     InteractionsSchema,
     Manifest,
     OTAssociationsSchema,
+    SeedGenesSchema,
     assert_foreign_key,
 )
 
@@ -96,10 +97,10 @@ def test_pipeline_schema_conformance_end_to_end(tmp_path, patched_acquisition):
     assert _all_ensembl(genes["gene_id"])
     assert set(gene_sets["source_db"]) == {"reactome"}
     assert set(interactions["source_db"]) == {"reactome"}
-    assert manifest.resolved_target.gene_id in set(genes["gene_id"])
+    assert manifest.disease.efo_id
 
     # ================================================================
-    # link 2 — Stages 2→6 from the 17-gene synthetic Stage 1 output
+    # link 2 — Stages 2→6 from the 30-gene synthetic Stage 1 output
     # ================================================================
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -112,8 +113,7 @@ def test_pipeline_schema_conformance_end_to_end(tmp_path, patched_acquisition):
     GeneSetsSchema.validate(pd.read_parquet(run_dir / "gene_sets.parquet"))
     InteractionsSchema.validate(pd.read_parquet(run_dir / "interactions.parquet"))
     OTAssociationsSchema.validate(pd.read_parquet(run_dir / "ot_disease_subset.parquet"))
-    manifest = Manifest.model_validate(json.loads((run_dir / "manifest.json").read_text()))
-    target_id = manifest.resolved_target.gene_id
+    Manifest.model_validate(json.loads((run_dir / "manifest.json").read_text()))
     gene_universe = set(genes["gene_id"])
     assert _all_ensembl(gene_universe)
 
@@ -123,6 +123,11 @@ def test_pipeline_schema_conformance_end_to_end(tmp_path, patched_acquisition):
     disease_pathways = pd.read_csv(run_dir / "disease_pathways.tsv", sep="\t")
     DiseasePathwaysSchema.validate(disease_pathways)
     assert set(disease_pathways["source_db"]) <= {"reactome"}  # source_db attribution preserved
+    seeds = SeedGenesSchema.validate(pd.read_csv(run_dir / "disease_seed_genes.tsv", sep="\t"))
+    seed_ids = set(seeds["gene_id"])
+    # seeds are exactly the genes with genetic_association evidence
+    ot = pd.read_parquet(run_dir / "ot_disease_subset.parquet")
+    assert seed_ids == set(ot.loc[ot["datatype_id"] == "genetic_association", "gene_id"])
 
     # --- Stage 3 hand-off (sparse serialization, not a pandera schema) ---
     graph_index = json.loads((run_dir / "graph_gene_index.json").read_text())
@@ -133,7 +138,8 @@ def test_pipeline_schema_conformance_end_to_end(tmp_path, patched_acquisition):
     n = len(graph_index)
     assert weight.shape == sign.shape == (n, n)
     graph_meta = json.loads((run_dir / "graph_metadata.json").read_text())
-    assert graph_meta["resolved_target"]["gene_id"] == target_id
+    assert "resolved_target" not in graph_meta
+    assert graph_meta["n_seed_genes_in_graph"] == len(seed_ids & set(graph_index))
 
     # --- Stage 4 hand-off ---
     gene_weights = pd.read_csv(run_dir / "gene_weights.tsv", sep="\t")
@@ -153,7 +159,7 @@ def test_pipeline_schema_conformance_end_to_end(tmp_path, patched_acquisition):
     assert _all_ensembl(annotated["gene"])
     assert set(annotated["gene"]) <= gene_universe
 
-    # a composite_score for every input gene: candidates == graph nodes − target
-    assert set(annotated["gene"]) == set(graph_index) - {target_id}
+    # a composite_score for every candidate: candidates == graph nodes − seeds
+    assert set(annotated["gene"]) == set(graph_index) - seed_ids
     assert annotated["composite_score"].notna().all()
     assert annotated["composite_score"].between(0.0, 1.0).all()

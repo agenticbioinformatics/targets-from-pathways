@@ -7,7 +7,6 @@ This is the only stage that maps gene identifiers; later stages read only these 
 """
 
 import argparse
-import difflib
 import hashlib
 import json
 import logging
@@ -36,7 +35,6 @@ from stage0_schemas import (
     OTAssociationsSchema,
     OutputArtifact,
     ResolvedDisease,
-    ResolvedTarget,
     ScaleReport,
     Source,
     SourceFile,
@@ -154,7 +152,6 @@ def parse_args(argv=None):
         "ot_disease_subset parquet + coverage_report.json + scale_report.json + manifest.json "
         "into --out-dir.",
     )
-    parser.add_argument("--target", required=True, help="Target gene: HGNC symbol or Ensembl gene ID.")
     parser.add_argument("--disease", required=True, help="Disease: EFO / MONDO / other OT-recognized ontology ID.")
     parser.add_argument("--data-dir", required=True, type=Path, help="Source cache directory (downloads land here).")
     parser.add_argument("--out-dir", required=True, type=Path, help="Directory to write this run's Stage 1 files.")
@@ -585,22 +582,17 @@ def load_disease_association_subset(association_paths, disease_id):
     })
 
 
-def resolve_target(raw_target, genes_df, index):
+def resolve_gene(raw_gene, genes_df, index):
     """Return (gene_id, symbol) for a symbol or Ensembl ID, or (None, None)."""
-    raw_target = raw_target.strip()
-    if ENSEMBL_GENE_ID_PATTERN.match(raw_target):
-        gene_id = raw_target
+    raw_gene = raw_gene.strip()
+    if ENSEMBL_GENE_ID_PATTERN.match(raw_gene):
+        gene_id = raw_gene
     else:
-        gene_id, _ = resolve_symbol(raw_target, index)
+        gene_id, _ = resolve_symbol(raw_gene, index)
     match = genes_df.loc[genes_df["gene_id"] == gene_id]
     if gene_id is None or match.empty:
         return None, None
     return gene_id, match.iloc[0]["symbol"]
-
-
-def suggest_symbols(raw_target, genes_df):
-    all_symbols = genes_df["symbol"].str.upper().tolist()
-    return difflib.get_close_matches(raw_target.strip().upper(), all_symbols, n=5, cutoff=0.6)
 
 
 def size_distribution(sizes):
@@ -667,9 +659,9 @@ def current_git_commit():
         return "unknown"
 
 
-def make_run_id(target, disease, seed, cli_parameters):
+def make_run_id(disease, seed, cli_parameters):
     # Deterministic: the same inputs and options always give the same run_id.
-    payload = json.dumps({"target": target, "disease": disease, "seed": seed, "cli": cli_parameters}, sort_keys=True)
+    payload = json.dumps({"disease": disease, "seed": seed, "cli": cli_parameters}, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
@@ -699,14 +691,6 @@ def run_ingest(args):
     target_df = read_target_table(target_paths)
     genes_df = build_genes_table(target_df)
     index = build_symbol_index(genes_df)
-
-    target_gene_id, target_symbol = resolve_target(args.target, genes_df, index)
-    if target_gene_id is None:
-        suggestions = suggest_symbols(args.target, genes_df)
-        hint = ""
-        if suggestions:
-            hint = " Did you mean: " + ", ".join(suggestions) + "?"
-        fail(f"Could not resolve --target {args.target!r} to a gene in Open Targets {OPENTARGETS_VERSION}.{hint}")
 
     disease_id, disease_name = resolve_disease_id(args.disease, load_disease_table(disease_parquet))
     if disease_id is None:
@@ -768,11 +752,10 @@ def run_ingest(args):
     cli_parameters["reactome_fi_version"] = REACTOME_FI_VERSION
 
     manifest = Manifest(
-        run_id=make_run_id(target_gene_id, disease_id, args.seed, cli_parameters),
+        run_id=make_run_id(disease_id, args.seed, cli_parameters),
         git_commit=current_git_commit(),
         created_at=datetime.now(timezone.utc),
         seed=args.seed,
-        resolved_target=ResolvedTarget(input=args.target, gene_id=target_gene_id, symbol=target_symbol),
         disease=ResolvedDisease(efo_id=disease_id, name=disease_name, n_associated_genes=ot_disease_subset["gene_id"].nunique()),
         sources=sources,
         cli_parameters=cli_parameters,

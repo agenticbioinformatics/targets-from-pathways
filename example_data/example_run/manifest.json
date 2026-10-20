@@ -2,67 +2,61 @@
   "cli_parameters": {
     "disease": "MONDO_0000001",
     "max_set_size": 200,
-    "min_set_size": 1,
-    "target": "TARGET"
+    "min_set_size": 1
   },
   "coverage_report": {
     "reactome_gmt": {
       "dropped_count": 0,
       "example_dropped_ids": [],
-      "mapped_count": 21,
+      "mapped_count": 30,
       "percent_mapped": 100.0,
-      "raw_gene_count": 21,
+      "raw_gene_count": 30,
       "source": "reactome_gmt"
     }
   },
-  "created_at": "2026-08-28T14:10:30.959304Z",
+  "created_at": "2026-10-20T12:54:31.864721Z",
   "disease": {
     "efo_id": "MONDO_0000001",
-    "n_associated_genes": 18,
+    "n_associated_genes": 19,
     "name": "example disease"
   },
   "git_commit": "unknown",
   "output_artifacts": [
     {
       "path": "/home/kubicaj/workspace/agentic-bioinformatics/targets-from-pathways/example_data/example_run/gene_sets.parquet",
-      "sha256": "9f6e6d0b7a47bdca972d4f14f9cf9cd2a5e6b9ca28c78c6785020d580f869893"
+      "sha256": "b1ca4f425ef5802159340864eba809fdbd330c7f54e680e68f85ed9750d2158c"
     },
     {
       "path": "/home/kubicaj/workspace/agentic-bioinformatics/targets-from-pathways/example_data/example_run/ot_disease_subset.parquet",
-      "sha256": "10727e900b324669a6ef2a1cb2be1c0c2b29ad5b2ce3e58bc5b29fb7407dd679"
+      "sha256": "ddf336aeef587f2796329b43fb8316df556dd71b94966b06489436a46e0302bd"
     },
     {
       "path": "/home/kubicaj/workspace/agentic-bioinformatics/targets-from-pathways/example_data/example_run/genes.parquet",
-      "sha256": "7be613da80be050b1dc136c2d056e929df6da0967981e730a949127fea6113fe"
+      "sha256": "20dc5b6c0d1d8b9c4e723fe6813f0f7e11149f86c980705aed982a28d169bc34"
     },
     {
       "path": "/home/kubicaj/workspace/agentic-bioinformatics/targets-from-pathways/example_data/example_run/interactions.parquet",
-      "sha256": "b9a530c992acbeb3d0eabb1dce4a1aa256df4d5bcd687fc253ac30fa468adae7"
+      "sha256": "0f8b55de0819fed1504c911c81b519291bda3aaca885f54e95895b9b083fe47d"
     }
   ],
-  "resolved_target": {
-    "gene_id": "ENSG00000000001",
-    "input": "TARGET",
-    "symbol": "TARGET"
-  },
   "run_id": "example0000000001",
   "scale_report": {
     "gene_set_size_distribution_after_cap": [
       {
-        "count": 4,
+        "count": 7,
         "set_size": 6
       }
     ],
     "gene_set_size_distribution_before_cap": [
       {
-        "count": 4,
+        "count": 7,
         "set_size": 6
       }
     ],
     "interaction_counts_by_evidence_type": {},
     "interaction_counts_by_sign": {},
     "projected_comembership_edge_count": 0,
-    "sets_retained": 4
+    "sets_retained": 7
   },
   "seed": 0,
   "sources": [
@@ -86,9 +80,9 @@
           "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
         },
         {
-          "bytes": 3777,
+          "bytes": 3734,
           "path": "example_data/example_run/ot_target_subset.parquet",
-          "sha256": "3340b68a8cf045ad7b93a5b582f58cfeaf7f4288c953a0377755a06b1132fadb"
+          "sha256": "ab5c11728236e8c25b2034643ea26af461c539425f801d21aa84b78187e0d218"
         }
       ],
       "version": "26.06"

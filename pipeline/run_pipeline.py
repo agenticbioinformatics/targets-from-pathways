@@ -1,4 +1,4 @@
-"""Run Stages 1-6 for one (target, disease), or Stages 2-6 from an existing Stage 1 manifest (--from-manifest).
+"""Run Stages 1-6 for one disease, or Stages 2-6 from an existing Stage 1 manifest (--from-manifest).
 
 Each stage runs as its own subprocess with its normal CLI, so a failing stage prints its own error and
 stops the run. All stages write into the manifest's directory, which --report then turns into report.html.
@@ -31,7 +31,7 @@ def run_stage(label, script, args, python_exe):
              f"  command: {' '.join(command)}")
 
 
-def run_pipeline(target=None, disease=None, data_dir=None, out_dir=None, from_manifest=None,
+def run_pipeline(disease=None, data_dir=None, out_dir=None, from_manifest=None,
                  method="topology,rwr", weights=None, stage1_args=None, python_exe=None):
     """Return the path of candidates_annotated.tsv. stage1_args are extra options for stage1_ingest.py."""
     python_exe = python_exe or sys.executable
@@ -45,11 +45,11 @@ def run_pipeline(target=None, disease=None, data_dir=None, out_dir=None, from_ma
             fail(f"--from-manifest {manifest} does not exist.")
         logger.info("Starting from %s (Stage 1 skipped).", manifest)
     else:
-        if not (target and disease and data_dir and out_dir):
-            fail("--target, --disease, --data-dir and --out-dir are all required unless --from-manifest is given.")
+        if not (disease and data_dir and out_dir):
+            fail("--disease, --data-dir and --out-dir are all required unless --from-manifest is given.")
         Path(out_dir).mkdir(parents=True, exist_ok=True)
         run_stage("Stage 1 (ingest)", "stage1_ingest.py",
-                  ["--target", target, "--disease", disease, "--data-dir", data_dir, "--out-dir", out_dir] + stage1_args,
+                  ["--disease", disease, "--data-dir", data_dir, "--out-dir", out_dir] + stage1_args,
                   python_exe)
         manifest = Path(out_dir) / "manifest.json"
     run_dir = manifest.parent
@@ -76,11 +76,10 @@ def main(argv=None):
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(
         prog="run_pipeline.py",
-        description="Chain Stages 1-6 for one (target, disease), or Stages 2-6 from an existing Stage 1 manifest. "
+        description="Chain Stages 1-6 for one disease, or Stages 2-6 from an existing Stage 1 manifest. "
         "Any option not listed below is forwarded to stage1_ingest.py (see `python3 pipeline/stage1_ingest.py "
         "--help`, e.g. --allow-low-coverage, --no-download, --seed, --min-set-size).",
     )
-    parser.add_argument("--target", help="Gene symbol or Ensembl ID (Stage 1).")
     parser.add_argument("--disease", help="Disease ontology ID, e.g. MONDO_0005265 (Stage 1).")
     parser.add_argument("--data-dir", type=Path, help="Source data cache for Stage 1.")
     parser.add_argument("--out-dir", type=Path, help="Run directory Stage 1 writes into.")
@@ -91,7 +90,7 @@ def main(argv=None):
     parser.add_argument("--report", action="store_true", help="Also write report.html in the run directory (Stage 7).")
     args, stage1_args = parser.parse_known_args(argv)
 
-    annotated = run_pipeline(target=args.target, disease=args.disease, data_dir=args.data_dir, out_dir=args.out_dir,
+    annotated = run_pipeline(disease=args.disease, data_dir=args.data_dir, out_dir=args.out_dir,
                              from_manifest=args.from_manifest, method=args.method, weights=args.weights,
                              stage1_args=stage1_args)
     if args.report:

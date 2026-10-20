@@ -42,10 +42,13 @@ This directory is the paper trail for **Targets from Pathways**.
 
 6. **The plan changed six times.** Multi-database support was added then
    withdrawn (Reactome only); the backtrack-free-walk scoring method and
-   its C-extension dependency were added then removed; benchmark validation
-   was promoted into the pipeline, then split back out into
-   [`../benchmarking/README.md`](../benchmarking/README.md) as its own
-   driver; the web app became a static HTML report. Each reversal was
+   its C-extension dependency were added then removed (BFWalk later came
+   back as an optional, pip-installable Stage 5 method); benchmark
+   validation was promoted into the pipeline, split back out into its own
+   `benchmarking/` driver, and finally removed together with the report's
+   benchmark panel once the pipeline became disease-only (validation now
+   uses Stage 2's `--benchmark-holdout-file`); the web app became a static
+   HTML report. Each reversal was
    recorded as a numbered "Plan update" (in the README's history) rather
    than edited away, and is summarised in [`prompt_history`](prompt_history).
 

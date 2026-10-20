@@ -845,3 +845,99 @@ option forwarding) were not logged here; see git history.
   candidates_annotated.tsv, graph_gene_index.json and both .npz matrices
   are identical to the committed outputs; report.html differs only in its
   timestamp. All nine scripts' `--help` render.
+
+
+## Prompt 25 — BFWalk as an optional Stage 5 method
+
+> in stage 5: add bfwalk as an additional method for gene-based scoring.
+> bfwalk is not available via pip as of yet (in development), but it is
+> available via testpypi. add bfwalk to requirements alongside multixrank
+> and implement scoring with bfwalk. note in the readme that bfwalk will be
+> available via pip shortly.
+
+**Changes** (commit 1dcde88):
+- Stage 5: `--method bfwalk` (+ `--bfwalk-alpha`, `--bfwalk-threads`),
+  calling `BFWalk.bfwalk.calculate_scores` from the TestPyPI 0.9.0 wheel
+  (its signature differs from the GitHub `test-pypi` branch). Edge weights
+  are rescaled into ]0, 1]; zero-weight edges are dropped.
+- `bfwalk_score` carried through Stage 0 schemas, Stage 6 (optional
+  `bfwalk` composite component) and the Stage 7 table.
+- `requirements.txt`: `bfwalk==0.9.0` via `--extra-index-url` TestPyPI
+  (multixrank was not in the repo, so nothing was added for it).
+- README note that bfwalk will be on PyPI shortly; tests skip if bfwalk is
+  not installed.
+
+
+## Prompt 26 — disease-only pipeline, propagation from seed genes
+
+> /hackathon-firstprot modify the pipeline as follows: the user will input
+> a disease of interest only ... there should be no target of interest ...
+> the network propagation scoring should take as input the graph ... and a
+> list of genes that have genetic evidence with the disease in the open
+> targets data as seeds, then propagate the signal from the seeds.
+
+**Changes:**
+- Removed the target everywhere: Stage 1 `--target`, `Manifest.resolved_target`,
+  Stage 2 `contains_target`, `run_pipeline.py --target`.
+  `resolve_target` -> `resolve_gene` (still used by the holdout).
+- Stage 2 (GSEA unchanged) also writes `disease_seed_genes.tsv`: the
+  genetic_association genes (the GSEA signature, minus holdout genes),
+  validated by the new `SeedGenesSchema`.
+- Stage 3: graph = all genes of the disease pathways + all genes of every
+  pathway containing a seed gene; metadata records seed counts.
+- Stage 5: reads seeds (`--seed-genes`, default `disease_seed_genes.tsv`);
+  topology = (1 + seed neighbours) / (1 + distance to nearest seed), RWR
+  restarts uniformly on the seeds (`--node-weight-mix` removed), BFWalk
+  gets the seed vector. Candidates are the non-seed graph genes.
+- Stage 7: trace shows pathways shared with seeds (+ seed count) and
+  "with seed" interaction badges; header shows disease, seeds, candidates.
+- Example data rebuilt (30 genes, 18 seeds, 7 candidates, one seedless
+  pathway kept out of the graph); tests and docs updated.
+
+
+## Prompt 27 — README update, benchmarking/validation fix
+
+> update README accordingly and fix the benchmarking/validation issue.
+
+**Changes:**
+- `benchmarking/` had been deleted (commit 98715a0) and `validation/` is a
+  gitignored local data directory, so Stage 7's static benchmark panel and
+  `--benchmark-dir` were removed (and their tests), rather than pointed at
+  `validation/`. Stage 2's `--benchmark-holdout-file` is kept.
+- README: overview, known limits, stage table and "More detail" updated
+  (broken `benchmarking/README.md` link replaced by a `validation/` note);
+  docs/README.md Stage 7 section and requirements.txt updated.
+- Verified: `python3 -m pytest` -> 107 passed.
+
+
+## Prompt 28 — benchmarking mentions in development/
+
+> update the benchmarking mentions in development/
+
+**Changes:**
+- `development/PROMPTS.md`: holdout prompt, Day 3 note and Stage 7 prompts
+  no longer refer to `benchmarking/` or the report's benchmark panel.
+- `development/README.md`: the plan-changes list records that the
+  benchmarking module was later removed (and that BFWalk came back as an
+  optional Stage 5 method).
+- Earlier entries in this log are left as written (they describe what was
+  true at the time).
+
+
+## Prompt 29 — PROMPTS.md for the disease-only pipeline
+
+> yes, update PROMPTS.md for the disease-only pipeline too
+
+**Changes (`development/PROMPTS.md`):**
+- Intro states the pipeline is disease-only, with genetic-association seed
+  genes, and points to Prompt 26 for the removed target.
+- Stage 0/1: no resolved target in the manifest, no `--target`, no target
+  resolution failure. Stage 2: writes `disease_seed_genes.tsv` instead of
+  `contains_target`; the holdout also removes genes from the seeds.
+- Stage 3: pathway union = disease pathways ∪ seed-containing pathways; the
+  target sidecar is replaced by seed counts in the graph metadata.
+- Stage 4: no target node. Stage 5: propagation from the seeds with
+  topology / RWR / BFWalk (the "BFWalk dropped" note now says it came back);
+  test prompt uses two seeds and excludes seeds from candidates.
+- Stage 7 / demo polish / integration test: `--disease` only, seed-based
+  header and trace, composite score for every non-seed graph gene.

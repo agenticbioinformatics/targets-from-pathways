@@ -5,6 +5,12 @@ stage and matched to the Day 1/2/3 plan in ../README.md. Each prompt is
 self-contained — hand it to a fresh agent session with no other context
 beyond this repo.
 
+The pipeline is **disease-only**: the user gives a disease, the disease's
+genes with Open Targets `genetic_association` evidence are the **seed
+genes**, and candidates are ranked by network propagation from those seeds.
+(It originally took a target gene too; that was removed — see
+`prompt_history`, Prompt 26.)
+
 ---
 
 ## Day 1
@@ -31,9 +37,8 @@ beyond this repo.
 >   `predicted`}), `confidence` (float, nullable).
 > - `OTAssociationsSchema`: `gene_id`, `disease_id`, `datatype_id`,
 >   `datasource_id`, `score` (float in [0, 1]).
-> - `Manifest`: run_id, git commit, created_at, seed, resolved target
->   (`{input, gene_id, symbol}`), disease (`{efo_id, name,
->   n_associated_genes}`), a list of sources (each with db name, version,
+> - `Manifest`: run_id, git commit, created_at, seed, disease (`{efo_id,
+>   name, n_associated_genes}`), a list of sources (each with db name, version,
 >   and per-file `{path, sha256, bytes}`), all CLI parameter values, all
 >   output artifact paths with sha256, and the coverage/scale report
 >   summaries.
@@ -54,8 +59,8 @@ beyond this repo.
 **Implement:**
 > Write a standalone Python module `ingest.py` that resolves, canonicalizes
 > and normalizes all source data for the pipeline, validating every output
-> against `schemas.py` (Stage 0). CLI args: `--target` (gene symbol or
-> Ensembl ID), `--disease` (EFO ID), `--data-dir` (source cache),
+> against `schemas.py` (Stage 0). CLI args: `--disease` (EFO / MONDO ID),
+> `--data-dir` (source cache),
 > `--out-dir` (run artifacts), `--pathway-db` (accepts only `reactome` for
 > now; keep the flag so the value flows into the `source_db` column),
 > `--no-download`, `--seed`, `--min-set-size` (default 10),
@@ -131,7 +136,7 @@ beyond this repo.
 > than on Day 2.
 >
 > **(f) Loud failures.** Exit non-zero with an actionable message when: the
-> target cannot be resolved (offer fuzzy symbol suggestions); the disease has
+> disease cannot be resolved; the disease has
 > implausibly few `genetic_association` genes for GSEA to be meaningful; or
 > any source maps below 90% of its genes, unless `--allow-low-coverage` is
 > passed.
@@ -181,9 +186,11 @@ beyond this repo.
 > tested pathways, and output a TSV of disease-relevant pathways with
 > p-value, FDR, gene set, and `source_db`, filtered by user-specified
 > `--pval-threshold` and `--fdr-threshold` CLI args (defaults 0.05 and 0.1).
-> Also compute the set of pathways containing the `--target` gene from the
-> manifest and include it in the output (a `contains_target` boolean
-> column). Log the count of sets tested before and after collapsing.
+> Also write the same `genetic_association` genes (the GSEA signature, with
+> each gene's strongest score) to `disease_seed_genes.tsv` (`gene_id`,
+> `score`): these are the seed genes Stage 3 builds the graph around and
+> Stage 5 propagates from. Log the count of sets tested before and after
+> collapsing.
 >
 > **Correcting for annotation bias is an open decision** — see "Open
 > decision — correcting Stage 2 for annotation bias" in README.md. BH-FDR
@@ -209,20 +216,23 @@ beyond this repo.
 > documented TSV schema, and add a `--benchmark-holdout-file` optional CLI
 > arg: a list of genes (resolved to Ensembl IDs via Stage 1's `genes`
 > table, not matched on symbol) to exclude from the disease-associated seed
-> gene set before running GSEA. This will be used by benchmark validation
-> (see `benchmarking/`) to prevent circularity when known resistance-pair
-> genes overlap with disease seed genes.
+> gene set before running GSEA — and from `disease_seed_genes.tsv`, so a
+> held-out gene can only come back as a candidate. This is used for
+> validation, to prevent
+> circularity: known disease genes are held out of the seed genes and then
+> checked for where they rank among the candidates.
 
 ### Stage 3 — Pathway-based gene-gene graph construction
 
 **Implement:**
 > Write `build_graph.py` that takes Stage 2's disease-relevant pathway list
-> and the target's own pathways, and constructs a **pathway-based gene-gene
+> and seed genes, and constructs a **pathway-based gene-gene
 > graph** — use this exact term in the module docstring, log messages, and
 > variable names, not the generic "gene-gene graph". Build it as a
 > `networkx.DiGraph`: nodes are genes keyed by Ensembl gene ID; edges come
 > from two sources — (a) co-membership in at least one pathway from the
-> union of (disease-relevant pathways) ∪ (target-containing pathways), added
+> union of (disease-relevant pathways) ∪ (pathways containing at least one
+> seed gene), so the graph holds every gene of those pathways, added
 > as a bidirectional pair of edges with `sign=0` (unknown effect); and (b)
 > directional, signed edges read straight from Stage 1's
 > `interactions.parquet` (already parsed, filtered and canonicalized — do
@@ -258,14 +268,16 @@ beyond this repo.
 > co-membership edge weights match hand-computed `1 / (|pathway| - 1)`
 > values for a fixture containing one small and one large pathway, and that
 > a gene appearing in only one pathway alone (no shared pathway with any
-> other gene) is an isolated node, not silently dropped.
+> other gene) is an isolated node, not silently dropped. Also assert that a
+> pathway that is neither disease-relevant nor contains a seed gene stays
+> out of the graph.
 
 **Wire to next stage:**
-> Ensure `build_graph.py` outputs the target gene's node ID explicitly
-> alongside the graph file (a small sidecar JSON with `target_node`,
-> `graph_path`, `index_path` and `source_dbs`), since Stage 4's weighting
-> and Stage 5's scoring methods (topology, RWR) all need to know which
-> node is the source without re-deriving it.
+> Record in the graph metadata how many seed genes are graph nodes (seeds
+> in no size-capped pathway cannot propagate anything) and how many
+> pathways were added because they contain seeds. Stage 5 reads the seed
+> list itself (`disease_seed_genes.tsv`), so it can also be given a
+> different seed list without rebuilding the graph.
 
 ---
 
@@ -274,8 +286,8 @@ beyond this repo.
 ### Stage 4 — Genetic-evidence weighting
 
 **Implement:**
-> Write `genetic_evidence_weights.py` that takes the Stage 3 graph (with
-> its target node) and the Open Targets association data, and computes
+> Write `genetic_evidence_weights.py` that takes the Stage 3 graph and the
+> Open Targets association data, and computes
 > per-gene genetic-evidence scores restricted explicitly to non-pathway-
 > derived datatypes (`genetic_association`, `known_drug` — exclude
 > `affected_pathway` and any literature/pathway-derived datatype — note
@@ -310,39 +322,43 @@ beyond this repo.
 > interchangeably via the same `--graph` argument. Document the node/edge
 > weight attribute names as a comment at the top of the script.
 
-### Stage 5 — Candidate scoring (topology, RWR)
+### Stage 5 — Candidate scoring by propagation from seed genes (topology, RWR, BFWalk)
 
 **Implement:**
 > Write `score_candidates.py` that loads a graph (optionally weighted, from
-> Stage 3 or Stage 4) and target node, and supports `--method` as a
-> comma-separated list drawn from `{topology, rwr}`, **defaulting to
-> `topology` only** — RWR is opt-in (e.g. `--method topology,rwr` or
-> `--method rwr`), never run unless explicitly requested, since it's
-> materially more expensive (a converged stationary distribution) than the
-> deterministic topology method. Topology method: shortest-path distance to
-> the target node and co-membership count, using edge weights if present.
-> RWR method: personalized PageRank / random-walk-with-restart (via
-> `networkx.pagerank` or an existing RWR library) personalized on the
-> target node, using node/edge weights if present — do not hand-roll this
-> algorithm. Use the fixed seed from the graph metadata for any stochastic
-> step. Output a ranked TSV with a `gene` column and a `topology_score`
-> column always present, plus an `rwr_score` column only when that method
-> was also requested.
+> Stage 3 or Stage 4) and a seed-gene list (`--seed-genes`, default Stage
+> 2's `disease_seed_genes.tsv`; any TSV with a `gene_id` column), and
+> propagates the signal from the seeds. Every graph gene that is not a seed
+> is a candidate; seeds outside the graph are dropped with a log line. It
+> supports `--method` as a comma-separated list drawn from
+> `{topology, rwr, bfwalk}`, **defaulting to `topology` only** — RWR and
+> BFWalk are opt-in (e.g. `--method topology,rwr`), never run unless
+> explicitly requested. Topology method: (1 + number of seed neighbours) /
+> (1 + weighted shortest-path distance from the nearest seed), using edge
+> weights if present. RWR method: personalized PageRank /
+> random-walk-with-restart (via `networkx.pagerank`) restarting uniformly
+> on the seeds — do not hand-roll this algorithm. BFWalk method:
+> [BFWalk](https://github.com/jedrzejkubica/BFWalk) (backtrack-free
+> propagation with in-degree normalisation) with the seeds as its seed
+> vector; it is pip-installable (TestPyPI for now) and imported only when
+> requested. Output a ranked TSV with a `gene` column and a
+> `topology_score` column always present, plus `rwr_score` /
+> `bfwalk_score` columns only when those methods were requested.
 >
-> (Backtrack-free walk / non-backtracking RWR via GBA-centrality was
-> considered as a third method and dropped — see README.md plan update 5:
-> it needs a compiled C extension and its own submodule, out of proportion
-> to a hackathon prototype, and the core hypotheses don't require it.)
+> (Backtrack-free walk was first dropped — it then needed a compiled C
+> extension and its own submodule — and came back once BFWalk was
+> packaged; see `prompt_history`, Prompt 25.)
 
 **Test:**
-> Add a pytest test on a small synthetic graph containing both a short
-> cycle and a longer chain where you can hand-compute expected
+> Add a pytest test on a small synthetic graph with two seeds, containing
+> both a short cycle and a longer chain where you can hand-compute expected
 > shortest-path distances; assert that a default (no `--method`) run
-> produces only `topology_score`, matching the hand-computed values
-> exactly, with no `rwr_score` column at all; then assert that running with
-> `--method topology,rwr` produces both columns, that `rwr_score` is a
-> valid probability distribution (non-negative, sums to ~1), and that the
-> target's own graph neighbours outrank far-away chain nodes.
+> produces only `topology_score` for the non-seed genes, matching the
+> hand-computed values exactly, with no `rwr_score` column at all; then
+> assert that running with `--method topology,rwr` produces both columns,
+> that the full RWR distribution sums to ~1, that the seeds' graph
+> neighbours outrank far-away chain nodes, and that seeds never appear as
+> candidates.
 
 **Wire to next stage:**
 > Confirm `score_candidates.py`'s output TSV uses a `gene` column that
@@ -383,34 +399,36 @@ beyond this repo.
 
 ## Day 3
 
-> Benchmark validation is now its own module — see
-> [`benchmarking/PROMPTS.md`](../benchmarking/PROMPTS.md) for its
-> implementation prompt. It runs on Day 3 alongside Stage 7 below.
+> Benchmark validation was split out into its own `benchmarking/` module
+> and later removed (it was built on target → alternative-target pairs,
+> which no longer fit the disease-only pipeline). Validation is now done by
+> holding known disease genes out of the seeds with Stage 2's
+> `--benchmark-holdout-file`; local validation data lives in the gitignored
+> `validation/` directory.
 
 ### Stage 7 — Output/report
 
 **Implement:**
 > Write a small pipeline orchestrator `run_pipeline.py` that chains Stages
-> 1-6 given `--target` and `--disease` (running each stage as its own
+> 1-6 given `--disease` (running each stage as its own
 > subprocess), plus a `--from-manifest` mode that skips Stage 1 and starts
 > from an existing Stage 1 output directory. Then write `stage7_report.py`
 > that turns a finished run directory into **one self-contained interactive
 > HTML file** (no server, no web framework, no external assets — standard
-> library templating only): a header (target/disease/versions/seed), a
+> library templating only): a header (disease, number of seed genes and
+> candidates, versions, random seed), a
 > client-side sortable ranked candidate table (composite score, topology,
 > RWR, genetic evidence, tractability, safety) and, for each candidate on
-> click/expand, the evidence trace — which shared pathways, which Open
+> click/expand, the evidence trace — which pathways it shares with seed
+> genes (and how many seeds each holds), which Open
 > Targets datatypes (with the ones feeding the genetic-evidence score
-> flagged), which interaction edges. Display genes by HGNC symbol while
+> flagged), which interaction edges (marking edges with a seed gene). Display genes by HGNC symbol while
 > keeping Ensembl gene IDs as the internal key — resolve symbols via Stage
-> 1's `genes` table at render time only. Include the benchmark validation
-> summary (from `benchmarking/`) as a static panel, embedded from a text
-> file, not recomputed.
+> 1's `genes` table at render time only.
 
 **Test:**
 > Unit-test `stage7_report.py`'s trace assembly (shared pathways, graph
-> scoping of interactions, datatype flags) and its benchmark-summary
-> fallback on hand-built inputs; exercise `build_report` end-to-end on the
+> scoping of interactions, datatype flags) on hand-built inputs; exercise `build_report` end-to-end on the
 > checked-in synthetic run and assert the HTML is self-contained (no
 > external URLs), symbol-labelled, and has one detail block per candidate.
 > Add a `run_pipeline.py --from-manifest --report` smoke test that Stages
@@ -428,8 +446,9 @@ beyond this repo.
 > fixtures used in the individual stage tests, asserting that every
 > hand-off validates against its `schemas.py` contract (no missing or
 > renamed columns between stages, Ensembl gene IDs and `source_db`
-> attribution preserved end to end) and that the final output contains a
-> `composite_score` for every input gene. This is the highest-value test in
+> attribution preserved end to end), that the seed genes are exactly the
+> disease's `genetic_association` genes, and that the final output contains
+> a `composite_score` for every non-seed graph gene. This is the highest-value test in
 > the suite — it is what catches a schema break on Day 3 morning.
 
 **Documentation:**
@@ -452,9 +471,7 @@ beyond this repo.
 
 **Demo polish:**
 > Make `run_pipeline.py` fail helpfully — if a stage exits non-zero, print
-> which stage and its command, not a bare traceback; if `--target` /
-> `--disease` don't resolve in Stage 1, surface Stage 1's own suggestion
-> message. In `stage7_report.py`, degrade gracefully when an optional
+> which stage and its command, not a bare traceback; if `--disease`
+> doesn't resolve in Stage 1, surface Stage 1's own error message. In `stage7_report.py`, degrade gracefully when an optional
 > artifact is missing (e.g. a Stage-3-only run with no `rwr_score` /
-> `genetic_evidence_score` — omit those columns rather than crash) and when
-> no benchmark summary exists (show a "not run yet" note, not an error).
+> `genetic_evidence_score` — omit those columns rather than crash).

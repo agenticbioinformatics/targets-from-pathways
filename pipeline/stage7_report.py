@@ -1,10 +1,9 @@
 """Stage 7 - HTML report.
 
 Turns a run directory into one self-contained interactive HTML file (no server, no external assets):
-a sortable ranked table, an evidence trace per candidate and a static benchmark panel.
+a sortable ranked table and an evidence trace per candidate.
 Only manifest.json and candidates_annotated.tsv are required; a missing optional file only hides the
-report sections that need it. The benchmark panel embeds benchmarking/benchmark_summary.txt
-(or the .example.txt placeholder) and is never recomputed here.
+report sections that need it.
 """
 
 import argparse
@@ -93,7 +92,8 @@ def load_run(run_dir):
     missing = []
     optional = {}
     for name in ["graph_metadata.json", "graph_gene_index.json", "genes.parquet", "gene_sets.parquet",
-                 "interactions.parquet", "ot_disease_subset.parquet", "disease_pathways.tsv"]:
+                 "interactions.parquet", "ot_disease_subset.parquet", "disease_pathways.tsv",
+                 "disease_seed_genes.tsv"]:
         path = run_dir / name
         if not path.exists():
             missing.append(name)
@@ -110,6 +110,9 @@ def load_run(run_dir):
     graph_index = None
     if optional["graph_gene_index.json"] is not None:
         graph_index = set(optional["graph_gene_index.json"])
+    seeds = set()
+    if optional["disease_seed_genes.tsv"] is not None:
+        seeds = set(optional["disease_seed_genes.tsv"]["gene_id"])
     symbols = {}
     if optional["genes.parquet"] is not None:
         symbols = dict(zip(optional["genes.parquet"]["gene_id"], optional["genes.parquet"]["symbol"]))
@@ -126,6 +129,7 @@ def load_run(run_dir):
         "interactions": optional["interactions.parquet"],
         "ot": optional["ot_disease_subset.parquet"],
         "disease_pathways": optional["disease_pathways.tsv"],
+        "seeds": seeds,
         "stage4_ran": "stage4_genetic_evidence" in graph_metadata,
         "missing": missing,
     }
@@ -136,9 +140,9 @@ def symbol_of(gene_id, symbols):
 
 
 def evidence_trace(gene_id, run):
-    """Collect why a candidate is near the target: shared pathways, Open Targets datatypes and interactions.
-    Stage 5 keeps only scores, so this is rebuilt here from the Stage 1-3 files."""
-    target_id = run["manifest"]["resolved_target"]["gene_id"]
+    """Collect why a candidate is near the seed genes: pathways shared with seeds, Open Targets datatypes and
+    interactions. Stage 5 keeps only scores, so this is rebuilt here from the Stage 1-3 files."""
+    seeds = run["seeds"]
     symbols = run["symbols"]
     gene_sets = run["gene_sets"]
     ot = run["ot"]
@@ -149,18 +153,21 @@ def evidence_trace(gene_id, run):
     member_only_pathways = []
     if gene_sets is not None:
         set_names = dict(zip(gene_sets["set_id"], gene_sets["set_name"]))
-        target_sets = set(gene_sets.loc[gene_sets["gene_id"] == target_id, "set_id"])
+        seed_rows = gene_sets[gene_sets["gene_id"].isin(seeds)]
+        n_seeds_per_set = seed_rows.groupby("set_id")["gene_id"].nunique().to_dict()
         disease_sets = set()
         if run["disease_pathways"] is not None:
             disease_sets = set(run["disease_pathways"]["set_id"])
-        # Only pathways that Stage 3 used to build the graph.
-        candidate_sets = set(gene_sets.loc[gene_sets["gene_id"] == gene_id, "set_id"]) & (disease_sets | target_sets)
+        # Only pathways that Stage 3 used to build the graph: disease pathways and pathways with seed genes.
+        candidate_sets = set(gene_sets.loc[gene_sets["gene_id"] == gene_id, "set_id"]) & (disease_sets | set(n_seeds_per_set))
         for set_id in candidate_sets:
-            if set_id in target_sets:
-                shared_pathways.append(set_names.get(set_id, set_id))
+            name = set_names.get(set_id, set_id)
+            if set_id in n_seeds_per_set:
+                shared_pathways.append((name, n_seeds_per_set[set_id]))
             else:
-                member_only_pathways.append(set_names.get(set_id, set_id))
-        shared_pathways.sort(key=str.lower)
+                member_only_pathways.append(name)
+        # Pathways with the most seed genes first.
+        shared_pathways.sort(key=lambda entry: (-entry[1], entry[0].lower()))
         member_only_pathways.sort(key=str.lower)
 
     datatypes = []
@@ -197,7 +204,7 @@ def evidence_trace(gene_id, run):
                 "sign": SIGN_LABELS.get(int(row.sign), str(row.sign)),
                 "evidence_type": str(row.evidence_type),
                 "confidence": confidence,
-                "to_target": other_gene == target_id,
+                "to_seed": other_gene in seeds,
             })
 
     return {
@@ -210,20 +217,6 @@ def evidence_trace(gene_id, run):
         "interactions_available": interactions_df is not None,
         "interactions_unscoped": interactions_df is not None and graph_index is None,
     }
-
-
-def benchmark_summary(benchmark_dir=None):
-    """Return (summary text or None, label of its source)."""
-    if benchmark_dir is None:
-        benchmark_dir = REPO_DIR / "benchmarking"
-    benchmark_dir = Path(benchmark_dir)
-    real_summary = benchmark_dir / "benchmark_summary.txt"
-    example_summary = benchmark_dir / "benchmark_summary.example.txt"
-    if real_summary.exists():
-        return real_summary.read_text().strip(), "benchmark_summary.txt"
-    if example_summary.exists():
-        return example_summary.read_text().strip(), "benchmark_summary.example.txt (EXAMPLE — not a real validation run)"
-    return None, "none"
 
 
 def escape(value):
@@ -245,20 +238,20 @@ def trace_html(gene_id, symbol, row, trace):
         '<div class="trace">',
         '<p class="k">Composite breakdown</p>',
         f"<p><code>{escape(row.composite_breakdown)}</code><br>weights <code>{escape(row.composite_weights)}</code></p>",
-        '<p class="k">Shared pathways with the target</p>',
+        '<p class="k">Pathways shared with seed genes</p>',
     ]
     if not trace["pathways_available"]:
         parts.append('<p class="none">gene_sets.parquet not in the run directory</p>')
     elif trace["shared_pathways"]:
         names = []
-        for name in trace["shared_pathways"]:
-            names.append(escape(name))
+        for name, n_seeds in trace["shared_pathways"]:
+            names.append(f"{escape(name)} <span class=\"src\">({n_seeds} seed gene{'s' if n_seeds != 1 else ''})</span>")
         parts.append(html_list(names))
     else:
         parts.append('<p class="none">none in the Stage 3 pathway union</p>')
 
     if trace["member_pathways"]:
-        parts.append('<p class="k">Also a member of (disease-relevant; target is not)</p>')
+        parts.append('<p class="k">Also a member of (disease-relevant, no seed genes)</p>')
         names = []
         for name in trace["member_pathways"]:
             names.append(escape(name))
@@ -295,11 +288,11 @@ def trace_html(gene_id, symbol, row, trace):
             confidence = ""
             if interaction["confidence"] is not None:
                 confidence = f", confidence {interaction['confidence']:.2f}"
-            to_target = ""
-            if interaction["to_target"]:
-                to_target = '<span class="badge tgt">to target</span>'
+            to_seed = ""
+            if interaction["to_seed"]:
+                to_seed = '<span class="badge tgt">with seed</span>'
             items.append(f"{escape(interaction['a'])} {arrow} {escape(interaction['b'])} &mdash; "
-                         f"{escape(interaction['sign'])}, {escape(interaction['evidence_type'])}{confidence}{to_target}")
+                         f"{escape(interaction['sign'])}, {escape(interaction['evidence_type'])}{confidence}{to_seed}")
         parts.append(html_list(items))
     else:
         parts.append('<p class="none">no signed interaction edges touch this gene</p>')
@@ -308,13 +301,11 @@ def trace_html(gene_id, symbol, row, trace):
     return "".join(parts)
 
 
-def render_html(run, benchmark_text, benchmark_label):
+def render_html(run):
     manifest = run["manifest"]
     candidates = run["annotated"].reset_index(drop=True)
     symbols = run["symbols"]
-    target = manifest["resolved_target"]
     disease = manifest["disease"]
-    target_symbol = escape(symbol_of(target["gene_id"], symbols))
 
     versions = []
     for source in manifest.get("sources", []):
@@ -373,15 +364,6 @@ def render_html(run, benchmark_text, benchmark_label):
         table_rows.append("<tr>" + "".join(cells) + "</tr>")
         details.append(trace_html(gene_id, symbol, row, evidence_trace(gene_id, run)))
 
-    if benchmark_text is None:
-        benchmark_html = ('<p class="none">No benchmark summary found. Run '
-                          "<code>benchmarking/benchmark_validate.py</code> and re-generate this report.</p>")
-    else:
-        css_class = "meta"
-        if "EXAMPLE" in benchmark_label:
-            css_class = "warn"
-        benchmark_html = f'<p class="{css_class}">Source: {escape(benchmark_label)}</p><pre>{escape(benchmark_text)}</pre>'
-
     missing_note = ""
     if run["missing"]:
         missing_note = (f'<p class="warn">Partial run: {escape(", ".join(run["missing"]))} not in the run directory — '
@@ -393,15 +375,14 @@ def render_html(run, benchmark_text, benchmark_label):
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Target Rescue via Pathways &mdash; {target_symbol} / {escape(disease['name'])}</title>
+<title>Targets from Pathways &mdash; {escape(disease['name'])}</title>
 <style>{CSS}</style>
 </head><body>
-<h1>Target Rescue via Pathways &mdash; candidate report</h1>
+<h1>Targets from Pathways &mdash; candidate report</h1>
 <p class="meta">
-Target <b>{target_symbol}</b> <span class=ens>{escape(target['gene_id'])}</span>
-(input <code>{escape(target['input'])}</code>) &middot;
 Disease <b>{escape(disease['name'])}</b> <span class=ens>{escape(disease['efo_id'])}</span> &middot;
-{len(candidates)} candidates &middot; seed {escape(manifest.get('seed'))} &middot; {escape(", ".join(versions))} &middot;
+{len(run["seeds"])} seed genes (genetic association) &middot; {len(candidates)} candidates &middot;
+random seed {escape(manifest.get('seed'))} &middot; {escape(", ".join(versions))} &middot;
 graph: {escape(graph_kind)} &middot; generated {generated}
 </p>
 {missing_note}
@@ -422,20 +403,15 @@ its evidence trace.
 <h2>Evidence trace</h2>
 {details_html}
 
-<h2>Benchmark validation</h2>
-<p class="meta">Static &mdash; embedded from <code>benchmarking/</code>, not recomputed for this report.</p>
-{benchmark_html}
-
 <script>{JAVASCRIPT}</script>
 </body></html>
 """
 
 
-def build_report(run_dir, out_path, benchmark_dir=None):
+def build_report(run_dir, out_path):
     run = load_run(run_dir)
-    benchmark_text, benchmark_label = benchmark_summary(benchmark_dir)
     out_path = Path(out_path)
-    out_path.write_text(render_html(run, benchmark_text, benchmark_label))
+    out_path.write_text(render_html(run))
     logger.info("Report written (%d candidates): %s", len(run["annotated"]), out_path)
     return out_path
 
@@ -445,20 +421,17 @@ def parse_args(argv=None):
         prog="stage7_report.py",
         description="Stage 7 - output/report. Turns a finished run directory (manifest.json + "
         "candidates_annotated.tsv required; other files optional) into ONE self-contained interactive HTML "
-        "file: sortable ranked table, click-to-expand evidence trace per candidate, and a static "
-        "benchmark-validation panel.",
+        "file: sortable ranked table and click-to-expand evidence trace per candidate.",
     )
     parser.add_argument("--run-dir", required=True, type=Path, help="Directory with the Stage 1-6 outputs.")
     parser.add_argument("--out", type=Path, default=None, help="Output HTML path. Default: <run-dir>/report.html.")
-    parser.add_argument("--benchmark-dir", type=Path, default=None,
-                        help="Directory holding benchmark_summary.txt / .example.txt. Default: <repo>/benchmarking.")
     return parser.parse_args(argv)
 
 
 def main(argv=None):
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     args = parse_args(argv)
-    build_report(args.run_dir, args.out or args.run_dir / "report.html", benchmark_dir=args.benchmark_dir)
+    build_report(args.run_dir, args.out or args.run_dir / "report.html")
 
 
 if __name__ == "__main__":

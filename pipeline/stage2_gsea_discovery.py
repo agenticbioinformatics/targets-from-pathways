@@ -2,6 +2,8 @@
 
 Runs preranked GSEA of the disease's genetic-association genes against the Reactome gene sets listed in
 Stage 1's manifest and writes the significant pathways to disease_pathways.tsv next to the manifest.
+The same genetic-association genes (minus any benchmark holdout) are written to disease_seed_genes.tsv:
+Stage 3 builds the graph around them and Stage 5 propagates from them.
 """
 
 import argparse
@@ -16,11 +18,12 @@ from stage0_schemas import (
     GeneSetsSchema,
     GenesSchema,
     OTAssociationsSchema,
+    SeedGenesSchema,
     fail,
     find_artifact,
     load_manifest,
 )
-from stage1_ingest import build_symbol_index, resolve_target
+from stage1_ingest import build_symbol_index, resolve_gene
 
 logger = logging.getLogger("gsea_discovery")
 
@@ -34,7 +37,7 @@ def parse_args(argv=None):
         description="Stage 2 - disease-pathway discovery. FDR-corrected GSEA of the disease's "
         "genetic-association genes against Reactome gene sets (size-capped, redundancy-collapsed). "
         "Reads gene_sets.parquet + ot_disease_subset.parquet via --manifest; writes "
-        "disease_pathways.tsv next to it.",
+        "disease_pathways.tsv and disease_seed_genes.tsv next to it.",
     )
     parser.add_argument("--manifest", required=True, type=Path, help="Path to Stage 1's manifest.json.")
     parser.add_argument("--pval-threshold", type=float, default=0.05, help="Nominal p-value cutoff.")
@@ -59,7 +62,7 @@ def read_holdout_genes(holdout_path, genes_df):
         entry = line.split("#")[0].strip()
         if not entry:
             continue
-        gene_id, _ = resolve_target(entry, genes_df, index)
+        gene_id, _ = resolve_gene(entry, genes_df, index)
         if gene_id is None:
             unresolved.append(entry)
         else:
@@ -158,7 +161,6 @@ def run(args):
     ot_disease_subset = OTAssociationsSchema.validate(
         pd.read_parquet(find_artifact(manifest, args.manifest, "ot_disease_subset.parquet"))
     )
-    target_gene_id = manifest.resolved_target.gene_id
 
     if args.benchmark_holdout_file is not None:
         genes_df = GenesSchema.validate(pd.read_parquet(find_artifact(manifest, args.manifest, "genes.parquet")))
@@ -169,12 +171,7 @@ def run(args):
 
     signature = build_signature(ot_disease_subset)
     collapsed_gene_sets = collapse_near_duplicate_sets(gene_sets)
-    result, sets_by_id = run_gsea(signature, collapsed_gene_sets, seed=manifest.seed)
-
-    contains_target = []
-    for set_id in result["set_id"]:
-        contains_target.append(target_gene_id in sets_by_id[set_id])
-    result["contains_target"] = contains_target
+    result, _ = run_gsea(signature, collapsed_gene_sets, seed=manifest.seed)
 
     significant = filter_results(result, args.pval_threshold, args.fdr_threshold)
     logger.info("GSEA: %d seed genes, %d/%d gene sets tested, %d significant.",
@@ -186,7 +183,12 @@ def run(args):
     output = DiseasePathwaysSchema.validate(output)
     output_path = args.manifest.parent / "disease_pathways.tsv"
     output.to_csv(output_path, sep="\t", index=False)
-    logger.info("Stage 2 complete: %s", output_path)
+
+    seeds = SeedGenesSchema.validate(signature.rename(columns={"gene": "gene_id"}))
+    seeds = seeds.sort_values(["score", "gene_id"], ascending=[False, True])
+    seeds_path = args.manifest.parent / "disease_seed_genes.tsv"
+    seeds.to_csv(seeds_path, sep="\t", index=False)
+    logger.info("Stage 2 complete: %s, %s (%d seed genes)", output_path, seeds_path, len(seeds))
     return output_path
 
 

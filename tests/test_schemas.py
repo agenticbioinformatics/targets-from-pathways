@@ -90,7 +90,6 @@ def valid_manifest_dict() -> dict:
         "git_commit": "a" * 40,
         "created_at": "2026-07-30T00:00:00Z",
         "seed": 42,
-        "resolved_target": {"input": "PTGS2", "gene_id": "ENSG00000073756", "symbol": "PTGS2"},
         "disease": {"efo_id": "EFO_0005755", "name": "rheumatic disease", "n_associated_genes": 100},
         "sources": [
             {
@@ -458,13 +457,6 @@ def test_manifest_rejects_missing_field(valid_manifest_dict):
     bad = deepcopy(valid_manifest_dict)
     del bad["seed"]
     with pytest.raises(ValidationError, match="seed"):
-        Manifest.model_validate(bad)
-
-
-def test_manifest_rejects_non_ensembl_target_gene_id(valid_manifest_dict):
-    bad = deepcopy(valid_manifest_dict)
-    bad["resolved_target"]["gene_id"] = "PTGS2"
-    with pytest.raises(ValidationError, match="gene_id"):
         Manifest.model_validate(bad)
 
 

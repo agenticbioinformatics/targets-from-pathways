@@ -18,8 +18,10 @@ Pathways:
   silently dropped for having no edges.
 
 Union membership: R-SMALL/R-LARGE are Stage 2 "disease-relevant" pathways;
-R-ISOLATE is the target's own pathway (target = F) and is deliberately
-*not* disease-relevant, exercising the union's other half.
+R-ISOLATE contains a seed gene (seeds = {F}) and is deliberately *not*
+disease-relevant, exercising the union's other half (pathways with seed genes).
+R-NOSEED = {D, Y} is neither, so Y must stay out of the graph even though D,
+a gene of R-LARGE, is in it.
 
 Interactions (each deliberately touching only one direction of a
 co-membership pair, so the untouched reverse direction proves
@@ -47,7 +49,8 @@ import pytest
 import stage3_build_graph as bg
 
 A, B, C, D, F, Z = (f"ENSG{n:011d}" for n in (1, 2, 3, 4, 6, 99))
-TARGET_GENE_ID = F
+Y = f"ENSG{98:011d}"
+SEED_GENE_IDS = {F}
 
 GENE_SETS = pd.DataFrame(
     [
@@ -58,6 +61,8 @@ GENE_SETS = pd.DataFrame(
         {"set_id": "R-LARGE", "gene_id": C, "source_db": "reactome"},
         {"set_id": "R-LARGE", "gene_id": D, "source_db": "reactome"},
         {"set_id": "R-ISOLATE", "gene_id": F, "source_db": "reactome"},
+        {"set_id": "R-NOSEED", "gene_id": D, "source_db": "reactome"},
+        {"set_id": "R-NOSEED", "gene_id": Y, "source_db": "reactome"},
     ]
 )
 
@@ -99,7 +104,7 @@ EXPECTED_EDGES = {
 
 @pytest.fixture(scope="module")
 def graph_and_stats():
-    return bg.build_graph(GENE_SETS, DISEASE_PATHWAYS, INTERACTIONS, TARGET_GENE_ID)
+    return bg.build_graph(GENE_SETS, DISEASE_PATHWAYS, INTERACTIONS, SEED_GENE_IDS)
 
 
 def test_exact_directed_signed_edge_list_with_source_db(graph_and_stats):
@@ -134,7 +139,15 @@ def test_isolated_gene_present_not_dropped(graph_and_stats):
     graph, _stats = graph_and_stats
     assert F in graph.nodes
     assert graph.degree(F) == 0
-    assert graph.number_of_nodes() == 5  # A, B, C, D, F — not Z
+    assert graph.number_of_nodes() == 5  # A, B, C, D, F — not Z, not Y
+
+
+def test_pathway_union_is_disease_plus_seed_pathways(graph_and_stats):
+    graph, stats = graph_and_stats
+    assert stats["n_disease_pathways"] == 2
+    assert stats["n_seed_pathways"] == 1  # R-ISOLATE
+    assert stats["n_pathways_union"] == 3  # R-NOSEED is neither disease-relevant nor seed-containing
+    assert Y not in graph.nodes
 
 
 def test_sparse_serialization_matches_graph(graph_and_stats):

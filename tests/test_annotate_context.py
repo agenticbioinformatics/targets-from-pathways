@@ -177,7 +177,7 @@ def _write_run_dir(path, *, with_rwr=True, with_stage4=True):
         cols["rwr_score"] = [0.4, 0.2, 0.1]
     pd.DataFrame(cols).to_csv(path / "candidate_scores.tsv", sep="\t", index=False)
 
-    meta = {"seed": 0, "resolved_target": {"gene_id": "ENSG00000000099", "input": "t", "symbol": "t"}}
+    meta = {"seed": 0}
     if with_stage4:
         meta["genetic_evidence_score"] = {A: 0.8, B: 0.5, CAND: 0.1}
     (path / "graph_metadata.json").write_text(json.dumps(meta))
@@ -185,7 +185,6 @@ def _write_run_dir(path, *, with_rwr=True, with_stage4=True):
     _write_target_parquet(path / "ot_target_subset.parquet")
     manifest = {
         "run_id": "r", "git_commit": "u", "created_at": "2026-08-28T00:00:00Z", "seed": 0,
-        "resolved_target": {"input": "t", "gene_id": "ENSG00000000099", "symbol": "t"},
         "disease": {"efo_id": "EFO_0000001", "name": "d", "n_associated_genes": 3},
         "sources": [
             {"db": "opentargets", "version": "26.06", "files": [
@@ -275,7 +274,6 @@ def _write_fixture_run_dir(path):
         json.dumps(
             {
                 "seed": 0,
-                "resolved_target": {"gene_id": "ENSG00000000099", "input": "t", "symbol": "t"},
                 "genetic_evidence_score": {E1: 0.9, E2: 0.6, E3: 0.3},
             }
         )
@@ -298,7 +296,6 @@ def _write_fixture_run_dir(path):
         json.dumps(
             {
                 "run_id": "r", "git_commit": "u", "created_at": "2026-08-28T00:00:00Z", "seed": 0,
-                "resolved_target": {"input": "t", "gene_id": "ENSG00000000099", "symbol": "t"},
                 "disease": {"efo_id": "EFO_0000001", "name": "d", "n_associated_genes": 3},
                 "sources": [
                     {"db": "opentargets", "version": "26.06", "files": [

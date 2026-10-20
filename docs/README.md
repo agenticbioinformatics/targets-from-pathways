@@ -8,14 +8,19 @@ run directory the stages write into — substitute your own if necessary.
 
 ## Full run
 
-One (target, disease) all the way to an HTML report. `run_pipeline.py`
+One disease all the way to an HTML report. `run_pipeline.py`
 chains Stages 1–6 as subprocesses; `stage7_report.py` renders the HTML report. Every stage script has `--help`.
 
 ```
 python3 pipeline/run_pipeline.py \
-    --target NOD2 --disease MONDO_0005265 \
+    --disease MONDO_0005265 \
     --data-dir data/ --out-dir out/ --report
 ```
+
+There is no target gene: the disease's genes with Open Targets
+`genetic_association` evidence are the **seed genes** (Stage 2 writes them to
+`disease_seed_genes.tsv`), the graph is built around them (Stage 3), and
+Stage 5 propagates from them to rank every non-seed graph gene.
 
 Any option `run_pipeline.py` does not recognise is forwarded to
 `stage1_ingest.py`, so a run that needs one of Stage 1's flags is just
@@ -58,11 +63,11 @@ valid one.
 
 **Setup:** `pip install pandas pyarrow pandera pydantic` (or `pip install -r requirements.txt`).
 
-**Run command** (the entry point of the whole pipeline — takes a target
-gene and a disease ID, nothing upstream):
+**Run command** (the entry point of the whole pipeline — takes a disease
+ID, nothing upstream):
 
 ```
-python3 pipeline/stage1_ingest.py --target NOD2 --disease MONDO_0005265 --data-dir data/ --out-dir out/
+python3 pipeline/stage1_ingest.py --disease MONDO_0005265 --data-dir data/ --out-dir out/
 ```
 
 On the first run this downloads the version-pinned source files (Open
@@ -112,18 +117,22 @@ which patch the acquisition layer to serve the tiny fixtures under
 
 **Setup:** `pip install blitzgsea statsmodels pandas pandera pydantic pyarrow` (or `pip install -r requirements.txt`).
 
-**Run command**, against Stage 1's output for a real (target, disease) pair:
+**Run command**, against Stage 1's output for a real disease:
 
 ```
 python3 pipeline/stage2_gsea_discovery.py --manifest out/manifest.json
 ```
 
-`pipeline/stage2_gsea_discovery.py` takes no other input — it resolves `gene_sets.parquet`,
-`ot_disease_subset.parquet`, and the target gene entirely from the manifest,
-and writes `disease_pathways.tsv` next to it.
+`pipeline/stage2_gsea_discovery.py` takes no other input — it resolves `gene_sets.parquet`
+and `ot_disease_subset.parquet` entirely from the manifest, and writes two
+files next to it: `disease_pathways.tsv` (the significant pathways) and
+`disease_seed_genes.tsv` (`gene_id`, `score`: the genes with
+`genetic_association` evidence — the GSEA ranking signature — minus any
+benchmark holdout). Stages 3 and 5 use the latter as the seed genes.
 
-A tiny hand-built example (18 genes, 5 gene sets including one deliberate
-ancestor/child near-duplicate pair and one scattered negative control) is
+A tiny hand-built example (30 genes of which 18 are seeds, 7 gene sets
+including one deliberate ancestor/child near-duplicate pair, one scattered
+negative control and one pathway with no seed gene) is
 checked in under `example_data/` — regenerate it with
 `python3 example_data/build_gsea_example.py`, then:
 
@@ -134,32 +143,32 @@ python3 pipeline/stage2_gsea_discovery.py --manifest example_data/example_run/ma
 **Expected output** (`example_data/example_run/disease_pathways.tsv`,
 columns per `schemas.DiseasePathwaysSchema`; exact `pval`/`fdr` floats jitter
 slightly run-to-run — blitzgsea's internal calibration isn't bit-for-bit
-deterministic even with a fixed seed — but the three pathways returned, their
-order, and `contains_target` are stable):
+deterministic even with a fixed seed — but the three pathways returned and
+their order are stable):
 
 ```
-set_id     gene_set                  source_db  pval       fdr        contains_target
-R-HSA-101  Child Broad Signaling     reactome   ~7e-05     ~3e-04     False
-R-HSA-300  Unrelated Weak Pathway    reactome   ~4e-04     ~9e-04     False
-R-HSA-200  Target Signaling Pathway  reactome   ~8e-04     ~1e-03     True
+set_id     gene_set                  source_db  pval       fdr
+R-HSA-101  Child Broad Signaling     reactome   ~8e-05     ~3e-04
+R-HSA-300  Unrelated Weak Pathway    reactome   ~4e-04     ~9e-04
+R-HSA-200  Signaling Pathway A       reactome   ~8e-04     ~1e-03
 ```
 
-The log line `GSEA: 18 seed genes, 4/5 gene sets tested, 3 significant`
+The log line `GSEA: 18 seed genes, 4/7 gene sets tested, 3 significant`
 confirms the mechanics that matter: `R-HSA-100` ("Ancestor Broad
-Signaling", Jaccard 0.83 against its child `R-HSA-101`) is the one set
-dropped by collapsing before testing (`Collapsed 1 near-duplicate gene
-set(s)`), so 4 of 5 are tested; `R-HSA-400` ("Scattered Noise Pathway", no
-coherent enrichment signal) is tested but excluded by the FDR filter, so 3
-of 4 are significant.
+Signaling", Jaccard 0.86 against its child `R-HSA-101`) is dropped by
+collapsing before testing (`Collapsed 1 near-duplicate gene set(s)`);
+`R-HSA-500` (one seed) and `R-HSA-600` (no seed) overlap the signature too
+little to be tested; `R-HSA-400` ("Scattered Noise Pathway", no coherent
+enrichment signal) is tested but excluded by the FDR filter, so 3 of 4 are
+significant. `disease_seed_genes.tsv` lists the 18 seed genes, strongest
+first.
 
-**Benchmark holdout** (`--benchmark-holdout-file`, for benchmark validation
-— see [`benchmarking/`](../benchmarking/README.md)): excludes genes from the
-disease-associated seed set before GSEA runs, so a
-literature-curated resistance-pair gene that happens to overlap Stage 2's
-own evidence doesn't validate itself. Genes are listed one per line
+**Benchmark holdout** (`--benchmark-holdout-file`, for benchmark
+validation): excludes genes from the seed set — both the GSEA signature and
+`disease_seed_genes.tsv` — so a held-out gene is never a seed and can only
+come back as a *candidate* in Stage 5, rather than validating itself. Genes are listed one per line
 (`#` comments allowed) and resolved to Ensembl IDs via Stage 1's
-`genes.parquet` — symbol, synonym, or bare Ensembl ID, the same resolution
-`pipeline/stage1_ingest.py` uses for `--target` — never matched directly against
+`genes.parquet` — symbol, synonym, or bare Ensembl ID (`stage1_ingest.resolve_gene`) — never matched directly against
 `ot_disease_subset` (which carries no symbol column at all). Example:
 
 ```
@@ -170,8 +179,11 @@ python3 pipeline/stage2_gsea_discovery.py --manifest example_data/example_run/ma
 `example_data/benchmark_holdout_example.txt` holds `OLDG17`, a *synonym*
 (not the approved symbol) for the gene at the core of `R-HSA-300`. Excluding
 it drops `R-HSA-300` to 4 genes — one below blitzgsea's minimum tested-set
-size — so it disappears from `disease_pathways.tsv` entirely (`GSEA tested 3
-pathways`, down from 4) rather than merely losing significance.
+size — so it disappears from `disease_pathways.tsv` entirely (`3/7 gene sets
+tested`, down from 4) rather than merely losing significance. G17 is no
+longer a seed (17 seeds), but `R-HSA-300` still contains seeds (G18–G21), so
+it stays in the Stage 3 graph and G17 is ranked as a candidate in Stage 5
+(4th of 8 with `--method topology` on the Stage 3 graph).
 
 `python3 -m pytest tests/test_gsea_discovery.py` runs the unit-level GSEA
 tests (`tests/test_gsea_discovery.py`, 8 tests): a deliberately-enriched
@@ -185,15 +197,19 @@ ancestor.
 
 **Setup:** `pip install networkx scipy pandas pandera pydantic pyarrow` (or `pip install -r requirements.txt`).
 
-**Run command**, after Stage 1 and Stage 2 have produced `manifest.json`/`disease_pathways.tsv`:
+**Run command**, after Stage 1 and Stage 2 have produced `manifest.json`, `disease_pathways.tsv` and `disease_seed_genes.tsv`:
 
 ```
 python3 pipeline/stage3_build_graph.py --manifest out/manifest.json
 ```
 
 Reads `gene_sets.parquet` and `interactions.parquet` via the manifest, and
-`disease_pathways.tsv` alongside it by default (override with
-`--disease-pathways`). Writes `graph_weight.npz`, `graph_sign.npz`,
+`disease_pathways.tsv` and `disease_seed_genes.tsv` alongside it by default
+(override with `--disease-pathways` / `--seed-genes`). The graph's nodes are
+all genes of the union of (a) the Stage 2 disease pathways and (b) every
+size-capped pathway that contains at least one seed gene — so each seed
+gene, its pathway-mates, and every gene on the disease pathways are in the
+graph. Writes `graph_weight.npz`, `graph_sign.npz`,
 `graph_gene_index.json`, and `graph_metadata.json` next to the manifest —
 not GraphML; see the module docstring for why.
 
@@ -207,19 +223,30 @@ python3 pipeline/stage3_build_graph.py --manifest example_data/example_run/manif
 **Expected output** (log line):
 
 ```
-INFO build_graph: Graph: 17 nodes, 136 edges (4 pathways in union, 2 interaction edges in scope, 1 dropped out of scope).
+INFO build_graph: Graph: 25 nodes, 258 edges (6 pathways: 3 disease, 6 with seed genes; 4 interaction edges added, 1 out of scope).
+INFO build_graph: Seed genes in the graph: 18/18.
 ```
 
-The one dropped interaction row (`G12 -> TARGET`) is deliberate: `G12`
-belongs only to `R-HSA-100`, the redundant ancestor pathway Stage 2's
-collapsing excluded from the union — proof that interaction edges really
-are scoped to the pathway-gene pool, not added genome-wide.
+Six of the seven pathways contain a seed gene, so they are all in the graph
+— including `R-HSA-100` (dropped by Stage 2's collapsing, but it contains
+seeds) and `R-HSA-500` (too few seeds for GSEA). Only `R-HSA-600`, the
+seedless pathway, is left out: its genes `N29`–`N33` are not nodes, and the
+one dropped interaction row (`N29 -> N22`) is dropped for that reason —
+proof that interaction edges really are scoped to the pathway-gene pool,
+not added genome-wide. `graph_metadata.json` records `n_seed_pathways`,
+`n_seed_genes_in_graph` and `n_seed_genes_total`.
+
+On a real disease with many genetic-association genes, rule (b) can pull in
+a large share of Reactome; check `scale_report.json`'s projected edge count
+and tighten `--max-set-size` in Stage 1 if the graph gets too big.
 
 `python3 -m pytest tests/test_build_graph.py` runs the unit-level graph
-tests (4 tests): the exact directed/signed edge list (with `source_db`
+tests (5 tests): the exact directed/signed edge list (with `source_db`
 tags) for a hand-built pathway + interaction fixture, the co-membership
-weight formula for both a small and a large (overlapping) pathway, and that
-a gene alone in its own pathway survives as an isolated node.
+weight formula for both a small and a large (overlapping) pathway, that
+a seed gene alone in its own pathway survives as an isolated node, and that
+the pathway union is exactly disease pathways + seed-containing pathways (a
+pathway with neither stays out).
 
 ## Running Stage 4 (`pipeline/stage4_genetic_evidence_weights.py`)
 
@@ -268,9 +295,14 @@ ENSG00000000003   0.95
 ENSG00000000004   0.92
 ```
 
+`ENSG...022` is not a seed but scores 0.5 from its `known_drug` row; the
+other non-seed genes score 0.
+
 `--edge-weight-mode product` (default `avg`) changes only the values written
-into `graph_weight.npz`; e.g. the target-`ENSG...002` edge is
+into `graph_weight.npz`; e.g. the `ENSG...001`→`ENSG...002` edge is
 `avg(0.60, 0.98) = 0.79` by default or `0.60 * 0.98 = 0.588` with `product`.
+Note that with `product`, every edge touching a gene without evidence gets
+weight 0, which cuts most non-seed genes off from RWR/BFWalk propagation.
 
 ## Running Stage 5 (`pipeline/stage5_score_candidates.py`)
 
@@ -285,24 +317,27 @@ python3 pipeline/stage5_score_candidates.py --graph-dir out/
 
 `--graph-dir` is the only required argument: it reads `graph_weight.npz`,
 `graph_sign.npz`, `graph_gene_index.json` and `graph_metadata.json` from
-there, takes the target node from the metadata's `resolved_target.gene_id`
-(override with `--target`), and writes `candidate_scores.tsv` alongside
-(override with `--out`).
+there, reads the seed genes from `disease_seed_genes.tsv` in the same
+directory (override with `--seed-genes`, any TSV with a `gene_id` column),
+and writes `candidate_scores.tsv` alongside (override with `--out`). Seed
+genes that are not graph nodes are dropped (logged); every graph gene that
+is not a seed is a candidate, so seeds never appear in the ranking.
 
 `--method` is a comma-separated subset of `{topology, rwr, bfwalk}`,
 **default `topology`**. `topology_score` is always emitted; `rwr_score` /
 `bfwalk_score` appear only when `rwr` / `bfwalk` is requested (e.g.
 `--method topology,rwr` or `--method rwr,bfwalk`). The output is ranked by
-the last requested method in the order topology, rwr, bfwalk. RWR
-knobs: `--restart-prob` (default 0.5; PageRank `alpha = 1 - restart_prob`)
-and `--node-weight-mix` (default 0.5 — on a Stage 4 graph, extra restart
-mass spread over genes by `genetic_evidence_score`; the target always keeps
-the largest share, so 0.5 leaves it ~2/3 of the restart mass; ignored on a
-Stage 3 graph).
+the last requested method in the order topology, rwr, bfwalk. All three
+start from the seed set:
+
+- `topology` = (1 + number of seed neighbours) / (1 + weighted
+  shortest-path distance from the nearest seed); unreachable genes score 0.
+- `rwr` = personalised PageRank restarting uniformly on the seeds.
+  `--restart-prob` (default 0.5; PageRank `alpha = 1 - restart_prob`).
 
 `bfwalk` runs [BFWalk](https://github.com/jedrzejkubica/BFWalk)
-(backtrack-free network propagation with in-degree normalisation) seeded on
-the target, on the same directed weighted graph. BFWalk needs edge weights in
+(backtrack-free network propagation with in-degree normalisation) with the
+seed genes as its seeds, on the same directed weighted graph. BFWalk needs edge weights in
 `]0, 1]`, so zero-weight edges (Stage 4 genes without evidence) are dropped —
 as in RWR, they carry no flow — and the remaining weights are divided by the
 largest one. Knobs: `--bfwalk-alpha` (attenuation coefficient, default 0.5)
@@ -320,26 +355,25 @@ Against the checked-in example (after Stages 1–4 have run, so
 python3 pipeline/stage5_score_candidates.py --graph-dir example_data/example_run --method topology,rwr
 ```
 
-**Expected output** (`example_data/example_run/candidate_scores.tsv`, top
-rows; columns per `schemas.CandidateScoresSchema`, ranked by `rwr_score`
-since `rwr` was requested — else by `topology_score`):
+**Expected output** (`example_data/example_run/candidate_scores.tsv`, all
+7 candidates; columns per `schemas.CandidateScoresSchema`, ranked by
+`rwr_score` since `rwr` was requested — else by `topology_score`):
 
 ```
 gene             topology_score  rwr_score
-ENSG00000000004  3.4545          0.0769
-ENSG00000000002  2.6480          0.0717
-ENSG00000000003  2.6197          0.0703
-ENSG00000000009  3.2522          0.0688
-ENSG00000000005  2.5616          0.0675
+ENSG00000000022  5.5287          0.0207
+ENSG00000000023  4.2752          0.0127
+ENSG00000000024  2.3020          0.0068
+ENSG00000000025  0.9866          0.0023
+ENSG00000000026  0.4949          0.0011
+ENSG00000000027  0.4949          0.0011
+ENSG00000000028  0.4949          0.0011
 ```
 
-The five weak "unrelated pathway" genes (`ENSG...017`–`021`) land at the
-bottom with scores near zero — they reach the target only by long paths and
-share none of its pathway neighbourhood, which is the negative-control
-behaviour the example is built to show. On the **Stage 3** graph (run
-`stage3_build_graph.py` but not `stage4_...` into the directory) the default
-`topology`-only ranking instead leads with `ENSG...002`, the target's
-direct interaction partner (`TARGET -> G2`, confidence 0.9).
+`N22`/`N23` share two pathways with 10–12 strong seeds and lead;
+`N24` shares one pathway with six seeds; `N25`–`N28` share a pathway with
+a single mid-strength seed, and `N25` is lifted above its pathway-mates by
+its interaction with seed `G2`. The 18 seeds are not in the table.
 
 The `gene` column is an **Ensembl gene ID** — the project's one canonical
 identifier (Decision 2), copied verbatim from `graph_gene_index.json`, not
@@ -353,14 +387,16 @@ are a display-time lookup (`genes.parquet`) in Stages 6/7, never written
 here.
 
 `python3 -m pytest tests/test_score_candidates.py` runs the unit-level
-tests (10 tests): hand-computed `topology_score` values on a small
-cycle+chain graph (both at the function level and end-to-end through a
-default `run()` with no `--method`), an isolated node scoring 0, RWR
-reconstructed as a full stationary distribution (non-negative, sums to 1)
-that favours the target's neighbours over far-away chain nodes, the
-node-weight blend pulling mass toward a high-evidence gene, and the
-output-column contract (`topology_score` always, `rwr_score` only when
-requested, target row excluded, unknown `--method` exits non-zero).
+tests (16 tests): hand-computed `topology_score` values on a small
+two-seed cycle+chain graph (both at the function level and end-to-end
+through a default `run()` with no `--method`), an isolated node scoring 0,
+RWR restarting on the seeds and reconstructed as a full stationary
+distribution (sums to 1), BFWalk following edge direction and ignoring
+zero-weight edges, `--seed-genes` overriding the default seed file (and a
+seed list without a `score` column), seeds outside the graph dropped, no
+seed in the graph / missing seed file exiting non-zero, and the
+output-column contract (`topology_score` always, `rwr_score`/`bfwalk_score`
+only when requested, seed rows excluded, unknown `--method` exits non-zero).
 
 ## Running Stage 6 (`pipeline/stage6_annotate_context.py`)
 
@@ -433,20 +469,21 @@ top rows; columns per `schemas.AnnotatedCandidatesSchema`, ranked by
 
 ```
 gene             topology_score  genetic_evidence_score  tractability  safety           n_safety_liabilities  composite_score
-ENSG00000000004  3.4545          0.92                    discovery     has_liabilities  1                     0.834
-ENSG00000000002  2.6480          0.98                    clinical      has_liabilities  2                     0.805
-ENSG00000000003  2.6197          0.95                    discovery     unknown          0                     0.790
-ENSG00000000009  3.2522          0.77                    unknown       unknown          0                     0.754
-ENSG00000000005  2.5616          0.89                    unknown       unknown          0                     0.712
+ENSG00000000022  5.5287          0.5                     clinical      has_liabilities  1                     0.800
+ENSG00000000023  4.2752          0.0                     unknown       unknown          0                     0.453
+ENSG00000000024  2.3020          0.0                     discovery     unknown          0                     0.295
+ENSG00000000025  0.9866          0.0                     clinical      unknown          0                     0.197
+ENSG00000000026  0.4949          0.0                     unknown       unknown          0                     0.050
 ```
 
-`ENSG...004` stays on top despite a safety liability because its proximity
-and genetic-evidence terms dominate; `ENSG...017`, clinically tractable but
-far from the target and weakly associated, lands near the bottom
-(`composite_score` ~0.16) — tractability alone can't lift a low-proximity
-candidate. The example's synthetic `ot_target_subset.parquet` covers 6 of
-the 17 genes; the other 11 are `unknown`/`unknown` and ranked purely on the
-score terms, never penalised for missing annotation.
+`ENSG...022` stays on top despite a safety liability because its proximity
+terms and its `known_drug` evidence dominate; `ENSG...025`, clinically
+tractable but close to only one seed, stays below `ENSG...023`/`024` —
+tractability alone can't lift a low-proximity candidate. Candidates are
+non-seed genes, so their `genetic_evidence_score` can only come from
+datatypes other than `genetic_association` (here `known_drug`). Genes absent
+from the synthetic `ot_target_subset.parquet` are `unknown`/`unknown` and
+ranked purely on the score terms, never penalised for missing annotation.
 
 `python3 -m pytest tests/test_annotate_context.py` runs the unit-level
 tests (9 tests): tractability bucketing and the safety flag/count, weight
@@ -465,11 +502,10 @@ to a numeric or `safe` value, in `build_annotations` and end-to-end.
 No web framework — `stage7_report.py` writes one self-contained HTML file
 using only the standard library for templating.
 
-**Orchestrator** — `run_pipeline.py` chains Stages 1–6 for one
-(target, disease):
+**Orchestrator** — `run_pipeline.py` chains Stages 1–6 for one disease:
 
 ```
-python3 pipeline/run_pipeline.py --target NOD2 --disease MONDO_0005265 \
+python3 pipeline/run_pipeline.py --disease MONDO_0005265 \
     --data-dir data/ --out-dir out/ --report
 ```
 
@@ -477,8 +513,7 @@ Each stage runs as its own subprocess (the same CLI as its "Running Stage
 N" section above). If one exits non-zero, `run_pipeline.py` prints which
 stage failed, its exit code and the exact command, and stops the run
 non-zero — the stage's own message (e.g. Stage 1's "Could not resolve
-`--target 'FOO'`. Did you mean: …?") is right above it, not buried under a
-traceback. `--report` additionally writes `out/report.html` at the end.
+`--disease 'FOO'` …") is right above it, not buried under a traceback. `--report` additionally writes `out/report.html` at the end.
 
 Offline, against the checked-in synthetic Stage 1 output (no real Open
 Targets / Reactome data needed) — this regenerates Stages 2–6 in place:
@@ -496,7 +531,7 @@ python3 pipeline/stage7_report.py --run-dir out/
 
 **What the report contains** (single file, opens in any browser):
 
-- header — target (HGNC symbol + Ensembl), disease, seed, Reactome / Open
+- header — disease, number of seed genes and candidates, random seed, Reactome / Open
   Targets versions, whether the graph is Stage 3 (structural) or Stage 4
   (genetic-evidence-weighted);
 - a **sortable** ranked table — `symbol`, `gene` (Ensembl), `composite`,
@@ -504,16 +539,13 @@ python3 pipeline/stage7_report.py --run-dir out/
   header to sort; `rwr`/`genetic ev.` columns appear only if those stages
   ran);
 - a **click-to-expand evidence trace** per candidate — its
-  `composite_breakdown` + weights, the pathways it shares with the target
-  (and the disease-relevant pathways it is merely a member of), its Open
+  `composite_breakdown` + weights, the graph pathways it shares with seed
+  genes (with the number of seeds in each; and the disease-relevant pathways
+  without seeds it is a member of), its Open
   Targets datatypes + scores (with the ones feeding `genetic_evidence_score`
-  flagged), and the signed interaction edges touching it (interactions to
-  non-graph genes are omitted, matching Stage 3's scoping);
-- a **static** "Benchmark validation" panel — the text of
-  `benchmarking/benchmark_summary.txt`, or, until that exists,
-  `benchmarking/benchmark_summary.example.txt` shown with a clear
-  "EXAMPLE — not a real validation run" label. Never recomputed here; see
-  [`benchmarking/`](../benchmarking/README.md).
+  flagged), and the signed interaction edges touching it (edges with a seed
+  are badged "with seed"; interactions to non-graph genes are omitted,
+  matching Stage 3's scoping).
 
 Genes are displayed by HGNC symbol; the Ensembl gene ID stays the internal
 key (its own column, and the anchor id for each detail block). Symbols are
@@ -524,31 +556,28 @@ other artifact is optional. A partial run directory still produces a
 report — missing trace inputs (`gene_sets.parquet`, `interactions.parquet`,
 `ot_disease_subset.parquet`, …) show that section as unavailable, a
 Stage-3-only run (no Stage 4) just drops the `rwr`/`genetic ev.` columns,
-no `genes.parquet` falls the symbol column back to Ensembl ids, and no
-benchmark summary shows a "not run yet" note — a header line lists whatever
-was missing.
+and no `genes.parquet` falls the symbol column back to Ensembl ids — a
+header line lists whatever was missing.
 
 **Expected output** (`example_data/example_run/report.html`, top of the
 ranked table — same ordering as Stage 6's `candidates_annotated.tsv`):
 
 ```
 #  symbol  gene             composite  topology  rwr     genetic ev.  tractability  safety
-1  GENE04  ENSG00000000004  0.834      3.455     0.0769  0.920        discovery     has_liabilities
-2  GENE02  ENSG00000000002  0.805      2.648     0.0717  0.980        clinical      has_liabilities
-3  GENE03  ENSG00000000003  0.790      2.620     0.0703  0.950        discovery     unknown
+1  GENE22  ENSG00000000022  0.800      5.529     0.0207  0.500        clinical      has_liabilities
+2  GENE23  ENSG00000000023  0.453      4.275     0.0127  0.000        unknown       unknown
+3  GENE24  ENSG00000000024  0.295      2.302     0.0068  0.000        discovery     unknown
 ```
 
-Expanding `GENE04` shows: shared pathways *Target Signaling Pathway* and
-*Scattered Noise Pathway*; also a member of *Child Broad Signaling*;
-`genetic_association` = 0.92 (feeds the genetic-evidence score); interaction
-`GENE04 → GENE09` (inhibiting, curated, confidence 0.60).
+Expanding `GENE25` shows: pathways shared with seed genes *Seed-Adjacent
+Pathway* (1 seed gene); no Open Targets rows for this disease; interaction
+`GENE02 → GENE25` (activating, curated, confidence 0.80, badged "with seed").
 
 `python3 -m pytest tests/test_stage7_report.py tests/test_run_pipeline.py`
-runs the tests (11): `evidence_trace`'s shared-pathway / graph-scoping /
+runs the tests (10): `evidence_trace`'s seed-pathway / graph-scoping /
 datatype logic on a hand-built run, the `feeds` flag going false when Stage
-4 did not run, the `benchmark_summary` real→example→none fallback,
-`build_report` producing a self-contained symbol-labelled HTML with one
-detail block per candidate and the benchmark panel, a partial run
+4 did not run, `build_report` producing a self-contained symbol-labelled
+HTML with one detail block per candidate, a partial run
 directory (only `manifest.json` + `candidates_annotated.tsv`) still
 rendering with the optional columns/trace sections marked unavailable, a
 `run_pipeline --from-manifest --report` smoke test that Stages 2–6 chain

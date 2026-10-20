@@ -1,6 +1,6 @@
 """pytest tests for stage7_report.py (Stage 7: HTML report).
 
-`evidence_trace` and `benchmark_summary` are tested as pure functions on
+`evidence_trace` is tested as a pure function on
 hand-built inputs; `build_report` is exercised end to end against the
 checked-in example run (read-only — the HTML is written to tmp_path).
 """
@@ -23,20 +23,21 @@ EXAMPLE_RUN = rep.REPO_DIR / "example_data" / "example_run"
 
 
 def _mini_run():
-    """T is the target. Pathways: P1 = {T, C} (target-containing),
-    P2 = {C, X} (disease-relevant, no target). Graph nodes: T, C, X.
+    """T is the only seed gene. Pathways: P1 = {T, C} (contains a seed),
+    P2 = {C, X} (disease-relevant, no seed). Graph nodes: T, C, X.
     Interaction C->T (in graph) and C->Y (Y not in graph -> dropped)."""
     T, C, X, Y = (f"ENSG{n:011d}" for n in (1, 2, 3, 4))
     gene_sets = pd.DataFrame(
         [
-            {"set_id": "P1", "set_name": "Target Pathway", "gene_id": T},
-            {"set_id": "P1", "set_name": "Target Pathway", "gene_id": C},
+            {"set_id": "P1", "set_name": "Seed Pathway", "gene_id": T},
+            {"set_id": "P1", "set_name": "Seed Pathway", "gene_id": C},
             {"set_id": "P2", "set_name": "Disease Pathway", "gene_id": C},
             {"set_id": "P2", "set_name": "Disease Pathway", "gene_id": X},
         ]
     )
     return {
-        "manifest": {"resolved_target": {"gene_id": T}},
+        "manifest": {},
+        "seeds": {T},
         "symbols": {T: "TGT", C: "CAND", X: "XG", Y: "YG"},
         "graph_index": {T, C, X},
         "admitted_datatypes": {"genetic_association", "known_drug"},
@@ -65,8 +66,8 @@ def test_evidence_trace_shared_pathways_and_scoping():
     run, (T, C, X, Y) = _mini_run()
     tr = rep.evidence_trace(C, run)
 
-    assert tr["shared_pathways"] == ["Target Pathway"]        # P1 has both C and T
-    assert tr["member_pathways"] == ["Disease Pathway"]       # P2 has C, not T
+    assert tr["shared_pathways"] == [("Seed Pathway", 1)]     # P1 has C and one seed (T)
+    assert tr["member_pathways"] == ["Disease Pathway"]       # P2 has C but no seed
 
     # datatypes: max over datasources, admitted flagged, disallowed still shown
     ga = next(d for d in tr["datatypes"] if d["datatype"] == "genetic_association")
@@ -80,7 +81,7 @@ def test_evidence_trace_shared_pathways_and_scoping():
     assert len(tr["interactions"]) == 1
     it = tr["interactions"][0]
     assert (it["a"], it["b"]) == ("CAND", "TGT")
-    assert it["to_target"] is True
+    assert it["to_seed"] is True
     assert it["sign"] == "activating (+)"
 
 
@@ -89,24 +90,6 @@ def test_evidence_trace_feeds_false_when_stage4_absent():
     run["stage4_ran"] = False
     tr = rep.evidence_trace(C, run)
     assert all(d["feeds"] is False for d in tr["datatypes"])
-
-
-# --------------------------------------------------------------------------
-# benchmark_summary fallback
-# --------------------------------------------------------------------------
-
-
-def test_benchmark_summary_prefers_real_then_example_then_none(tmp_path):
-    text, label = rep.benchmark_summary(tmp_path)
-    assert text is None and label == "none"
-
-    (tmp_path / "benchmark_summary.example.txt").write_text("example numbers")
-    text, label = rep.benchmark_summary(tmp_path)
-    assert text == "example numbers" and "EXAMPLE" in label
-
-    (tmp_path / "benchmark_summary.txt").write_text("real numbers")
-    text, label = rep.benchmark_summary(tmp_path)
-    assert text == "real numbers" and label == "benchmark_summary.txt"
 
 
 # --------------------------------------------------------------------------
@@ -141,10 +124,6 @@ def test_build_report_is_self_contained_and_symbol_labelled(tmp_path):
         # the ranked table shows the SYMBOL (as a link), with the Ensembl id in its own cell
         assert f">{sym}</a>" in tbody
         assert f'class="txt ens">{gid}<' in tbody
-
-    # benchmark panel embedded (the example placeholder, clearly labelled)
-    assert "Benchmark validation" in html
-    assert "EXAMPLE" in html
 
 
 # --------------------------------------------------------------------------

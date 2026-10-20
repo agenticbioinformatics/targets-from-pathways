@@ -1,7 +1,8 @@
 """Stage 3 - pathway-based gene-gene graph.
 
-Builds a directed, signed graph whose nodes are the genes of the disease-relevant pathways (Stage 2) plus
-the pathways containing the target. Edges come from pathway co-membership and from Reactome functional
+Builds a directed, signed graph whose nodes are all genes of the disease-relevant pathways (Stage 2) plus
+all genes of every pathway that contains a seed gene (Stage 2's disease_seed_genes.tsv, the disease's
+genetic-association genes). Edges come from pathway co-membership and from Reactome functional
 interactions between those genes. Writes graph_weight.npz, graph_sign.npz (sparse matrices sharing the
 row/column order in graph_gene_index.json) and graph_metadata.json.
 """
@@ -21,6 +22,7 @@ from stage0_schemas import (
     DiseasePathwaysSchema,
     GeneSetsSchema,
     InteractionsSchema,
+    SeedGenesSchema,
     fail,
     find_artifact,
     load_manifest,
@@ -33,15 +35,19 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         prog="stage3_build_graph.py",
         description="Stage 3 - pathway-based gene-gene graph. Builds a directed, signed graph from the union "
-        "of disease-relevant and target-containing pathways (co-membership edges + Reactome "
-        "functional-interaction edges). Reads gene_sets/interactions via --manifest and "
-        "disease_pathways.tsv; writes graph_weight.npz / graph_sign.npz / graph_gene_index.json / "
+        "of disease-relevant and seed-gene-containing pathways (co-membership edges + Reactome "
+        "functional-interaction edges). Reads gene_sets/interactions via --manifest, disease_pathways.tsv and "
+        "disease_seed_genes.tsv; writes graph_weight.npz / graph_sign.npz / graph_gene_index.json / "
         "graph_metadata.json.",
     )
     parser.add_argument("--manifest", required=True, type=Path, help="Path to Stage 1's manifest.json.")
     parser.add_argument(
         "--disease-pathways", type=Path, default=None,
         help="Path to Stage 2's disease_pathways.tsv. Default: next to --manifest.",
+    )
+    parser.add_argument(
+        "--seed-genes", type=Path, default=None,
+        help="Path to Stage 2's disease_seed_genes.tsv. Default: next to --manifest.",
     )
     parser.add_argument("--out-dir", type=Path, default=None, help="Output directory. Default: --manifest's directory.")
     return parser.parse_args(argv)
@@ -100,12 +106,12 @@ def add_interaction_edges(graph, interactions_df, pathway_genes):
     return int(in_scope.sum()), n_out_of_scope, n_duplicates
 
 
-def build_graph(gene_sets_df, disease_pathways_df, interactions_df, target_gene_id):
+def build_graph(gene_sets_df, disease_pathways_df, interactions_df, seed_gene_ids):
     disease_pathway_ids = set(disease_pathways_df["set_id"])
-    target_pathway_ids = set(gene_sets_df.loc[gene_sets_df["gene_id"] == target_gene_id, "set_id"])
-    if not target_pathway_ids:
-        logger.warning("Target gene %s is not in any pathway of gene_sets.parquet.", target_gene_id)
-    pathway_ids = disease_pathway_ids | target_pathway_ids
+    seed_pathway_ids = set(gene_sets_df.loc[gene_sets_df["gene_id"].isin(seed_gene_ids), "set_id"])
+    if not seed_pathway_ids:
+        logger.warning("None of the %d seed genes is in a pathway of gene_sets.parquet.", len(seed_gene_ids))
+    pathway_ids = disease_pathway_ids | seed_pathway_ids
 
     graph = nx.DiGraph()
     n_gene_pairs = add_comembership_edges(graph, gene_sets_df, pathway_ids)
@@ -114,7 +120,7 @@ def build_graph(gene_sets_df, disease_pathways_df, interactions_df, target_gene_
     stats = {
         "n_pathways_union": len(pathway_ids),
         "n_disease_pathways": len(disease_pathway_ids),
-        "n_target_pathways": len(target_pathway_ids),
+        "n_seed_pathways": len(seed_pathway_ids),
         "n_nodes": graph.number_of_nodes(),
         "n_edges": graph.number_of_edges(),
         "n_comembership_unordered_pairs": n_gene_pairs,
@@ -155,12 +161,20 @@ def run(args):
     if not disease_pathways_path.exists():
         fail(f"--disease-pathways {disease_pathways_path} does not exist (run stage2_gsea_discovery.py first?).")
     disease_pathways_df = DiseasePathwaysSchema.validate(pd.read_csv(disease_pathways_path, sep="\t"))
+    seed_genes_path = args.seed_genes or args.manifest.parent / "disease_seed_genes.tsv"
+    if not seed_genes_path.exists():
+        fail(f"--seed-genes {seed_genes_path} does not exist (run stage2_gsea_discovery.py first?).")
+    seed_gene_ids = set(SeedGenesSchema.validate(pd.read_csv(seed_genes_path, sep="\t"))["gene_id"])
 
-    graph, stats = build_graph(gene_sets_df, disease_pathways_df, interactions_df, manifest.resolved_target.gene_id)
-    logger.info("Graph: %d nodes, %d edges (%d pathways, %d interaction edges added, %d out of scope).",
-                stats["n_nodes"], stats["n_edges"], stats["n_pathways_union"],
-                stats["n_interaction_edges_added"], stats["n_interaction_edges_out_of_scope"])
+    graph, stats = build_graph(gene_sets_df, disease_pathways_df, interactions_df, seed_gene_ids)
+    logger.info("Graph: %d nodes, %d edges (%d pathways: %d disease, %d with seed genes; "
+                "%d interaction edges added, %d out of scope).",
+                stats["n_nodes"], stats["n_edges"], stats["n_pathways_union"], stats["n_disease_pathways"],
+                stats["n_seed_pathways"], stats["n_interaction_edges_added"], stats["n_interaction_edges_out_of_scope"])
     weight, sign, gene_index = graph_to_sparse(graph)
+    # Seeds that are in no size-capped pathway are not graph nodes, so they cannot seed Stage 5's propagation.
+    n_seeds_in_graph = len(seed_gene_ids & set(gene_index))
+    logger.info("Seed genes in the graph: %d/%d.", n_seeds_in_graph, len(seed_gene_ids))
 
     reactome_sources = []
     for source in manifest.sources:
@@ -170,8 +184,9 @@ def run(args):
         "created_at": datetime.now(timezone.utc).isoformat(),
         "seed": manifest.seed,
         "reactome_sources": reactome_sources,
-        "resolved_target": manifest.resolved_target.model_dump(mode="json"),
         "disease": manifest.disease.model_dump(mode="json"),
+        "n_seed_genes_in_graph": n_seeds_in_graph,
+        "n_seed_genes_total": len(seed_gene_ids),
     }
     metadata.update(stats)
 

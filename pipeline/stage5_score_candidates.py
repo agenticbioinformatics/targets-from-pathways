@@ -1,11 +1,12 @@
-"""Stage 5 - candidate scoring.
+"""Stage 5 - candidate scoring by network propagation from the disease's seed genes.
 
-Scores every non-target gene of the Stage 3 or Stage 4 graph by its proximity to the target and writes
-candidate_scores.tsv. Methods (--method):
-- topology (always computed): (1 + common neighbours with the target) / (1 + weighted shortest-path distance
-  from the target, each edge costing 1 / weight). Unreachable genes score 0.
-- rwr (opt-in): random walk with restart on the target (personalised PageRank).
-- bfwalk (opt-in): BFWalk backtrack-free network propagation seeded on the target
+Seeds are the disease's genetic-association genes (Stage 2's disease_seed_genes.tsv) that are nodes of the
+Stage 3 or Stage 4 graph. Every other graph gene is a candidate, scored by its proximity to the seeds, and
+written to candidate_scores.tsv. Methods (--method):
+- topology (always computed): (1 + number of seed neighbours) / (1 + weighted shortest-path distance from
+  the nearest seed, each edge costing 1 / weight). Unreachable genes score 0.
+- rwr (opt-in): random walk with restart, restarting uniformly on the seeds (personalised PageRank).
+- bfwalk (opt-in): BFWalk backtrack-free network propagation from the seeds
   (https://github.com/jedrzejkubica/BFWalk). Needs the bfwalk package (for now from TestPyPI, see README).
 The output is ranked by the last requested method in the order topology, rwr, bfwalk.
 """
@@ -17,7 +18,7 @@ from pathlib import Path
 import networkx as nx
 import pandas as pd
 
-from stage0_schemas import ENSEMBL_GENE_ID_PATTERN, CandidateScoresSchema, fail, load_graph
+from stage0_schemas import ENSEMBL_GENE_ID_PATTERN, CandidateScoresSchema, SeedGenesSchema, fail, load_graph
 
 logger = logging.getLogger("score_candidates")
 
@@ -30,22 +31,19 @@ ZERO_WEIGHT_HOP_COST = 1.0
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         prog="stage5_score_candidates.py",
-        description="Stage 5 - candidate scoring. Ranks every non-target graph gene by proximity to the "
-        "target: topology (always) and, opt-in via --method, random-walk-with-restart and/or BFWalk. Reads the "
-        "graph files in --graph-dir (Stage 3 or Stage 4); writes candidate_scores.tsv.",
+        description="Stage 5 - candidate scoring. Propagates from the disease's seed genes over the graph and "
+        "ranks every non-seed graph gene: topology (always) and, opt-in via --method, random-walk-with-restart "
+        "and/or BFWalk. Reads the graph files in --graph-dir (Stage 3 or Stage 4) and the seed genes "
+        "(--seed-genes); writes candidate_scores.tsv.",
     )
     parser.add_argument("--graph-dir", required=True, type=Path, help="Directory with the Stage 3/4 graph files.")
+    parser.add_argument("--seed-genes", type=Path, default=None,
+                        help="Seed genes: a TSV with a gene_id column (Stage 2's disease_seed_genes.tsv). "
+                        "Default: <graph-dir>/disease_seed_genes.tsv.")
     parser.add_argument("--method", default="topology",
                         help="Comma-separated subset of {topology, rwr, bfwalk}. Default: topology (always computed).")
-    parser.add_argument("--target", default=None,
-                        help="Target Ensembl gene ID. Default: resolved_target.gene_id from graph_metadata.json.")
     parser.add_argument("--restart-prob", type=float, default=0.5,
                         help="RWR restart probability (0 < p < 1); PageRank alpha = 1 - p. Default: 0.5.")
-    parser.add_argument(
-        "--node-weight-mix", type=float, default=0.5,
-        help="RWR on a Stage 4 graph only: extra restart mass (in units of the target's) spread over genes by "
-        "genetic-evidence score. 0 = restart on the target alone. Default: 0.5.",
-    )
     parser.add_argument("--bfwalk-alpha", type=float, default=0.5,
                         help="BFWalk attenuation coefficient (0 < alpha < 1). Default: 0.5.")
     parser.add_argument("--bfwalk-threads", type=int, default=0,
@@ -67,6 +65,19 @@ def parse_methods(raw_methods):
     return methods
 
 
+def read_seeds(seeds_path, gene_index):
+    """Return the seed genes that are graph nodes, sorted. Seeds outside the graph (in no size-capped
+    pathway) cannot propagate anything, so they are dropped with a log line."""
+    if not seeds_path.exists():
+        fail(f"--seed-genes {seeds_path} does not exist (run stage2_gsea_discovery.py first?).")
+    all_seeds = set(SeedGenesSchema.validate(pd.read_csv(seeds_path, sep="\t"))["gene_id"])
+    seeds = sorted(all_seeds & set(gene_index))
+    logger.info("Seeds: %d/%d seed genes are graph nodes (%s).", len(seeds), len(all_seeds), seeds_path)
+    if not seeds:
+        fail(f"None of the {len(all_seeds)} seed genes in {seeds_path} is a node of the graph.")
+    return seeds
+
+
 def build_digraph(weight, gene_index):
     """Each edge gets "weight" (used by RWR, 0 stays 0 so evidence-free edges carry no flow) and
     "cost" (1 / weight, used for shortest paths)."""
@@ -83,66 +94,42 @@ def build_digraph(weight, gene_index):
     return graph
 
 
-def topology_scores(graph, target):
-    distance_from_target = nx.single_source_dijkstra_path_length(graph, target, weight="cost")
-    # Co-membership links all genes of a pathway, so shared neighbours approximate shared pathways.
+def topology_scores(graph, seeds):
+    distance_from_seeds = nx.multi_source_dijkstra_path_length(graph, set(seeds), weight="cost")
+    # Co-membership links all genes of a pathway, so seed neighbours approximate pathways shared with seeds.
     undirected = graph.to_undirected(as_view=True)
-    target_neighbours = set(undirected.neighbors(target))
+    seed_set = set(seeds)
 
     scores = {}
     for gene in graph.nodes:
-        if gene == target:
+        if gene in seed_set:
             continue
-        if gene not in distance_from_target:
+        if gene not in distance_from_seeds:
             scores[gene] = 0.0
             continue
-        n_common = len(target_neighbours & set(undirected.neighbors(gene)))
-        scores[gene] = (1.0 + n_common) / (1.0 + distance_from_target[gene])
+        n_seed_neighbours = len(seed_set & set(undirected.neighbors(gene)))
+        scores[gene] = (1.0 + n_seed_neighbours) / (1.0 + distance_from_seeds[gene])
     return scores
 
 
-def restart_distribution(metadata, gene_index, target, node_weight_mix):
-    """The target always gets 1 unit of restart mass. On a Stage 4 graph, node_weight_mix more units are
-    spread over genes in proportion to their evidence score, so the target keeps at least 1 / (1 + mix)."""
-    restart = {}
-    for gene in gene_index:
-        restart[gene] = 0.0
-    restart[target] = 1.0
-
-    evidence_scores = metadata.get("genetic_evidence_score")
-    if not evidence_scores:
-        return restart
-    total_evidence = 0.0
-    for gene in gene_index:
-        total_evidence += max(0.0, float(evidence_scores.get(gene, 0.0)))
-    if total_evidence <= 0:
-        return restart
-
-    mix = max(node_weight_mix, 0.0)
-    for gene in gene_index:
-        restart[gene] += mix * max(0.0, float(evidence_scores.get(gene, 0.0))) / total_evidence
-    total_mass = sum(restart.values())
-    for gene in gene_index:
-        restart[gene] = restart[gene] / total_mass
-    logger.info("RWR restart: target keeps %.2f of the mass (--node-weight-mix=%.2f).", restart[target], mix)
-    return restart
-
-
-def rwr_scores(graph, gene_index, target, metadata, restart_prob, node_weight_mix):
+def rwr_scores(graph, seeds, restart_prob):
     if not 0.0 < restart_prob < 1.0:
         fail(f"--restart-prob must be strictly between 0 and 1 (got {restart_prob}).")
-    restart = restart_distribution(metadata, gene_index, target, node_weight_mix)
+    restart = {}
+    for gene in seeds:
+        restart[gene] = 1.0 / len(seeds)
     # networkx PageRank is a deterministic power iteration, so no seed is needed.
     pagerank = nx.pagerank(graph, alpha=1.0 - restart_prob, personalization=restart, weight="weight")
+    seed_set = set(seeds)
     scores = {}
     for gene in graph.nodes:
-        if gene != target:
+        if gene not in seed_set:
             scores[gene] = pagerank[gene]
     return scores
 
 
-def bfwalk_scores(weight, gene_index, target, alpha, threads):
-    """BFWalk seeded on the target, on the directed weighted graph. BFWalk needs edge weights in ]0, 1], so
+def bfwalk_scores(weight, gene_index, seeds, alpha, threads):
+    """BFWalk from the seeds, on the directed weighted graph. BFWalk needs edge weights in ]0, 1], so
     zero-weight edges are dropped (as in RWR, they carry no flow) and the rest are divided by the largest."""
     if not 0.0 < alpha < 1.0:
         fail(f"--bfwalk-alpha must be strictly between 0 and 1 (got {alpha}).")
@@ -162,50 +149,47 @@ def bfwalk_scores(weight, gene_index, target, alpha, threads):
     node2idx = {}
     for i, gene in enumerate(gene_index):
         node2idx[gene] = i
-    seeds = [0.0] * len(gene_index)
-    seeds[node2idx[target]] = 1.0
+    seeds_vector = [0.0] * len(gene_index)
+    for gene in seeds:
+        seeds_vector[node2idx[gene]] = 1.0
     logger.info("BFWalk: %d edges with weight > 0 (scaled by max weight %.3g), alpha=%.2f.",
                 len(network), max_weight, alpha)
-    raw_scores = calculate_scores(network, node2idx, seeds, alpha=alpha, threads=threads)
+    raw_scores = calculate_scores(network, node2idx, seeds_vector, alpha=alpha, threads=threads)
 
+    seed_set = set(seeds)
     scores = {}
     for gene, score in zip(gene_index, raw_scores):
-        if gene != target:
+        if gene not in seed_set:
             scores[gene] = float(score)
     return scores
 
 
 def run(args):
     methods = parse_methods(args.method)
-    weight, _, gene_index, metadata = load_graph(args.graph_dir)
+    weight, _, gene_index, _ = load_graph(args.graph_dir)
     for gene in gene_index:
         if not ENSEMBL_GENE_ID_PATTERN.match(gene):
             fail(f"Graph gene index has a non-Ensembl ID: {gene}")
 
-    target = args.target or metadata.get("resolved_target", {}).get("gene_id")
-    if not target:
-        fail("No --target given and graph_metadata.json has no resolved_target.gene_id.")
-    if target not in gene_index:
-        fail(f"Target {target} is not a node in this graph ({len(gene_index)} nodes).")
-    logger.info("Scoring %d candidates against %s (methods: %s).", len(gene_index) - 1, target, ",".join(methods))
-
-    graph = build_digraph(weight, gene_index)
+    seeds = read_seeds(args.seed_genes or args.graph_dir / "disease_seed_genes.tsv", gene_index)
+    seed_set = set(seeds)
     candidates = []
     for gene in gene_index:
-        if gene != target:
+        if gene not in seed_set:
             candidates.append(gene)
+    logger.info("Scoring %d candidates from %d seeds (methods: %s).", len(candidates), len(seeds), ",".join(methods))
     if not candidates:
-        logger.warning("Graph has no nodes other than the target - writing an empty ranking.")
+        logger.warning("Every graph gene is a seed - writing an empty ranking.")
 
+    graph = build_digraph(weight, gene_index)
     result = pd.DataFrame({"gene": pd.Series(candidates, dtype="object")})
-    result["topology_score"] = result["gene"].map(topology_scores(graph, target)).astype(float)
+    result["topology_score"] = result["gene"].map(topology_scores(graph, seeds)).astype(float)
     rank_column = "topology_score"
     if "rwr" in methods:
-        scores = rwr_scores(graph, gene_index, target, metadata, args.restart_prob, args.node_weight_mix)
-        result["rwr_score"] = result["gene"].map(scores).astype(float)
+        result["rwr_score"] = result["gene"].map(rwr_scores(graph, seeds, args.restart_prob)).astype(float)
         rank_column = "rwr_score"
     if "bfwalk" in methods:
-        scores = bfwalk_scores(weight, gene_index, target, args.bfwalk_alpha, args.bfwalk_threads)
+        scores = bfwalk_scores(weight, gene_index, seeds, args.bfwalk_alpha, args.bfwalk_threads)
         result["bfwalk_score"] = result["gene"].map(scores).astype(float)
         rank_column = "bfwalk_score"
 

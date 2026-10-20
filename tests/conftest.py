@@ -73,7 +73,6 @@ def patched_acquisition(monkeypatch, tmp_path):
 def make_args(out_dir: Path, data_dir: Path, **overrides) -> argparse.Namespace:
     """Build an stage1_ingest.py CLI Namespace without going through argv parsing."""
     defaults = dict(
-        target="TP53",
         disease="EFO_9000001",
         data_dir=data_dir,
         out_dir=out_dir,

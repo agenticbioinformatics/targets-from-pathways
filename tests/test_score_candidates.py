@@ -1,37 +1,28 @@
-"""pytest tests for stage5_score_candidates.py (Stage 5: candidate scoring).
+"""pytest tests for stage5_score_candidates.py (Stage 5: propagation from seed genes).
 
-Two hand-built graphs, both with unit edge weights so every hop costs 1.0
-and shortest-path distances are hand-computable:
+A hand-built 6-node graph with unit edge weights, so every hop costs 1.0
+and shortest-path distances are hand-computable. Two seeds, S1 and S2:
 
-- a 5-node fixture (below) driving the function-level topology/RWR checks;
-- a separate 6-node fixture with a longer directed chain
-  (``_write_e2e_graph_dir``) driving the two end-to-end ``run()`` tests
-  that assert the exact ``topology_score`` values, the absent-vs-present
-  ``rwr_score`` column, and that RWR is a proper probability distribution.
+    S1 <-> A -> B -> C        (S1<->A is a short cycle; A->B->C a chain)
+    S1 -> D <- S2             (D is a direct neighbour of both seeds)
 
-5-node fixture — unit edge weights everywhere, so every hop costs 1.0 and
-shortest-path distances are hand-computable:
+Directed edges: S1->A, A->S1, A->B, B->C, S1->D, S2->D.
 
-    T <-> A -> B -> C        (T<->A is the "short cycle"; A->B->C the chain)
-    T -> D                   (D is a direct neighbour of T)
+Distances from the nearest seed: A=1, D=1, B=2, C=3 (all reachable).
 
-Directed edges: T->A, A->T, A->B, B->C, T->D.
+Undirected seed neighbours:
+- A: neighbours {S1, B}  -> 1 seed
+- D: neighbours {S1, S2} -> 2 seeds
+- B: neighbours {A, C}   -> 0
+- C: neighbours {B}      -> 0
 
-Distances from T: A=1, B=2, C=3, D=1  (all reachable).
+topology_score = (1 + seed neighbours) / (1 + distance):
+- D: 3/2 = 1.5
+- A: 2/2 = 1.0
+- B: 1/3 ~ 0.3333
+- C: 1/4 = 0.25
 
-Undirected common neighbours with T (T's undirected neighbours = {A, D}):
-- A: neighbours {T, B}          -> common {} -> 0
-- B: neighbours {A, C}          -> common {A} -> 1
-- C: neighbours {B}             -> common {} -> 0
-- D: neighbours {T}             -> common {} -> 0
-
-topology_score = (1 + common_neighbours) / (1 + distance):
-- A: 1/2   = 0.5
-- B: 2/3   ~ 0.6667
-- C: 1/4   = 0.25
-- D: 1/2   = 0.5
-
-So the topology ranking is B > A == D > C.
+So the topology ranking is D > A > B > C, and seeds are never candidates.
 """
 
 from __future__ import annotations
@@ -39,15 +30,18 @@ from __future__ import annotations
 import json
 
 import networkx as nx
+import numpy as np
 import pandas as pd
 import pytest
 import scipy.sparse as sp
 
 import stage5_score_candidates as sc
 
-T, A, B, C, D = (f"ENSG{n:011d}" for n in (1, 2, 3, 4, 5))
-GENE_INDEX = [T, A, B, C, D]
-EDGES = {(T, A): 1.0, (A, T): 1.0, (A, B): 1.0, (B, C): 1.0, (T, D): 1.0}
+S1, S2, A, B, C, D = (f"ENSG{n:011d}" for n in (1, 2, 3, 4, 5, 6))
+GENE_INDEX = [S1, S2, A, B, C, D]
+SEEDS = [S1, S2]
+EDGES = {(S1, A): 1.0, (A, S1): 1.0, (A, B): 1.0, (B, C): 1.0, (S1, D): 1.0, (S2, D): 1.0}
+EXPECTED_TOPOLOGY = {D: 1.5, A: 1.0, B: 1 / 3, C: 0.25}
 
 
 def _weight_matrix() -> sp.csr_matrix:
@@ -60,15 +54,25 @@ def _weight_matrix() -> sp.csr_matrix:
     return sp.csr_matrix((data, (rows, cols)), shape=(len(GENE_INDEX), len(GENE_INDEX)))
 
 
-def _write_graph_dir(path, *, node_weights: dict | None = None) -> None:
+def _write_graph_dir(path, seeds_tsv: str | None = None) -> None:
     weight = _weight_matrix()
     sp.save_npz(path / "graph_weight.npz", weight)
     sp.save_npz(path / "graph_sign.npz", sp.csr_matrix(weight.shape, dtype="int8"))
     (path / "graph_gene_index.json").write_text(json.dumps(GENE_INDEX))
-    metadata = {"seed": 0, "resolved_target": {"gene_id": T, "input": "T", "symbol": "T"}}
-    if node_weights is not None:
-        metadata["genetic_evidence_score"] = node_weights
-    (path / "graph_metadata.json").write_text(json.dumps(metadata))
+    (path / "graph_metadata.json").write_text(json.dumps({"seed": 0}))
+    if seeds_tsv is None:
+        seeds_tsv = f"gene_id\tscore\n{S1}\t0.9\n{S2}\t0.4\n"
+    (path / "disease_seed_genes.tsv").write_text(seeds_tsv)
+
+
+def _run(tmp_path, method=None, extra=()):
+    """Run Stage 5 end to end. ``method=None`` omits ``--method`` entirely,
+    exercising the argparse default."""
+    argv = ["--graph-dir", str(tmp_path), *extra]
+    if method is not None:
+        argv += ["--method", method]
+    out = sc.run(sc.parse_args(argv))
+    return pd.read_csv(out, sep="\t")
 
 
 # --------------------------------------------------------------------------
@@ -78,28 +82,17 @@ def _write_graph_dir(path, *, node_weights: dict | None = None) -> None:
 
 def test_topology_scores_match_hand_computed():
     graph = sc.build_digraph(_weight_matrix(), GENE_INDEX)
-    scores = sc.topology_scores(graph, T)
-
-    assert scores[A] == pytest.approx(0.5)
-    assert scores[B] == pytest.approx(2.0 / 3.0)
-    assert scores[C] == pytest.approx(0.25)
-    assert scores[D] == pytest.approx(0.5)
-    assert T not in scores  # target is never its own candidate
-    # B (shares neighbour A with T) outranks the equidistant-but-lonelier D.
-    assert scores[B] > scores[D] > scores[C]
+    scores = sc.topology_scores(graph, SEEDS)
+    assert scores == pytest.approx(EXPECTED_TOPOLOGY)
+    assert S1 not in scores and S2 not in scores  # seeds are never candidates
 
 
 def test_unreachable_node_scores_zero():
-    # An isolated 6th node with no edges at all — reachable from nothing.
-    import numpy as np
-
-    E = f"ENSG{6:011d}"
-    idx = GENE_INDEX + [E]
-    dense = np.zeros((6, 6))
-    dense[:5, :5] = _weight_matrix().toarray()
-    graph = sc.build_digraph(sp.csr_matrix(dense), idx)
-    scores = sc.topology_scores(graph, T)
-    assert scores[E] == 0.0
+    E = f"ENSG{7:011d}"
+    dense = np.zeros((7, 7))
+    dense[:6, :6] = _weight_matrix().toarray()
+    graph = sc.build_digraph(sp.csr_matrix(dense), GENE_INDEX + [E])
+    assert sc.topology_scores(graph, SEEDS)[E] == 0.0
 
 
 # --------------------------------------------------------------------------
@@ -107,29 +100,31 @@ def test_unreachable_node_scores_zero():
 # --------------------------------------------------------------------------
 
 
-def test_rwr_is_a_probability_distribution_and_favours_neighbours():
+def test_rwr_restarts_on_seeds_and_favours_their_neighbours():
     graph = sc.build_digraph(_weight_matrix(), GENE_INDEX)
-    scores = sc.rwr_scores(
-        graph, GENE_INDEX, T, metadata={}, restart_prob=0.5, node_weight_mix=0.5
-    )
-    assert T not in scores
+    scores = sc.rwr_scores(graph, SEEDS, restart_prob=0.5)
+    assert S1 not in scores and S2 not in scores
     assert all(v >= 0 for v in scores.values())
-    # candidates + the target's retained restart mass sum to ~1
+    # candidates + the seeds' retained mass sum to 1, so the candidates alone sum to < 1
     assert 0.0 < sum(scores.values()) < 1.0
-    # a direct neighbour of the restart node beats the tail of the chain
-    assert scores[A] > scores[C]
+    # D (fed by both seeds) and A (next to S1) beat the tail of the chain
+    assert min(scores[D], scores[A]) > scores[C]
 
 
-def test_rwr_node_weight_blend_shifts_mass_toward_high_evidence_gene():
+def test_rwr_full_distribution_sums_to_one():
     graph = sc.build_digraph(_weight_matrix(), GENE_INDEX)
-    plain = sc.rwr_scores(graph, GENE_INDEX, T, metadata={}, restart_prob=0.5, node_weight_mix=0.5)
-    # C is far from T but carries all the genetic evidence.
-    blended = sc.rwr_scores(
-        graph, GENE_INDEX, T,
-        metadata={"genetic_evidence_score": {C: 1.0, A: 0.0, B: 0.0, D: 0.0, T: 0.0}},
-        restart_prob=0.5, node_weight_mix=0.5,
-    )
-    assert blended[C] > plain[C]
+    restart = {S1: 0.5, S2: 0.5}
+    full = nx.pagerank(graph, alpha=0.5, personalization=restart, weight="weight")
+    assert sum(full.values()) == pytest.approx(1.0)
+    scores = sc.rwr_scores(graph, SEEDS, restart_prob=0.5)
+    for gene, score in scores.items():
+        assert score == pytest.approx(full[gene])
+
+
+def test_rwr_rejects_bad_restart_prob():
+    graph = sc.build_digraph(_weight_matrix(), GENE_INDEX)
+    with pytest.raises(SystemExit):
+        sc.rwr_scores(graph, SEEDS, restart_prob=1.0)
 
 
 # --------------------------------------------------------------------------
@@ -137,60 +132,43 @@ def test_rwr_node_weight_blend_shifts_mass_toward_high_evidence_gene():
 # --------------------------------------------------------------------------
 
 
-def test_bfwalk_follows_edge_direction_and_favours_neighbours():
+def test_bfwalk_follows_edge_direction_and_attenuates():
     pytest.importorskip("BFWalk.bfwalk")
-    scores = sc.bfwalk_scores(_weight_matrix(), GENE_INDEX, T, alpha=0.5, threads=1)
-    assert T not in scores
+    scores = sc.bfwalk_scores(_weight_matrix(), GENE_INDEX, SEEDS, alpha=0.5, threads=1)
+    assert S1 not in scores and S2 not in scores
     assert all(v >= 0 for v in scores.values())
-    # the walk spreads T -> A -> B -> C, attenuating at each hop
+    # the walk spreads S1 -> A -> B -> C, attenuating at each hop
     assert scores[A] > scores[B] > scores[C] > 0
+    assert scores[D] > 0
 
 
 def test_bfwalk_ignores_zero_weight_edges_and_rescales_weights():
     pytest.importorskip("BFWalk.bfwalk")
-    weight = _weight_matrix() * 4.0  # weights > 1 are rescaled into ]0, 1]
-    weight = weight.tolil()
-    weight[GENE_INDEX.index(T), GENE_INDEX.index(D)] = 0.0  # evidence-free edge carries no flow
-    scores = sc.bfwalk_scores(weight.tocsr(), GENE_INDEX, T, alpha=0.5, threads=1)
+    weight = (_weight_matrix() * 4.0).tolil()  # weights > 1 are rescaled into ]0, 1]
+    weight[GENE_INDEX.index(S1), GENE_INDEX.index(D)] = 0.0  # evidence-free edges carry no flow
+    weight[GENE_INDEX.index(S2), GENE_INDEX.index(D)] = 0.0
+    scores = sc.bfwalk_scores(weight.tocsr(), GENE_INDEX, SEEDS, alpha=0.5, threads=1)
     assert scores[D] == 0.0
     assert scores[A] > 0
 
 
 def test_bfwalk_rejects_bad_alpha():
     with pytest.raises(SystemExit):
-        sc.bfwalk_scores(_weight_matrix(), GENE_INDEX, T, alpha=1.5, threads=1)
-
-
-def test_topology_rwr_bfwalk_emits_all_columns_ranked_by_bfwalk(tmp_path):
-    pytest.importorskip("BFWalk.bfwalk")
-    _write_graph_dir(tmp_path)
-    df = _run(tmp_path, "topology,rwr,bfwalk")
-    assert list(df.columns) == ["gene", "topology_score", "rwr_score", "bfwalk_score"]
-    assert df["bfwalk_score"].is_monotonic_decreasing
+        sc.bfwalk_scores(_weight_matrix(), GENE_INDEX, SEEDS, alpha=1.5, threads=1)
 
 
 # --------------------------------------------------------------------------
-# output contract (run() round-trip)
+# run(): seeds input and output contract
 # --------------------------------------------------------------------------
 
 
-def _run(tmp_path, method=None):
-    """Run Stage 5 end to end. ``method=None`` omits ``--method`` entirely,
-    exercising the argparse default."""
-    argv = ["--graph-dir", str(tmp_path)]
-    if method is not None:
-        argv += ["--method", method]
-    out = sc.run(sc.parse_args(argv))
-    return pd.read_csv(out, sep="\t")
-
-
-def test_default_method_emits_only_topology_score(tmp_path):
+def test_default_run_emits_exact_topology_scores_only(tmp_path):
     _write_graph_dir(tmp_path)
-    df = _run(tmp_path, "topology")
+    df = _run(tmp_path)  # no --method -> argparse default
     assert list(df.columns) == ["gene", "topology_score"]
-    assert T not in set(df["gene"])  # target excluded
-    assert len(df) == 4
-    assert df.iloc[0]["gene"] == B  # ranked by topology_score, B on top
+    assert set(df["gene"]) == {A, B, C, D}  # seeds excluded
+    assert list(df["gene"]) == [D, A, B, C]  # ranked by topology_score
+    assert dict(zip(df["gene"], df["topology_score"])) == pytest.approx(EXPECTED_TOPOLOGY)
 
 
 def test_topology_rwr_emits_both_columns_ranked_by_rwr(tmp_path):
@@ -203,90 +181,45 @@ def test_topology_rwr_emits_both_columns_ranked_by_rwr(tmp_path):
 def test_rwr_only_still_emits_topology_score(tmp_path):
     _write_graph_dir(tmp_path)
     df = _run(tmp_path, "rwr")
-    assert "topology_score" in df.columns
-    assert "rwr_score" in df.columns
+    assert {"topology_score", "rwr_score"} <= set(df.columns)
+
+
+def test_topology_rwr_bfwalk_emits_all_columns_ranked_by_bfwalk(tmp_path):
+    pytest.importorskip("BFWalk.bfwalk")
+    _write_graph_dir(tmp_path)
+    df = _run(tmp_path, "topology,rwr,bfwalk")
+    assert list(df.columns) == ["gene", "topology_score", "rwr_score", "bfwalk_score"]
+    assert df["bfwalk_score"].is_monotonic_decreasing
+
+
+def test_seed_list_without_score_and_seeds_outside_graph(tmp_path):
+    # A hand-made seed list: gene_id only, plus one seed that is not a graph node (dropped).
+    outside = f"ENSG{99:011d}"
+    _write_graph_dir(tmp_path, seeds_tsv=f"gene_id\n{S1}\n{outside}\n")
+    seeds_path = tmp_path / "my_seeds.tsv"
+    seeds_path.write_text(f"gene_id\n{S2}\n")
+    # --seed-genes overrides the default disease_seed_genes.tsv
+    df = _run(tmp_path, extra=["--seed-genes", str(seeds_path)])
+    assert S2 not in set(df["gene"]) and S1 in set(df["gene"])
+    # the default file: S1 is the only seed in the graph, so S2 becomes a candidate
+    df = _run(tmp_path)
+    assert S1 not in set(df["gene"]) and S2 in set(df["gene"])
+
+
+def test_no_seed_in_graph_exits(tmp_path):
+    _write_graph_dir(tmp_path, seeds_tsv=f"gene_id\nENSG{99:011d}\n")
+    with pytest.raises(SystemExit):
+        _run(tmp_path)
+
+
+def test_missing_seed_file_exits(tmp_path):
+    _write_graph_dir(tmp_path)
+    (tmp_path / "disease_seed_genes.tsv").unlink()
+    with pytest.raises(SystemExit):
+        _run(tmp_path)
 
 
 def test_unknown_method_exits(tmp_path):
     _write_graph_dir(tmp_path)
     with pytest.raises(SystemExit):
         _run(tmp_path, "topology,bfw")
-
-
-# --------------------------------------------------------------------------
-# End-to-end: short cycle + longer chain, hand-computed distances
-# --------------------------------------------------------------------------
-
-# A self-contained 6-node graph, unit edge weights (every hop costs 1.0):
-#
-#   t <-> a           short 2-cycle (t->a, a->t)
-#   t  -> d           d: a near neighbour of t (dangling)
-#   a  -> b -> c -> e long directed chain
-#
-# Distances from t: a=1, d=1, b=2, c=3, e=4.
-#
-# Undirected neighbours: t={a,d}, a={t,b}, b={a,c}, c={b,e}, e={c}, d={t}.
-# Common neighbours with t (t's undirected neighbours = {a, d}):
-#   a->0, b->1 (shares a), c->0, e->0, d->0
-# topology_score = (1 + common) / (1 + distance):
-#   a=1/2, b=2/3, c=1/4, e=1/5, d=1/2
-_E2E = [f"ENSG{n:011d}" for n in (101, 102, 103, 104, 105, 106)]
-_E2E_T, _E2E_A, _E2E_B, _E2E_C, _E2E_E, _E2E_D = _E2E
-_E2E_EDGES = {
-    (_E2E_T, _E2E_A): 1.0, (_E2E_A, _E2E_T): 1.0,   # short cycle
-    (_E2E_T, _E2E_D): 1.0,                            # near neighbour
-    (_E2E_A, _E2E_B): 1.0, (_E2E_B, _E2E_C): 1.0, (_E2E_C, _E2E_E): 1.0,  # long chain
-}
-
-
-def _write_e2e_graph_dir(path) -> None:
-    idx = {g: i for i, g in enumerate(_E2E)}
-    rows = [idx[u] for u, _ in _E2E_EDGES]
-    cols = [idx[v] for _, v in _E2E_EDGES]
-    weight = sp.csr_matrix((list(_E2E_EDGES.values()), (rows, cols)), shape=(6, 6))
-    sp.save_npz(path / "graph_weight.npz", weight)
-    sp.save_npz(path / "graph_sign.npz", sp.csr_matrix((6, 6), dtype="int8"))
-    (path / "graph_gene_index.json").write_text(json.dumps(_E2E))
-    (path / "graph_metadata.json").write_text(
-        json.dumps({"seed": 0, "resolved_target": {"gene_id": _E2E_T, "input": "t", "symbol": "t"}})
-    )
-
-
-def test_default_run_emits_exact_topology_scores_only(tmp_path):
-    _write_e2e_graph_dir(tmp_path)
-
-    df = _run(tmp_path)  # no --method at all -> argparse default
-
-    assert list(df.columns) == ["gene", "topology_score"]
-    assert "rwr_score" not in df.columns
-    assert _E2E_T not in set(df["gene"])  # target is not its own candidate
-
-    got = dict(zip(df["gene"], df["topology_score"]))
-    assert got == pytest.approx(
-        {_E2E_A: 1 / 2, _E2E_B: 2 / 3, _E2E_C: 1 / 4, _E2E_E: 1 / 5, _E2E_D: 1 / 2}
-    )
-    # target's own graph neighbours (a, d) outrank the far chain nodes (c, e)
-    assert min(got[_E2E_A], got[_E2E_D]) > max(got[_E2E_C], got[_E2E_E])
-
-
-def test_topology_rwr_run_emits_both_and_rwr_is_a_distribution(tmp_path):
-    _write_e2e_graph_dir(tmp_path)
-
-    df = _run(tmp_path, "topology,rwr")
-    assert list(df.columns) == ["gene", "topology_score", "rwr_score"]
-
-    rwr = dict(zip(df["gene"], df["rwr_score"]))
-    assert all(v >= 0 for v in rwr.values())
-    # The emitted column omits the target, so it is a sub-distribution;
-    # reconstruct the full stationary distribution the same way stage5_score_candidates
-    # does and check *that* is a proper probability distribution.
-    graph = sc.build_digraph(sp.load_npz(tmp_path / "graph_weight.npz").tocsr(), _E2E)
-    personalization = sc.restart_distribution({}, _E2E, _E2E_T, node_weight_mix=0.5)
-    full = nx.pagerank(graph, alpha=0.5, personalization=personalization, weight="weight")
-    assert sum(full.values()) == pytest.approx(1.0)
-    assert all(v >= 0 for v in full.values())
-    for gene, score in rwr.items():
-        assert score == pytest.approx(full[gene])
-
-    # target's own graph neighbours (a, d) outrank the far chain nodes (c, e)
-    assert min(rwr[_E2E_A], rwr[_E2E_D]) > max(rwr[_E2E_C], rwr[_E2E_E])

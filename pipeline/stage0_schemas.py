@@ -111,7 +111,17 @@ DiseasePathwaysSchema = DataFrameSchema(
         "pval": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False),
         # FDR is corrected over the pathways tested in this run only, so it is not comparable across runs.
         "fdr": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False),
-        "contains_target": Column(bool, nullable=False),
+    },
+    strict=True,
+)
+
+# Stage 2's seed genes: the disease's genetic_association genes (minus any benchmark holdout), with their
+# strongest genetic_association score. Stage 3 builds the graph around them and Stage 5 propagates from them.
+# score is optional so that a hand-made seed list (gene_id only) can be passed to Stage 5.
+SeedGenesSchema = DataFrameSchema(
+    {
+        "gene_id": ensembl_column(unique=True),
+        "score": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True, required=False),
     },
     strict=True,
 )
@@ -162,19 +172,6 @@ def assert_foreign_key(child_df, child_column, genes_df, gene_column="gene_id"):
     missing = sorted(set(child_df[child_column]) - known_genes)
     if missing:
         raise ValueError(f"{child_column} contains {len(missing)} gene_id(s) not present in genes.gene_id: {missing[:20]}")
-
-
-class ResolvedTarget(BaseModel):
-    input: str
-    gene_id: str
-    symbol: str
-
-    @field_validator("gene_id")
-    @classmethod
-    def check_gene_id(cls, value):
-        if not ENSEMBL_GENE_ID_PATTERN.match(value):
-            raise ValueError(f"gene_id {value!r} is not a valid Ensembl gene ID")
-        return value
 
 
 class ResolvedDisease(BaseModel):
@@ -257,7 +254,6 @@ class Manifest(BaseModel):
     git_commit: str
     created_at: datetime
     seed: int
-    resolved_target: ResolvedTarget
     disease: ResolvedDisease
     sources: List[Source]
     cli_parameters: Dict[str, Any]

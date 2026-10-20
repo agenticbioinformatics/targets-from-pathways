@@ -2,3 +2,5 @@
 *cache*
 data/
 out*/
+validation/
+example_data/example_run/

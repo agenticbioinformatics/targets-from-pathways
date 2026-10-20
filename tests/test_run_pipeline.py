@@ -37,7 +37,7 @@ def test_from_manifest_chains_stages_and_writes_report(tmp_path):
 
     # every artifact Stages 2-6 + the report are expected to drop
     expected = {
-        "stage 2": ["disease_pathways.tsv"],
+        "stage 2": ["disease_pathways.tsv", "disease_seed_genes.tsv"],
         "stage 3": ["graph_weight.npz", "graph_sign.npz", "graph_gene_index.json", "graph_metadata.json"],
         "stage 4": ["gene_weights.tsv"],  # + graph_* rewritten in place
         "stage 5": ["candidate_scores.tsv"],
@@ -49,7 +49,8 @@ def test_from_manifest_chains_stages_and_writes_report(tmp_path):
             assert (run_dir / name).exists(), f"{stage}: {name} not produced"
 
     annotated = pd.read_csv(run_dir / "candidates_annotated.tsv", sep="\t")
-    assert len(annotated) == 16  # 17 graph genes minus the target
+    assert len(annotated) == 7  # 25 graph genes minus 18 seed genes
+    assert (run_dir / "disease_seed_genes.tsv").exists()
     assert {"composite_score", "composite_breakdown", "composite_weights"} <= set(annotated.columns)
     assert annotated["composite_score"].between(0.0, 1.0).all()
 
@@ -60,7 +61,7 @@ def test_from_manifest_chains_stages_and_writes_report(tmp_path):
 
 def test_missing_required_args_exits():
     with pytest.raises(SystemExit):
-        run_pipeline.main(["--target", "PTGS2"])  # no --disease/--data-dir/--out-dir, no --from-manifest
+        run_pipeline.main(["--disease", "MONDO_0005265"])  # no --data-dir/--out-dir, no --from-manifest
 
 
 def test_stage_failure_names_the_stage_and_command(tmp_path, caplog):
@@ -90,7 +91,7 @@ def test_unknown_flags_forward_to_stage1(monkeypatch, tmp_path):
 
     with pytest.raises(SystemExit):  # stages are stubbed, so the final artifact check fails — fine
         run_pipeline.main([
-            "--target", "NOD2", "--disease", "MONDO_0005265",
+            "--disease", "MONDO_0005265",
             "--data-dir", str(tmp_path / "d"), "--out-dir", str(tmp_path / "o"),
             "--allow-low-coverage", "--min-set-size", "5",
         ])

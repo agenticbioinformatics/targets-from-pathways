@@ -39,10 +39,5 @@ pyarrow
 pandas
 pyarrow
 
-# Benchmark validation (see benchmarking/) — its own module, not a pipeline stage
-pandas
-numpy
-scipy
-
 # Testing (all stages)
 pytest
