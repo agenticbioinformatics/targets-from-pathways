@@ -37,25 +37,25 @@ pre { background: rgba(127,127,127,.1); padding: .8rem; border-radius: 6px; over
 Disease <b>example disease</b> <span class=ens>MONDO_0000001</span> &middot;
 18 seed genes (genetic association) &middot; 7 candidates &middot;
 random seed 0 &middot; reactome 97, opentargets 26.06 &middot;
-graph: Stage 4 (genetic-evidence-weighted) &middot; generated 2026-10-20 15:17 UTC
+graph: Stage 4 (genetic-evidence-weighted) &middot; generated 2026-10-20 15:24 UTC
 </p>
 
 <p class="lead">
 Candidates are ranked by <code>bfwalk_score</code>, Stage 5's network propagation
-from the seed genes; genetic evidence, tractability and safety annotate them and do not
+from the seed genes; tractability and safety annotate them and do not
 change the order. Click a header to sort; click a gene symbol to open its evidence trace.
 </p>
 
 <table id="ranktable">
-<thead><tr><th onclick="sortTable(0,true)">#</th><th class="txt" onclick="sortTable(1,false)">symbol</th><th class="txt" onclick="sortTable(2,false)">gene</th><th onclick="sortTable(3,true)">bfwalk</th><th onclick="sortTable(4,true)">genetic ev.</th><th class="txt" onclick="sortTable(5,false)">tractability</th><th class="txt" onclick="sortTable(6,false)">safety</th></tr></thead>
+<thead><tr><th onclick="sortTable(0,true)">#</th><th class="txt" onclick="sortTable(1,false)">symbol</th><th class="txt" onclick="sortTable(2,false)">gene</th><th onclick="sortTable(3,true)">bfwalk</th><th class="txt" onclick="sortTable(4,false)">tractability</th><th class="txt" onclick="sortTable(5,false)">safety</th></tr></thead>
 <tbody id="ranktbody">
-<tr><td data-v="1">1</td><td class="txt"><a href="#" onclick="openGene('g-ENSG00000000024');return false;">GENE24</a></td><td class="txt ens">ENSG00000000024</td><td data-v="0.3575838804244995">0.3576</td><td data-v="0.0">0.000</td><td class="txt">discovery</td><td class="txt">unknown</td></tr>
-<tr><td data-v="2">2</td><td class="txt"><a href="#" onclick="openGene('g-ENSG00000000025');return false;">GENE25</a></td><td class="txt ens">ENSG00000000025</td><td data-v="0.3345615565776825">0.3346</td><td data-v="0.0">0.000</td><td class="txt">clinical</td><td class="txt">unknown</td></tr>
-<tr><td data-v="3">3</td><td class="txt"><a href="#" onclick="openGene('g-ENSG00000000022');return false;">GENE22</a></td><td class="txt ens">ENSG00000000022</td><td data-v="0.3297726213932037">0.3298</td><td data-v="0.0">0.000</td><td class="txt">clinical</td><td class="txt">has_liabilities</td></tr>
-<tr><td data-v="4">4</td><td class="txt"><a href="#" onclick="openGene('g-ENSG00000000023');return false;">GENE23</a></td><td class="txt ens">ENSG00000000023</td><td data-v="0.3297726213932037">0.3298</td><td data-v="0.0">0.000</td><td class="txt">unknown</td><td class="txt">unknown</td></tr>
-<tr><td data-v="5">5</td><td class="txt"><a href="#" onclick="openGene('g-ENSG00000000026');return false;">GENE26</a></td><td class="txt ens">ENSG00000000026</td><td data-v="0.2225226759910583">0.2225</td><td data-v="0.0">0.000</td><td class="txt">unknown</td><td class="txt">unknown</td></tr>
-<tr><td data-v="6">6</td><td class="txt"><a href="#" onclick="openGene('g-ENSG00000000027');return false;">GENE27</a></td><td class="txt ens">ENSG00000000027</td><td data-v="0.2225226759910583">0.2225</td><td data-v="0.0">0.000</td><td class="txt">unknown</td><td class="txt">unknown</td></tr>
-<tr><td data-v="7">7</td><td class="txt"><a href="#" onclick="openGene('g-ENSG00000000028');return false;">GENE28</a></td><td class="txt ens">ENSG00000000028</td><td data-v="0.2225226759910583">0.2225</td><td data-v="0.0">0.000</td><td class="txt">unknown</td><td class="txt">unknown</td></tr>
+<tr><td data-v="1">1</td><td class="txt"><a href="#" onclick="openGene('g-ENSG00000000024');return false;">GENE24</a></td><td class="txt ens">ENSG00000000024</td><td data-v="0.3575838804244995">0.3576</td><td class="txt">discovery</td><td class="txt">unknown</td></tr>
+<tr><td data-v="2">2</td><td class="txt"><a href="#" onclick="openGene('g-ENSG00000000025');return false;">GENE25</a></td><td class="txt ens">ENSG00000000025</td><td data-v="0.3345615565776825">0.3346</td><td class="txt">clinical</td><td class="txt">unknown</td></tr>
+<tr><td data-v="3">3</td><td class="txt"><a href="#" onclick="openGene('g-ENSG00000000022');return false;">GENE22</a></td><td class="txt ens">ENSG00000000022</td><td data-v="0.3297726213932037">0.3298</td><td class="txt">clinical</td><td class="txt">has_liabilities</td></tr>
+<tr><td data-v="4">4</td><td class="txt"><a href="#" onclick="openGene('g-ENSG00000000023');return false;">GENE23</a></td><td class="txt ens">ENSG00000000023</td><td data-v="0.3297726213932037">0.3298</td><td class="txt">unknown</td><td class="txt">unknown</td></tr>
+<tr><td data-v="5">5</td><td class="txt"><a href="#" onclick="openGene('g-ENSG00000000026');return false;">GENE26</a></td><td class="txt ens">ENSG00000000026</td><td data-v="0.2225226759910583">0.2225</td><td class="txt">unknown</td><td class="txt">unknown</td></tr>
+<tr><td data-v="6">6</td><td class="txt"><a href="#" onclick="openGene('g-ENSG00000000027');return false;">GENE27</a></td><td class="txt ens">ENSG00000000027</td><td data-v="0.2225226759910583">0.2225</td><td class="txt">unknown</td><td class="txt">unknown</td></tr>
+<tr><td data-v="7">7</td><td class="txt"><a href="#" onclick="openGene('g-ENSG00000000028');return false;">GENE28</a></td><td class="txt ens">ENSG00000000028</td><td data-v="0.2225226759910583">0.2225</td><td class="txt">unknown</td><td class="txt">unknown</td></tr>
 </tbody>
 </table>
 

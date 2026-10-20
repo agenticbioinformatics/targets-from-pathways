@@ -23,8 +23,6 @@ REPO_DIR = PIPELINE_DIR.parent
 logger = logging.getLogger("stage7_report")
 
 SIGN_LABELS = {1: "activating (+)", -1: "inhibiting (−)", 0: "unsigned (0)"}
-# Stage 4's evidence datatypes, used when graph_metadata.json does not record them.
-DEFAULT_ADMITTED_DATATYPES = ["genetic_association"]
 # Evidence traces are rendered for the top candidates only: one per candidate made a report of thousands
 # of candidates tens of MB and slow to build.
 DEFAULT_N_TRACES = 100
@@ -109,7 +107,6 @@ def load_run(run_dir):
             optional[name] = pd.read_csv(path, sep="\t")
 
     graph_metadata = optional["graph_metadata.json"] or {}
-    stage4_info = graph_metadata.get("stage4_genetic_evidence", {})
     graph_index = None
     if optional["graph_gene_index.json"] is not None:
         graph_index = set(optional["graph_gene_index.json"])
@@ -127,9 +124,6 @@ def load_run(run_dir):
         "graph_index": graph_index,
         "annotated": annotated,
         "symbols": symbols,
-        "admitted_datatypes": set(stage4_info.get("datatypes", DEFAULT_ADMITTED_DATATYPES)),
-        # Stage 4 ignores the evidence of benchmark holdout genes.
-        "holdout_genes": set(stage4_info.get("holdout_genes", [])),
         "gene_sets": optional["gene_sets.parquet"],
         "interactions": optional["interactions.parquet"],
         "ot": optional["ot_disease_subset.parquet"],
@@ -182,13 +176,8 @@ def evidence_trace(gene_id, run):
                 "datatype": str(datatype),
                 "score": float(rows["score"].max()),
                 "datasources": sorted(rows["datasource_id"].astype(str).unique()),
-                # "Feeds" the genetic-evidence score only if Stage 4 ran with this datatype and did not
-                # exclude the gene as a benchmark holdout.
-                "feeds": run["stage4_ran"] and str(datatype) in run["admitted_datatypes"]
-                and gene_id not in run["holdout_genes"],
             })
-        # Datatypes that feed the score first, then by score.
-        datatypes.sort(key=lambda entry: (not entry["feeds"], -entry["score"]))
+        datatypes.sort(key=lambda entry: (-entry["score"], entry["datatype"]))
 
     interactions = []
     if interactions_df is not None:
@@ -268,11 +257,8 @@ def trace_html(gene_id, symbol, row, trace, rank_column):
     elif trace["datatypes"]:
         items = []
         for datatype in trace["datatypes"]:
-            badge = ""
-            if datatype["feeds"]:
-                badge = '<span class="badge">feeds genetic-evidence score</span>'
             sources = escape(", ".join(datatype["datasources"]))
-            items.append(f"{escape(datatype['datatype'])} &mdash; {datatype['score']:.3f}{badge} "
+            items.append(f"{escape(datatype['datatype'])} &mdash; {datatype['score']:.3f} "
                          f"<span class=\"src\">({sources})</span>")
         parts.append(html_list(items))
     else:
@@ -325,7 +311,6 @@ def render_html(run, n_traces=DEFAULT_N_TRACES):
     rank_column = ranking_column(candidates.columns)
     has_rwr = "rwr_score" in candidates.columns
     has_bfwalk = "bfwalk_score" in candidates.columns
-    has_genetic_evidence = "genetic_evidence_score" in candidates.columns
 
     # (column title, sort numerically, left-aligned text)
     headers = [("#", True, False), ("symbol", False, True), ("gene", False, True)]
@@ -333,8 +318,6 @@ def render_html(run, n_traces=DEFAULT_N_TRACES):
         headers.append(("rwr", True, False))
     if has_bfwalk:
         headers.append(("bfwalk", True, False))
-    if has_genetic_evidence:
-        headers.append(("genetic ev.", True, False))
     headers.append(("tractability", False, True))
     headers.append(("safety", False, True))
     header_html = ""
@@ -366,8 +349,6 @@ def render_html(run, n_traces=DEFAULT_N_TRACES):
             cells.append(f'<td data-v="{row.rwr_score}">{row.rwr_score:.4f}</td>')
         if has_bfwalk:
             cells.append(f'<td data-v="{row.bfwalk_score}">{row.bfwalk_score:.4f}</td>')
-        if has_genetic_evidence:
-            cells.append(f'<td data-v="{row.genetic_evidence_score}">{row.genetic_evidence_score:.3f}</td>')
         cells.append(f'<td class="txt">{escape(row.tractability)}</td>')
         cells.append(f'<td class="txt">{escape(row.safety)}</td>')
         table_rows.append("<tr>" + "".join(cells) + "</tr>")
@@ -402,7 +383,7 @@ graph: {escape(graph_kind)} &middot; generated {generated}
 {missing_note}
 <p class="lead">
 Candidates are ranked by <code>{escape(rank_column)}</code>, Stage 5's network propagation
-from the seed genes; genetic evidence, tractability and safety annotate them and do not
+from the seed genes; tractability and safety annotate them and do not
 change the order. Click a header to sort; click a gene symbol to open its evidence trace.
 </p>
 

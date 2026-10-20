@@ -589,16 +589,16 @@ python3 pipeline/stage7_report.py --run-dir out/
   Targets versions, whether the graph is Stage 3 (structural) or Stage 4
   (genetic-evidence-weighted);
 - a **sortable** ranked table, in Stage 5's order — `symbol`, `gene`
-  (Ensembl), `rwr`, `bfwalk`, `genetic ev.`, `tractability`, `safety` (click a
-  header to sort; `rwr`/`bfwalk`/`genetic ev.` columns appear only if
-  those methods/stages ran);
+  (Ensembl), `rwr`, `bfwalk`, `tractability`, `safety` (click a
+  header to sort; `rwr`/`bfwalk` columns appear only if those methods
+  ran). Stage 6's `genetic_evidence_score` is not shown: it is 0 for every
+  candidate;
 - a **click-to-expand evidence trace** for each of the top 100 candidates
   (`--n-traces`; the table still lists every candidate) — its ranking
   score, the graph pathways it shares with seed
   genes (with the number of seeds in each; and the disease-relevant pathways
   without seeds it is a member of), its Open
-  Targets datatypes + scores (with the ones feeding `genetic_evidence_score`
-  flagged; none for a benchmark holdout gene), and the signed interaction edges touching it (edges with a seed
+  Targets datatypes + scores (strongest first), and the signed interaction edges touching it (edges with a seed
   are badged "with seed"; interactions to non-graph genes are omitted,
   matching Stage 3's scoping).
 
@@ -609,8 +609,7 @@ resolved from `genes.parquet` at render time only.
 Only `manifest.json` and `candidates_annotated.tsv` are required; every
 other artifact is optional. A partial run directory still produces a
 report — missing trace inputs (`gene_sets.parquet`, `interactions.parquet`,
-`ot_disease_subset.parquet`, …) show that section as unavailable, a
-Stage-3-only run (no Stage 4) just drops the `genetic ev.` column,
+`ot_disease_subset.parquet`, …) show that section as unavailable,
 and no `genes.parquet` falls the symbol column back to Ensembl ids — a
 header line lists whatever was missing.
 
@@ -618,10 +617,10 @@ header line lists whatever was missing.
 ranked table — same ordering as Stage 6's `candidates_annotated.tsv`):
 
 ```
-#  symbol  gene             bfwalk  genetic ev.  tractability  safety
-1  GENE24  ENSG00000000024  0.3576  0.000        discovery     unknown
-2  GENE25  ENSG00000000025  0.3346  0.000        clinical      unknown
-3  GENE22  ENSG00000000022  0.3298  0.000        clinical      has_liabilities
+#  symbol  gene             bfwalk  tractability  safety
+1  GENE24  ENSG00000000024  0.3576  discovery     unknown
+2  GENE25  ENSG00000000025  0.3346  clinical      unknown
+3  GENE22  ENSG00000000022  0.3298  clinical      has_liabilities
 ```
 
 Expanding `GENE25` shows: pathways shared with seed genes *Seed-Adjacent
@@ -629,10 +628,10 @@ Pathway* (1 seed gene); no Open Targets rows for this disease; interaction
 `GENE02 → GENE25` (activating, curated, confidence 0.80, badged "with seed").
 
 `python3 -m pytest tests/test_stage7_report.py tests/test_run_pipeline.py`
-runs the tests (12): `evidence_trace`'s seed-pathway / graph-scoping /
-datatype logic on a hand-built run, the `feeds` flag going false when Stage
-4 did not run or the gene is a benchmark holdout, `build_report` producing a
-self-contained symbol-labelled HTML with one detail block per candidate,
+runs the tests (10): `evidence_trace`'s seed-pathway / graph-scoping /
+datatype logic on a hand-built run, `build_report` producing a
+self-contained symbol-labelled HTML with one detail block per candidate and
+no genetic-evidence column,
 detail blocks (and symbol links) only for the top `--n-traces`, a partial run
 directory (only `manifest.json` + `candidates_annotated.tsv`) still
 rendering with the optional columns/trace sections marked unavailable, a

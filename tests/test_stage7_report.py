@@ -40,8 +40,6 @@ def _mini_run():
         "seeds": {T},
         "symbols": {T: "TGT", C: "CAND", X: "XG", Y: "YG"},
         "graph_index": {T, C, X},
-        "admitted_datatypes": {"genetic_association"},
-        "holdout_genes": set(),
         "stage4_ran": True,
         "gene_sets": gene_sets,
         "disease_pathways": pd.DataFrame([{"set_id": "P2"}]),
@@ -70,13 +68,12 @@ def test_evidence_trace_shared_pathways_and_scoping():
     assert tr["shared_pathways"] == [("Seed Pathway", 1)]     # P1 has C and one seed (T)
     assert tr["member_pathways"] == ["Disease Pathway"]       # P2 has C but no seed
 
-    # datatypes: max over datasources, admitted flagged, disallowed still shown
-    ga = next(d for d in tr["datatypes"] if d["datatype"] == "genetic_association")
+    # datatypes: max over datasources, every datatype shown, strongest first
+    assert [d["datatype"] for d in tr["datatypes"]] == ["affected_pathway", "genetic_association"]
+    ga = tr["datatypes"][1]
     assert ga["score"] == pytest.approx(0.9)
-    assert ga["feeds"] is True
     assert set(ga["datasources"]) == {"eva", "gwas"}
-    ap = next(d for d in tr["datatypes"] if d["datatype"] == "affected_pathway")
-    assert ap["feeds"] is False
+    assert "feeds" not in ga  # the report shows no genetic-evidence score, so nothing "feeds" it
 
     # only the interaction whose other endpoint is a graph node survives
     assert len(tr["interactions"]) == 1
@@ -84,21 +81,6 @@ def test_evidence_trace_shared_pathways_and_scoping():
     assert (it["a"], it["b"]) == ("CAND", "TGT")
     assert it["to_seed"] is True
     assert it["sign"] == "activating (+)"
-
-
-def test_evidence_trace_feeds_false_when_stage4_absent():
-    run, (T, C, X, Y) = _mini_run()
-    run["stage4_ran"] = False
-    tr = rep.evidence_trace(C, run)
-    assert all(d["feeds"] is False for d in tr["datatypes"])
-
-
-def test_evidence_trace_feeds_false_for_benchmark_holdout_gene():
-    # Stage 4 ignores a held-out gene's evidence, so none of its datatypes feed the score.
-    run, (T, C, X, Y) = _mini_run()
-    run["holdout_genes"] = {C}
-    tr = rep.evidence_trace(C, run)
-    assert all(d["feeds"] is False for d in tr["datatypes"])
 
 
 # --------------------------------------------------------------------------
@@ -125,6 +107,10 @@ def test_build_report_is_self_contained_and_symbol_labelled(tmp_path):
 
     tbody = html.split("<tbody", 1)[1].split("</tbody>", 1)[0]
     assert tbody.count("<tr>") == len(annotated)          # one table row per candidate
+    # genetic evidence is not in the report, although candidates_annotated.tsv has the column
+    assert "genetic_evidence_score" in annotated.columns
+    thead = html.split("<thead>", 1)[1].split("</thead>", 1)[0]
+    assert "genetic ev." not in thead and "genetic-evidence score" not in html
     assert html.count("<details ") == len(annotated)      # one detail block per candidate
 
     for gid in annotated["gene"]:
