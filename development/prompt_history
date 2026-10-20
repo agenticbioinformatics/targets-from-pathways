@@ -941,3 +941,211 @@ option forwarding) were not logged here; see git history.
   test prompt uses two seeds and excludes seeds from candidates.
 - Stage 7 / demo polish / integration test: `--disease` only, seed-based
   header and trace, composite score for every non-seed graph gene.
+
+
+## Prompt 30 — review the pipeline
+
+> /python-prototype-expert scan this pipeline
+
+**Changes:** none (review only). Ran the test suite (107 passed), the README
+demo, probe tests and hand mutations, and inspected the real IBD run in
+`out/`. Findings:
+- H1: the benchmark holdout leaked the held-out gene's own evidence into
+  Stage 4 edge weights and the Stage 6 composite.
+- H2: in Stage 5's topology score a zero-weight edge was the cheapest
+  possible edge.
+- H3: Stage 3 added undirected Reactome interactions in one direction only.
+- H4: `find_artifact` preferred the manifest's listed path, so a copied run
+  directory read another run's Stage 1 files.
+- H5: `requirements.txt`'s TestPyPI `--extra-index-url` applies to every
+  package. Still open.
+- Medium: hub genes dominate the IBD ranking, the seed-pathway rule pulls in
+  95% of size-capped Reactome, and Stage 7 built a 41 MB report.
+
+
+## Prompt 31 — fix H1-H4, hub bias of BFWalk, top-100 report
+
+> move the probes into tests/ and fix H1–H4. check the hub bias for bfwalk
+> too and report the correlation. suggest how to overcome the reactome bias
+> too. make stage 7 trace only top 100 candidates.
+
+**Changes:**
+- H1: Stage 2 writes `benchmark_holdout_genes.tsv`; Stage 4 ignores those
+  genes' evidence; Stage 7 no longer flags it as feeding the score.
+- H2: a zero-weight edge costs as much as the weakest evidence edge.
+- H3: undirected interactions are added in both directions.
+- H4: `find_artifact` takes the file next to the manifest first and checks
+  its sha256; the example manifest records repo-relative paths.
+- Stage 7 renders evidence traces for the top 100 candidates
+  (`--n-traces`); the IBD report went from 41 MB to 5.7 MB.
+- Probes became tests (incl. new `tests/test_run_directory.py`); 121 passed.
+- Hub bias on IBD (Spearman rho with node degree): topology 0.85, RWR 0.74,
+  BFWalk 0.13. Suggested: score against random seed sets with matched
+  degree; seed-neighbour fraction instead of count; down-weight genes in
+  many pathways; shrink the seed-pathway rule; add a non-Reactome network.
+
+
+## Prompt 32 — drop topology; BFWalk default, RWR optional
+
+> remove topology from scoring at all, make rwr and bfwalk both optional,
+> but one is required, bfwalk should be the default, rwr should be optional
+
+**Changes:**
+- Stage 5: no topology score; `--method` is a non-empty subset of
+  {bfwalk, rwr}, default `bfwalk`; with both, BFWalk ranks the output.
+- Schemas: no `topology_score`; a scores table needs `rwr_score` or
+  `bfwalk_score`. Stage 6 default weights became `rwr:0.3,bfwalk:0.3,...`;
+  Stage 7 and `run_pipeline.py` follow. Example run regenerated.
+
+
+## Prompt 33 — hub-bias correlations in the READMEs
+
+> put the correlations for rwr and bfwalk (mention which example it was
+> run on) with a one-sentence guideline when to use which in the main
+> README, and also in docs/README
+
+**Changes:** README.md and docs/README.md (Stage 5) give the IBD
+correlations (BFWalk 0.13, RWR 0.74 with degree) and the guideline: use
+BFWalk to find candidates beyond hub genes, add RWR to favour
+well-connected, well-studied genes.
+
+
+## Prompt 34 — two commits
+
+> commit this as two commits
+
+**Changes:** `5074b2a` (review fixes H1-H4, top-100 traces, tests) and
+`0b26dab` (topology removed, BFWalk default). The intermediate state of
+files touched by both was rebuilt; tests passed at each commit (121, 124).
+
+
+## Prompt 35 — remove the composite score
+
+> remove the composite score whatsoever
+
+**Changes:**
+- Stage 6 only annotates (genetic evidence, tractability, safety) and keeps
+  Stage 5's ranking; `--weights` and the `composite_*` columns are gone.
+- Stage 7 drops the composite column and breakdown; `run_pipeline.py` drops
+  `--weights`. Shared `ranking_column()` (bfwalk over rwr) in Stage 0.
+- Tests and docs updated; 121 passed. Committed by the user (`2f8fd58`).
+
+
+## Prompt 36 — Stage 2 crash for a disease with one seed gene
+
+> got an error when running the pipeline for another disease: [blitzgsea
+> traceback, "The function value at x=nan is NaN"]
+
+**Changes:**
+- Cause: spermatogenic failure 5 (`MONDO_0009461`) has one
+  genetic-association gene (AURKC), let through by `--allow-low-coverage`.
+  blitzgsea's calibration also fails whenever the seed count equals one of
+  its internal set sizes (up to ~230 genes).
+- Stage 2 skips GSEA with a warning (fewer than 5 seeds, calibration
+  failure, or nothing testable) and writes an empty `disease_pathways.tsv`;
+  Stage 3 then uses the seed genes' pathways.
+- Stage 3 stops with a message when no seed gene is in any pathway (AURKC is
+  in no Reactome pathway) instead of a networkx traceback.
+- 7 tests added; committed by the user (`4219ae7`).
+
+
+## Prompt 37 — genetic_association evidence only
+
+> use genetic_association only, do not use known_drug evidence
+
+**Changes:** Stage 4 counts only `genetic_association` evidence; the
+`--datatypes` option is removed. Stage 7, tests, the example (N22's
+`known_drug` row is now ignored, so it drops from 1st to 3rd) and docs
+updated. Candidates' `genetic_evidence_score` is now always 0. Committed by
+the user (`af97c24`).
+
+
+## Prompt 38 — remove genetic evidence from the report
+
+> remove genetic evidence, replace it with open targets final score
+> (interrupted) / remove genetic evidence from the final report
+
+**Changes:** Stage 7 drops the `genetic ev.` column and the "feeds
+genetic-evidence score" badge; the evidence trace lists Open Targets
+datatypes strongest first. `candidates_annotated.tsv` keeps the column.
+Committed by the user (`cb3ae43`).
+
+
+## Prompt 39 — how genes are connected in the graph
+
+> in the graph, do genes interact with each other as they do in pathways or
+> are all genes interacting with each other?
+
+**Changes:** none (answer). Every pathway becomes a complete graph
+(co-membership edges, both directions, sign 0), plus curated Reactome FI
+edges between genes already in the graph. On IBD: 2.38M directed edges,
+~2.34M from co-membership, 265,507 from FI. Stage 4 replaces all weights by
+endpoint genetic scores and Stage 5 ignores signs.
+
+
+## Prompt 40 — FI interactions only, compared on IBD
+
+> yes, try FI interactions only and compare IBD rankings
+
+**Changes:**
+- Stage 3 `--no-comembership-edges`: pathways choose the genes, FI
+  interactions are the only edges (test added; committed by the user,
+  `666b978`).
+- IBD comparison: the FI-only graph has 1,916 isolated genes and leaves 56%
+  of candidates unreachable (score 0). Hub bias is not removed (rho 0.71 /
+  0.73 with FI degree). On 47 held-out strong IBD seeds, AUROC was 0.58
+  (BFWalk) / 0.62 (RWR) with co-membership edges vs 0.55 / 0.53 FI-only.
+  Suggested next: keep both edge types but weight FI edges higher.
+
+
+## Prompt 41 — validation framework
+
+> I want to create a framework for validation in validation/. create a
+> script leave_one_out.py which iterates over the held-out gene set, runs
+> the pipeline for each gene while treating it as not associated with the
+> disease, calculate its score and the rank. it should create a file in
+> validation/ called "scores_left_out.tsv" with columns: gene, score. the
+> script should also calculate AUROC and recall at k and print it to a log
+> file. compare all these metrics with a random ranking. the
+> leave_one_out.py script should work for one disease (specified with
+> --disease). Create another file called "compare_scores.py" that compares
+> the pipeline results with open targets ranking + calculates correlations
+> between genetic evidence, open target scores, BFWalk score, RWR score.
+> this script should answer the question: "is the pipeline better than
+> sorting the open targets data by score?"
+> (re-issued as /hackathon-firstprot with the same text)
+
+**Changes:**
+- `validation/leave_one_out.py`: per held-out gene (default: every seed in
+  the graph), reruns Stages 2-5 with the gene as benchmark holdout; writes
+  `scores_left_out.tsv` (`gene`, `score`), a details TSV and
+  `leave_one_out.log` (AUROC, recall@k, random expectation and permutation
+  p-values). `--from-manifest`, `--genes`, `--max-genes`, `--jobs`.
+- `validation/compare_scores.py`: ranks the held-out genes by their Open
+  Targets score without `genetic_association` (the hidden evidence),
+  compares with BFWalk/RWR and random, correlates the four scores, and ends
+  with a YES/NO verdict per method (paired Wilcoxon on per-gene AUROC).
+- Example data gained `literature` rows so the Open Targets baseline has
+  something to rank (the pipeline does not read them); 127 tests passed.
+- Example result: AUROC BFWalk 0.40, RWR 0.86, Open Targets 0.48. IBD costs
+  about 40 s per held-out gene. `validation/` is gitignored, so the scripts
+  are not tracked.
+
+
+## Prompt 42 — validation README
+
+> remove the validation section from the main readme, move it to a new
+> readme in validation/readme. update the commands for IBD, not the
+> synthetic example, remove the results for now, but put the commands and
+> short explanations what the validation actually does
+
+**Changes:** the Validation section left README.md; `validation/README.md`
+has the IBD commands and short explanations of leave-one-out and the
+pipeline-vs-Open-Targets comparison, without results.
+
+
+## Prompt 43 — prompt history
+
+> add these prompts to development/prompt_history
+
+**Changes:** this log gained Prompts 30-43.
