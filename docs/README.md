@@ -289,14 +289,29 @@ there, takes the target node from the metadata's `resolved_target.gene_id`
 (override with `--target`), and writes `candidate_scores.tsv` alongside
 (override with `--out`).
 
-`--method` is a comma-separated subset of `{topology, rwr}`, **default
-`topology`**. `topology_score` is always emitted; `rwr_score` appears only
-when `rwr` is requested (`--method topology,rwr` or `--method rwr`). RWR
+`--method` is a comma-separated subset of `{topology, rwr, bfwalk}`,
+**default `topology`**. `topology_score` is always emitted; `rwr_score` /
+`bfwalk_score` appear only when `rwr` / `bfwalk` is requested (e.g.
+`--method topology,rwr` or `--method rwr,bfwalk`). The output is ranked by
+the last requested method in the order topology, rwr, bfwalk. RWR
 knobs: `--restart-prob` (default 0.5; PageRank `alpha = 1 - restart_prob`)
 and `--node-weight-mix` (default 0.5 — on a Stage 4 graph, extra restart
 mass spread over genes by `genetic_evidence_score`; the target always keeps
 the largest share, so 0.5 leaves it ~2/3 of the restart mass; ignored on a
 Stage 3 graph).
+
+`bfwalk` runs [BFWalk](https://github.com/jedrzejkubica/BFWalk)
+(backtrack-free network propagation with in-degree normalisation) seeded on
+the target, on the same directed weighted graph. BFWalk needs edge weights in
+`]0, 1]`, so zero-weight edges (Stage 4 genes without evidence) are dropped —
+as in RWR, they carry no flow — and the remaining weights are divided by the
+largest one. Knobs: `--bfwalk-alpha` (attenuation coefficient, default 0.5)
+and `--bfwalk-threads` (default 0 = all cores). BFWalk is not on PyPI yet:
+`requirements.txt` installs it from TestPyPI (see the top-level README); it
+will be available via `pip install bfwalk` shortly. Stage 6 carries
+`bfwalk_score` through and can use it as a composite component
+(`--weights ...,bfwalk:0.3`; it is not in the default weights), and Stage 7
+shows it as a `bfwalk` column.
 
 Against the checked-in example (after Stages 1–4 have run, so
 `example_data/example_run/` holds a **Stage 4** graph):

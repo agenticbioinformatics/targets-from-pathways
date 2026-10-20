@@ -327,6 +327,7 @@ def render_html(run, benchmark_text, benchmark_label):
         graph_kind = "unknown (no graph_metadata.json)"
 
     has_rwr = "rwr_score" in candidates.columns
+    has_bfwalk = "bfwalk_score" in candidates.columns
     has_genetic_evidence = "genetic_evidence_score" in candidates.columns
 
     # (column title, sort numerically, left-aligned text)
@@ -334,6 +335,8 @@ def render_html(run, benchmark_text, benchmark_label):
                ("composite", True, False), ("topology", True, False)]
     if has_rwr:
         headers.append(("rwr", True, False))
+    if has_bfwalk:
+        headers.append(("bfwalk", True, False))
     if has_genetic_evidence:
         headers.append(("genetic ev.", True, False))
     headers.append(("tractability", False, True))
@@ -361,6 +364,8 @@ def render_html(run, benchmark_text, benchmark_label):
         ]
         if has_rwr:
             cells.append(f'<td data-v="{row.rwr_score}">{row.rwr_score:.4f}</td>')
+        if has_bfwalk:
+            cells.append(f'<td data-v="{row.bfwalk_score}">{row.bfwalk_score:.4f}</td>')
         if has_genetic_evidence:
             cells.append(f'<td data-v="{row.genetic_evidence_score}">{row.genetic_evidence_score:.3f}</td>')
         cells.append(f'<td class="txt">{escape(row.tractability)}</td>')

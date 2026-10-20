@@ -20,10 +20,14 @@ scipy
 pandas
 pyarrow
 
-# Stage 5 — candidate scoring (topology + random-walk-with-restart)
+# Stage 5 — candidate scoring (topology + random-walk-with-restart + BFWalk)
 networkx
 numpy
 scipy
+# bfwalk is only on TestPyPI for now (it will be on PyPI shortly; then drop the
+# --extra-index-url line). Installing it builds C code: needs gcc, zlib-devel and OpenMP.
+--extra-index-url https://test.pypi.org/simple/
+bfwalk==0.9.0
 
 # Stage 6 — contextual annotation & filtering (reads the OT `target` parquet)
 pandas

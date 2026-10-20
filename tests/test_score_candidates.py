@@ -133,6 +133,43 @@ def test_rwr_node_weight_blend_shifts_mass_toward_high_evidence_gene():
 
 
 # --------------------------------------------------------------------------
+# bfwalk (skipped if the bfwalk package is not installed)
+# --------------------------------------------------------------------------
+
+
+def test_bfwalk_follows_edge_direction_and_favours_neighbours():
+    pytest.importorskip("BFWalk.bfwalk")
+    scores = sc.bfwalk_scores(_weight_matrix(), GENE_INDEX, T, alpha=0.5, threads=1)
+    assert T not in scores
+    assert all(v >= 0 for v in scores.values())
+    # the walk spreads T -> A -> B -> C, attenuating at each hop
+    assert scores[A] > scores[B] > scores[C] > 0
+
+
+def test_bfwalk_ignores_zero_weight_edges_and_rescales_weights():
+    pytest.importorskip("BFWalk.bfwalk")
+    weight = _weight_matrix() * 4.0  # weights > 1 are rescaled into ]0, 1]
+    weight = weight.tolil()
+    weight[GENE_INDEX.index(T), GENE_INDEX.index(D)] = 0.0  # evidence-free edge carries no flow
+    scores = sc.bfwalk_scores(weight.tocsr(), GENE_INDEX, T, alpha=0.5, threads=1)
+    assert scores[D] == 0.0
+    assert scores[A] > 0
+
+
+def test_bfwalk_rejects_bad_alpha():
+    with pytest.raises(SystemExit):
+        sc.bfwalk_scores(_weight_matrix(), GENE_INDEX, T, alpha=1.5, threads=1)
+
+
+def test_topology_rwr_bfwalk_emits_all_columns_ranked_by_bfwalk(tmp_path):
+    pytest.importorskip("BFWalk.bfwalk")
+    _write_graph_dir(tmp_path)
+    df = _run(tmp_path, "topology,rwr,bfwalk")
+    assert list(df.columns) == ["gene", "topology_score", "rwr_score", "bfwalk_score"]
+    assert df["bfwalk_score"].is_monotonic_decreasing
+
+
+# --------------------------------------------------------------------------
 # output contract (run() round-trip)
 # --------------------------------------------------------------------------
 

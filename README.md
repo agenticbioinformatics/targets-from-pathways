@@ -7,6 +7,8 @@
 
 **Install:** `pip install -r requirements.txt` (Python 3.9+, CPU only).
 
+> **Note:** [BFWalk](https://github.com/jedrzejkubica/BFWalk) (optional Stage 5 scoring method) is still in development and is not on PyPI yet — `requirements.txt` installs it from TestPyPI. It will be available via `pip install bfwalk` shortly. To install it on its own: `pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ bfwalk`. Installing it compiles C code, so it needs gcc, zlib headers (e.g. `zlib-devel`) and OpenMP.
+
 **Demo** — a tiny synthetic Stage 1 output is provided:
 
 ```
@@ -52,7 +54,7 @@ each reads the previous stage's output from the run directory.
 | 2 | `stage2_gsea_discovery.py` | Runs FDR-corrected GSEA of the disease's genetic-association genes against Reactome gene sets, over size-capped and redundancy-collapsed sets. Writes `disease_pathways.tsv`, the disease-relevant pathway list. |
 | 3 | `stage3_build_graph.py` | Builds a directed, signed gene–gene graph over the union of disease-relevant and target-containing pathways, with size-down-weighted co-membership edges plus Reactome functional-interaction edges. Writes the sparse `graph_weight.npz` / `graph_sign.npz` / `graph_gene_index.json` / `graph_metadata.json`. |
 | 4 | `stage4_genetic_evidence_weights.py` | Scores each graph gene from non-pathway-derived Open Targets datatypes and re-derives the graph's edge weights from those scores, preserving Stage 3's sparsity. Overwrites `graph_weight.npz`, extends `graph_metadata.json`, and writes `gene_weights.tsv`. |
-| 5 | `stage5_score_candidates.py` | Ranks every non-target graph gene by proximity to the target — a deterministic topology score always, random-walk-with-restart opt-in via `--method topology,rwr`. Writes `candidate_scores.tsv`. |
+| 5 | `stage5_score_candidates.py` | Ranks every non-target graph gene by proximity to the target — a deterministic topology score always, random-walk-with-restart and [BFWalk](https://github.com/jedrzejkubica/BFWalk) opt-in via `--method topology,rwr,bfwalk`. Writes `candidate_scores.tsv`. |
 | 6 | `stage6_annotate_context.py` | Joins an Open Targets tractability bucket and a safety flag onto each candidate and computes a configurable weighted `composite_score` (`--weights`). Writes `candidates_annotated.tsv`; uses no tissue-expression data. |
 | 7 | `run_pipeline.py` + `stage7_report.py` | `run_pipeline.py` chains Stages 1–6 for a (target, disease) (subprocess per stage, `--from-manifest` to skip Stage 1). `stage7_report.py` turns the finished run directory into one self-contained interactive HTML report — sortable ranked table, click-to-expand evidence trace per candidate, static benchmark panel. |
 
@@ -95,6 +97,7 @@ python3 pipeline/stage4_genetic_evidence_weights.py --manifest out/manifest.json
 ```
 python3 pipeline/stage5_score_candidates.py         --graph-dir out/ --method topology,rwr
 ```
+Add `bfwalk` to `--method` (e.g. `--method topology,rwr,bfwalk`) to also score with BFWalk; it then ranks the output.
 
 #### Stage 6: Annotating candidates
 ```

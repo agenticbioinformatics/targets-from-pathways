@@ -129,6 +129,7 @@ CandidateScoresSchema = DataFrameSchema(
         "gene": ensembl_column(unique=True),
         "topology_score": Column(float, checks=Check.greater_than_or_equal_to(0.0), nullable=False, coerce=True),
         "rwr_score": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True, required=False),
+        "bfwalk_score": Column(float, checks=Check.greater_than_or_equal_to(0.0), nullable=False, coerce=True, required=False),
     },
     strict=True,
 )
@@ -138,6 +139,7 @@ AnnotatedCandidatesSchema = DataFrameSchema(
         "gene": ensembl_column(unique=True),
         "topology_score": Column(float, checks=Check.greater_than_or_equal_to(0.0), nullable=False, coerce=True),
         "rwr_score": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True, required=False),
+        "bfwalk_score": Column(float, checks=Check.greater_than_or_equal_to(0.0), nullable=False, coerce=True, required=False),
         "genetic_evidence_score": Column(
             float, checks=Check.in_range(0.0, 1.0), nullable=False, coerce=True, required=False
         ),

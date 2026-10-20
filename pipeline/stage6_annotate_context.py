@@ -2,7 +2,8 @@
 
 Adds an Open Targets tractability bucket and safety flag to each Stage 5 candidate and computes
 composite_score = sum(weight * component) / sum(weights) over the components that have data:
-- topology, rwr: min-max normalised within the candidate set (their raw values are only meaningful as ranks)
+- topology, rwr, bfwalk: min-max normalised within the candidate set (their raw values are only meaningful
+  as ranks); bfwalk is not in the default weights, add it with e.g. --weights ...,bfwalk:0.3
 - genetic_evidence: Stage 4 score, already in [0, 1]
 - tractability: clinical 1.0, discovery 0.5, unknown 0.0
 - safety: has_liabilities 0.0, unknown 0.5 (no annotation is not proof of safety, so it is never rewarded)
@@ -29,7 +30,7 @@ from stage0_schemas import (
 logger = logging.getLogger("annotate_context")
 
 DEFAULT_WEIGHTS = "topology:0.3,rwr:0.3,genetic_evidence:0.2,tractability:0.1,safety:0.1"
-COMPONENTS = ["topology", "rwr", "genetic_evidence", "tractability", "safety"]
+COMPONENTS = ["topology", "rwr", "bfwalk", "genetic_evidence", "tractability", "safety"]
 TRACTABILITY_SCORE = {"clinical": 1.0, "discovery": 0.5, "unknown": 0.0}
 SAFETY_SCORE = {"has_liabilities": 0.0, "unknown": 0.5}
 CLINICAL_TRACTABILITY_IDS = {
@@ -41,7 +42,7 @@ CLINICAL_TRACTABILITY_IDS = {
     "advanced clinical trials",
 }
 OUTPUT_COLUMNS = [
-    "gene", "topology_score", "rwr_score", "genetic_evidence_score",
+    "gene", "topology_score", "rwr_score", "bfwalk_score", "genetic_evidence_score",
     "tractability", "safety", "n_safety_liabilities",
     "composite_score", "composite_breakdown", "composite_weights",
 ]
@@ -203,6 +204,8 @@ def compute_composite(candidates, weights):
         components["topology"] = min_max_normalise(candidates["topology_score"])
     if "rwr" in weights and "rwr_score" in candidates.columns:
         components["rwr"] = min_max_normalise(candidates["rwr_score"])
+    if "bfwalk" in weights and "bfwalk_score" in candidates.columns:
+        components["bfwalk"] = min_max_normalise(candidates["bfwalk_score"])
     if "genetic_evidence" in weights and "genetic_evidence_score" in candidates.columns:
         components["genetic_evidence"] = candidates["genetic_evidence_score"].astype(float).clip(0.0, 1.0)
     if "tractability" in weights:

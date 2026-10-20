@@ -5,6 +5,9 @@ candidate_scores.tsv. Methods (--method):
 - topology (always computed): (1 + common neighbours with the target) / (1 + weighted shortest-path distance
   from the target, each edge costing 1 / weight). Unreachable genes score 0.
 - rwr (opt-in): random walk with restart on the target (personalised PageRank).
+- bfwalk (opt-in): BFWalk backtrack-free network propagation seeded on the target
+  (https://github.com/jedrzejkubica/BFWalk). Needs the bfwalk package (for now from TestPyPI, see README).
+The output is ranked by the last requested method in the order topology, rwr, bfwalk.
 """
 
 import argparse
@@ -18,7 +21,7 @@ from stage0_schemas import ENSEMBL_GENE_ID_PATTERN, CandidateScoresSchema, fail,
 
 logger = logging.getLogger("score_candidates")
 
-METHODS = ["topology", "rwr"]
+METHODS = ["topology", "rwr", "bfwalk"]
 # Stage 4 stores weight 0 on edges between genes without evidence. Such an edge still exists, so it costs
 # one plain hop instead of disconnecting the graph.
 ZERO_WEIGHT_HOP_COST = 1.0
@@ -28,12 +31,12 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         prog="stage5_score_candidates.py",
         description="Stage 5 - candidate scoring. Ranks every non-target graph gene by proximity to the "
-        "target: topology (always) and, opt-in via --method, random-walk-with-restart. Reads the graph files "
-        "in --graph-dir (Stage 3 or Stage 4); writes candidate_scores.tsv.",
+        "target: topology (always) and, opt-in via --method, random-walk-with-restart and/or BFWalk. Reads the "
+        "graph files in --graph-dir (Stage 3 or Stage 4); writes candidate_scores.tsv.",
     )
     parser.add_argument("--graph-dir", required=True, type=Path, help="Directory with the Stage 3/4 graph files.")
     parser.add_argument("--method", default="topology",
-                        help="Comma-separated subset of {topology, rwr}. Default: topology (always computed).")
+                        help="Comma-separated subset of {topology, rwr, bfwalk}. Default: topology (always computed).")
     parser.add_argument("--target", default=None,
                         help="Target Ensembl gene ID. Default: resolved_target.gene_id from graph_metadata.json.")
     parser.add_argument("--restart-prob", type=float, default=0.5,
@@ -43,6 +46,10 @@ def parse_args(argv=None):
         help="RWR on a Stage 4 graph only: extra restart mass (in units of the target's) spread over genes by "
         "genetic-evidence score. 0 = restart on the target alone. Default: 0.5.",
     )
+    parser.add_argument("--bfwalk-alpha", type=float, default=0.5,
+                        help="BFWalk attenuation coefficient (0 < alpha < 1). Default: 0.5.")
+    parser.add_argument("--bfwalk-threads", type=int, default=0,
+                        help="BFWalk threads; 0 = all available cores. Default: 0.")
     parser.add_argument("--out", type=Path, default=None, help="Output TSV. Default: <graph-dir>/candidate_scores.tsv.")
     return parser.parse_args(argv)
 
@@ -134,6 +141,40 @@ def rwr_scores(graph, gene_index, target, metadata, restart_prob, node_weight_mi
     return scores
 
 
+def bfwalk_scores(weight, gene_index, target, alpha, threads):
+    """BFWalk seeded on the target, on the directed weighted graph. BFWalk needs edge weights in ]0, 1], so
+    zero-weight edges are dropped (as in RWR, they carry no flow) and the rest are divided by the largest."""
+    if not 0.0 < alpha < 1.0:
+        fail(f"--bfwalk-alpha must be strictly between 0 and 1 (got {alpha}).")
+    try:
+        from BFWalk.bfwalk import calculate_scores
+    except ImportError:
+        fail("--method bfwalk needs the bfwalk package: pip install --index-url https://test.pypi.org/simple/ "
+             "--extra-index-url https://pypi.org/simple/ bfwalk")
+
+    edges = weight.tocoo()
+    positive = edges.data > 0
+    max_weight = edges.data[positive].max() if positive.any() else 1.0
+    network = []
+    for i, j, edge_weight in zip(edges.row[positive], edges.col[positive], edges.data[positive]):
+        network.append((int(i), int(j), float(edge_weight) / max_weight))
+
+    node2idx = {}
+    for i, gene in enumerate(gene_index):
+        node2idx[gene] = i
+    seeds = [0.0] * len(gene_index)
+    seeds[node2idx[target]] = 1.0
+    logger.info("BFWalk: %d edges with weight > 0 (scaled by max weight %.3g), alpha=%.2f.",
+                len(network), max_weight, alpha)
+    raw_scores = calculate_scores(network, node2idx, seeds, alpha=alpha, threads=threads)
+
+    scores = {}
+    for gene, score in zip(gene_index, raw_scores):
+        if gene != target:
+            scores[gene] = float(score)
+    return scores
+
+
 def run(args):
     methods = parse_methods(args.method)
     weight, _, gene_index, metadata = load_graph(args.graph_dir)
@@ -163,6 +204,10 @@ def run(args):
         scores = rwr_scores(graph, gene_index, target, metadata, args.restart_prob, args.node_weight_mix)
         result["rwr_score"] = result["gene"].map(scores).astype(float)
         rank_column = "rwr_score"
+    if "bfwalk" in methods:
+        scores = bfwalk_scores(weight, gene_index, target, args.bfwalk_alpha, args.bfwalk_threads)
+        result["bfwalk_score"] = result["gene"].map(scores).astype(float)
+        rank_column = "bfwalk_score"
 
     result = result.sort_values(rank_column, ascending=False, kind="stable").reset_index(drop=True)
     result = CandidateScoresSchema.validate(result)
