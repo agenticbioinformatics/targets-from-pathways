@@ -14,10 +14,10 @@
       "source": "reactome_gmt"
     }
   },
-  "created_at": "2026-10-20T15:17:05.158186Z",
+  "created_at": "2026-10-20T15:48:50.145510Z",
   "disease": {
     "efo_id": "MONDO_0000001",
-    "n_associated_genes": 19,
+    "n_associated_genes": 21,
     "name": "example disease"
   },
   "git_commit": "unknown",
@@ -28,7 +28,7 @@
     },
     {
       "path": "example_data/example_run/ot_disease_subset.parquet",
-      "sha256": "ddf336aeef587f2796329b43fb8316df556dd71b94966b06489436a46e0302bd"
+      "sha256": "fcc4a1302299264eedd3bdb8628628ecde0a00f258b138236835c62d035a9293"
     },
     {
       "path": "example_data/example_run/genes.parquet",

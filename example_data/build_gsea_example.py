@@ -196,6 +196,17 @@ def build_ot_disease_subset() -> pd.DataFrame:
             "score": 0.99,
         }
     )
+    # Literature evidence, as Open Targets has for many well-studied genes: stronger for some strong seeds,
+    # weak for a few weak ones, and present for two candidates. The pipeline never reads it (Stages 2 and 4
+    # use genetic_association only); validation/compare_scores.py ranks genes by it as the Open Targets baseline.
+    literature_scores = {
+        G[2]: 0.60, G[3]: 0.20, G[5]: 0.45, G[8]: 0.10, G[9]: 0.30,
+        G[17]: 0.15, G[20]: 0.05,
+        N[23]: 0.25, N[27]: 0.40,
+    }
+    for gene_id, score in literature_scores.items():
+        rows.append({"gene_id": gene_id, "disease_id": DISEASE_ID, "datatype_id": "literature",
+                     "datasource_id": "europepmc", "score": score})
     return pd.DataFrame(rows)
 
 
