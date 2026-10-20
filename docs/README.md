@@ -223,9 +223,14 @@ python3 pipeline/stage3_build_graph.py --manifest example_data/example_run/manif
 **Expected output** (log line):
 
 ```
-INFO build_graph: Graph: 25 nodes, 258 edges (6 pathways: 3 disease, 6 with seed genes; 4 interaction edges added, 1 out of scope).
+INFO build_graph: Genes on the 3 disease-relevant pathways: 19.
+INFO build_graph: Genes on the 6 pathways containing a seed gene: 25.
+INFO build_graph: Graph: 25 nodes, 258 edges (6 pathways in the union; 4 interaction edges added, 1 out of scope).
 INFO build_graph: Seed genes in the graph: 18/18.
 ```
+
+The two gene counts overlap (here every disease pathway also contains
+seeds), so the graph's node count is the size of their union, not their sum.
 
 Six of the seven pathways contain a seed gene, so they are all in the graph
 — including `R-HSA-100` (dropped by Stage 2's collapsing, but it contains
@@ -234,7 +239,8 @@ seedless pathway, is left out: its genes `N29`–`N33` are not nodes, and the
 one dropped interaction row (`N29 -> N22`) is dropped for that reason —
 proof that interaction edges really are scoped to the pathway-gene pool,
 not added genome-wide. `graph_metadata.json` records `n_seed_pathways`,
-`n_seed_genes_in_graph` and `n_seed_genes_total`.
+`n_disease_pathway_genes`, `n_seed_pathway_genes`, `n_seed_genes_in_graph`
+and `n_seed_genes_total`.
 
 On a real disease with many genetic-association genes, rule (b) can pull in
 a large share of Reactome; check `scale_report.json`'s projected edge count

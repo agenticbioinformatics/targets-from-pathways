@@ -112,6 +112,8 @@ def build_graph(gene_sets_df, disease_pathways_df, interactions_df, seed_gene_id
     if not seed_pathway_ids:
         logger.warning("None of the %d seed genes is in a pathway of gene_sets.parquet.", len(seed_gene_ids))
     pathway_ids = disease_pathway_ids | seed_pathway_ids
+    disease_pathway_genes = set(gene_sets_df.loc[gene_sets_df["set_id"].isin(disease_pathway_ids), "gene_id"])
+    seed_pathway_genes = set(gene_sets_df.loc[gene_sets_df["set_id"].isin(seed_pathway_ids), "gene_id"])
 
     graph = nx.DiGraph()
     n_gene_pairs = add_comembership_edges(graph, gene_sets_df, pathway_ids)
@@ -121,6 +123,8 @@ def build_graph(gene_sets_df, disease_pathways_df, interactions_df, seed_gene_id
         "n_pathways_union": len(pathway_ids),
         "n_disease_pathways": len(disease_pathway_ids),
         "n_seed_pathways": len(seed_pathway_ids),
+        "n_disease_pathway_genes": len(disease_pathway_genes),
+        "n_seed_pathway_genes": len(seed_pathway_genes),
         "n_nodes": graph.number_of_nodes(),
         "n_edges": graph.number_of_edges(),
         "n_comembership_unordered_pairs": n_gene_pairs,
@@ -167,10 +171,14 @@ def run(args):
     seed_gene_ids = set(SeedGenesSchema.validate(pd.read_csv(seed_genes_path, sep="\t"))["gene_id"])
 
     graph, stats = build_graph(gene_sets_df, disease_pathways_df, interactions_df, seed_gene_ids)
-    logger.info("Graph: %d nodes, %d edges (%d pathways: %d disease, %d with seed genes; "
-                "%d interaction edges added, %d out of scope).",
-                stats["n_nodes"], stats["n_edges"], stats["n_pathways_union"], stats["n_disease_pathways"],
-                stats["n_seed_pathways"], stats["n_interaction_edges_added"], stats["n_interaction_edges_out_of_scope"])
+    # The two gene sets overlap (seed pathways can also be disease pathways), so the node count is their union.
+    logger.info("Genes on the %d disease-relevant pathways: %d.", stats["n_disease_pathways"],
+                stats["n_disease_pathway_genes"])
+    logger.info("Genes on the %d pathways containing a seed gene: %d.", stats["n_seed_pathways"],
+                stats["n_seed_pathway_genes"])
+    logger.info("Graph: %d nodes, %d edges (%d pathways in the union; %d interaction edges added, %d out of scope).",
+                stats["n_nodes"], stats["n_edges"], stats["n_pathways_union"],
+                stats["n_interaction_edges_added"], stats["n_interaction_edges_out_of_scope"])
     weight, sign, gene_index = graph_to_sparse(graph)
     # Seeds that are in no size-capped pathway are not graph nodes, so they cannot seed Stage 5's propagation.
     n_seeds_in_graph = len(seed_gene_ids & set(gene_index))

@@ -1,5 +1,5 @@
 {
-  "created_at": "2026-10-20T12:58:28.305365+00:00",
+  "created_at": "2026-10-20T13:15:43.804011+00:00",
   "disease": {
     "efo_id": "MONDO_0000001",
     "n_associated_genes": 19,
@@ -33,6 +33,7 @@
     "ENSG00000000028": 0.0
   },
   "n_comembership_unordered_pairs": 128,
+  "n_disease_pathway_genes": 19,
   "n_disease_pathways": 3,
   "n_edges": 258,
   "n_interaction_duplicate_pairs_collapsed": 0,
@@ -42,6 +43,7 @@
   "n_pathways_union": 6,
   "n_seed_genes_in_graph": 18,
   "n_seed_genes_total": 18,
+  "n_seed_pathway_genes": 25,
   "n_seed_pathways": 6,
   "reactome_sources": [
     {

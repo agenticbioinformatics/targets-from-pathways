@@ -147,6 +147,8 @@ def test_pathway_union_is_disease_plus_seed_pathways(graph_and_stats):
     assert stats["n_disease_pathways"] == 2
     assert stats["n_seed_pathways"] == 1  # R-ISOLATE
     assert stats["n_pathways_union"] == 3  # R-NOSEED is neither disease-relevant nor seed-containing
+    assert stats["n_disease_pathway_genes"] == 4  # A, B, C, D
+    assert stats["n_seed_pathway_genes"] == 1  # F
     assert Y not in graph.nodes
 
 
