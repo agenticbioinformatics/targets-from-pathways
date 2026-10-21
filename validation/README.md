@@ -6,7 +6,7 @@ Does the pipeline recover disease's known genes, and does it do so better than s
 
 ```
 python validation/build_graph_catalogue.py \
-    --catalogue-dir validation/Disease_pathways_graph_catalogue \
+    --catalogue-dir validation/Disease_graph_catalogue \
     --target-dir data/opentargets/26.06/target \
     --fi-file data/reactome/FIsInGene_04142025_with_annotations.txt
 ```
@@ -17,7 +17,7 @@ only the first 10 included diseases for a test run, or `--diseases EFO_0003767,M
 of interest.
 
 One graph per Open Targets disease, built from the genome-wide disease-pathway GSEA catalogue in
-`validation/Disease_pathways_graph_catalogue/` (Open Targets 26.03; see its `README.md` for how the GSEA
+`validation/Disease_graph_catalogue/` (Open Targets 26.03; see its `README.md` for how the GSEA
 was run). Only Reactome pathways are used for now.
 
 How it is built:
@@ -41,16 +41,32 @@ How it is built:
    genes, e.g. rRNAs and viral proteins) and 99.4% of the FI file's. For 81% of the pathways the mapped gene
    count equals the catalogue's `geneset_size` (the catalogue mapped onto 26.03 symbols); 95% are within 11%.
 
-Written to `validation/Disease_pathways_graph_catalogue/`:
+Written to `validation/Disease_graph_catalogue/disease_graph_catalogue/` (`--out-dir` changes the parent),
+one directory per included disease:
 
-| File | One row per | Columns |
-|---|---|---|
-| `graph_catalogue_diseases.parquet` | included disease | `diseaseId`, `n_pathways`, `reactome_ids` (list), `n_nodes`, `n_edges`, `n_isolated_nodes`, `n_seeds`, `n_seeds_in_graph`, `n_seed_symbols_unmapped` |
-| `graph_catalogue_nodes.parquet` | (disease, graph gene) | `diseaseId`, `gene_id`, `seed_score` (0 for a non-seed) |
-| `graph_catalogue_edges.parquet` | (disease, directed edge) | `diseaseId`, `gene_a`, `gene_b`, `sign` |
+```
+disease_graph_catalogue/
+├── graph_catalogue_diseases.parquet      one summary row per included disease
+├── EFO_0003767_disease_graph/
+│   ├── graph_weight.npz                  Stage 3's graph: weight 1 per directed edge
+│   ├── graph_sign.npz                    edge signs (+1, -1, 0)
+│   ├── graph_gene_index.json             the Ensembl gene of each matrix row / column
+│   ├── graph_metadata.json               the summary row plus the input paths and FDR cutoff
+│   ├── disease_seed_genes.tsv            gene_id, score: the seeds, strongest first
+│   └── disease_pathways.tsv              set_id (R-HSA ID), gene_set, source_db, pval, fdr (recomputed)
+└── ...
+```
 
-`n_seeds` counts all the disease's scored genes, `n_seeds_in_graph` those on its pathways; seeds off the
-pathways cannot take part in propagation. Disease IDs are Open Targets' own (e.g. inflammatory bowel disease
+Each disease directory has the same files as a pipeline run directory, so Stage 5 scores a disease directly:
+
+```
+python pipeline/stage5_score_candidates.py --graph-dir validation/Disease_graph_catalogue/disease_graph_catalogue/EFO_0003767_disease_graph
+```
+
+`graph_catalogue_diseases.parquet` columns: `diseaseId`, `n_pathways`, `n_nodes`, `n_edges`,
+`n_isolated_nodes`, `n_seeds`, `n_seeds_in_graph`, `n_seed_symbols_unmapped`. `n_seeds` counts all the
+disease's scored genes and `n_seeds_in_graph` those on its pathways: seeds off the pathways cannot take part
+in propagation (Stage 5 drops them with a log line). Disease IDs are Open Targets' own (e.g. inflammatory bowel disease
 is `EFO_0003767`, not `MONDO_0005265`).
 
 The log ends with a summary (median graph size, and how many diseases have no seed in their graph or no

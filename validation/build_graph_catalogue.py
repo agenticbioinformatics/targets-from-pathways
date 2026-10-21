@@ -1,6 +1,6 @@
 """Build a catalogue of disease graphs from the Open Targets disease-pathway GSEA catalogue (Reactome only).
 
-For every disease in Disease_pathways_graph_catalogue/ (see its README.md):
+For every disease in the GSEA catalogue (--catalogue-dir; see its README.md):
 1. Pathways: the Reactome rows of genetic_disease_pathway_catalogue.parquet, with the Benjamini-Hochberg FDR
    recomputed over the disease's Reactome pathways only (both ES signs, non-null p-values), keeping es > 0 and
    FDR < --fdr. A disease with no such pathway is left out.
@@ -10,22 +10,25 @@ For every disease in Disease_pathways_graph_catalogue/ (see its README.md):
 3. Seeds: the disease's genes in genetic_gene_scores_input.parquet (genetic_association score > 0).
 Gene symbols are mapped to Ensembl gene IDs with the Open Targets target table, as in Stage 1.
 
-Writes into --out-dir: graph_catalogue_edges.parquet, graph_catalogue_nodes.parquet and
-graph_catalogue_diseases.parquet (one row per included disease).
+Writes --out-dir/disease_graph_catalogue/, with one <diseaseId>_disease_graph/ directory per included disease
+holding Stage 3's graph files (graph_weight.npz, graph_sign.npz, graph_gene_index.json, graph_metadata.json),
+disease_seed_genes.tsv and disease_pathways.tsv, so Stage 5 can score a disease with --graph-dir <that
+directory>; plus graph_catalogue_diseases.parquet, one summary row per included disease.
 """
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
+import scipy.sparse as sp
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pipeline"))
 import stage3_build_graph as bg  # noqa: E402
+from stage0_schemas import DiseasePathwaysSchema, SeedGenesSchema  # noqa: E402
 from stage1_ingest import (  # noqa: E402
     CoverageTracker,
     build_genes_table,
@@ -38,10 +41,7 @@ from stage1_ingest import (  # noqa: E402
 logger = logging.getLogger("graph_catalogue")
 
 CATALOGUE_COLUMNS = ["diseaseId", "pathway", "source", "es", "nes", "pval", "geneset_size"]
-# Written one disease at a time: all graphs together are too large to hold in memory.
-EDGES_SCHEMA = pa.schema([("diseaseId", pa.string()), ("gene_a", pa.string()), ("gene_b", pa.string()),
-                          ("sign", pa.int8())])
-NODES_SCHEMA = pa.schema([("diseaseId", pa.string()), ("gene_id", pa.string()), ("seed_score", pa.float64())])
+CATALOGUE_SUBDIR = "disease_graph_catalogue"
 
 
 def parse_args(argv=None):
@@ -51,14 +51,15 @@ def parse_args(argv=None):
         "catalogue (Reactome pathways only), with each disease's genetic-association scores as seeds.",
     )
     parser.add_argument("--catalogue-dir", type=Path, required=True,
-                        help="Directory with the GSEA catalogue files, e.g. validation/Disease_pathways_graph_catalogue.")
+                        help="Directory with the GSEA catalogue files, e.g. validation/Disease_graph_catalogue.")
     parser.add_argument("--target-dir", type=Path, required=True,
                         help="Open Targets target parquet directory, for symbol -> Ensembl, "
                         "e.g. data/opentargets/26.06/target.")
     parser.add_argument("--fi-file", type=Path, required=True,
                         help="Reactome functional-interaction file, unzipped, "
                         "e.g. data/reactome/FIsInGene_04142025_with_annotations.txt.")
-    parser.add_argument("--out-dir", type=Path, default=None, help="Output directory. Default: --catalogue-dir.")
+    parser.add_argument("--out-dir", type=Path, default=None,
+                        help=f"Writes <out-dir>/{CATALOGUE_SUBDIR}/. Default: --catalogue-dir.")
     parser.add_argument("--fdr", type=float, default=0.05, help="FDR cutoff (BH over Reactome). Default: 0.05.")
     parser.add_argument("--diseases", default=None,
                         help="Only these diseases, comma-separated Open Targets IDs, e.g. EFO_0003767,MONDO_0004975.")
@@ -121,7 +122,7 @@ def read_seeds(scores_path, index, disease_ids):
     return seeds, n_unmapped
 
 
-def build_disease_graph(disease_id, pathways, gene_sets, interactions_by_gene_a, seed_scores):
+def build_disease_graph(pathways, gene_sets, interactions_by_gene_a):
     """Stage 3's graph on the disease's pathways. Interactions are pre-filtered to the node set, which leaves
     Stage 3's result unchanged (it drops out-of-scope rows itself) but keeps each call fast."""
     disease_gene_sets = gene_sets[gene_sets["set_id"].isin(pathways)]
@@ -129,20 +130,24 @@ def build_disease_graph(disease_id, pathways, gene_sets, interactions_by_gene_a,
     candidate_rows = interactions_by_gene_a.loc[interactions_by_gene_a.index.isin(nodes)]
     in_scope = candidate_rows[candidate_rows["gene_b"].isin(nodes)].reset_index()
     graph, _ = bg.build_graph(disease_gene_sets, pd.DataFrame({"set_id": sorted(pathways)}), in_scope)
+    return graph
 
-    edges = pd.DataFrame(
-        [(disease_id, a, b, attrs["sign"]) for a, b, attrs in graph.edges(data=True)],
-        columns=["diseaseId", "gene_a", "gene_b", "sign"],
-    )
-    node_ids = sorted(graph.nodes)
-    nodes_df = pd.DataFrame({"diseaseId": disease_id, "gene_id": node_ids})
-    nodes_df["seed_score"] = nodes_df["gene_id"].map(seed_scores).fillna(0.0)
-    return graph, edges, nodes_df
+
+def write_disease_dir(disease_dir, graph, seeds_df, pathways_df, metadata):
+    """Stage 3's four graph files plus the seeds and pathways, so Stage 5 runs with --graph-dir disease_dir."""
+    disease_dir.mkdir(parents=True, exist_ok=True)
+    weight, sign, gene_index = bg.graph_to_sparse(graph)
+    sp.save_npz(disease_dir / "graph_weight.npz", weight)
+    sp.save_npz(disease_dir / "graph_sign.npz", sign)
+    (disease_dir / "graph_gene_index.json").write_text(json.dumps(gene_index, indent=2))
+    (disease_dir / "graph_metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True))
+    SeedGenesSchema.validate(seeds_df).to_csv(disease_dir / "disease_seed_genes.tsv", sep="\t", index=False)
+    DiseasePathwaysSchema.validate(pathways_df).to_csv(disease_dir / "disease_pathways.tsv", sep="\t", index=False)
 
 
 def run(args):
-    out_dir = args.out_dir or args.catalogue_dir
-    out_dir.mkdir(parents=True, exist_ok=True)
+    catalogue_out = (args.out_dir or args.catalogue_dir) / CATALOGUE_SUBDIR
+    catalogue_out.mkdir(parents=True, exist_ok=True)
 
     logger.info("Reading the GSEA catalogue (Reactome only)")
     catalogue = pd.read_parquet(args.catalogue_dir / "genetic_disease_pathway_catalogue.parquet",
@@ -170,9 +175,11 @@ def run(args):
     gene_sets, gmt_coverage = read_reactome_gene_sets(args.catalogue_dir / "merged_gene_sets.gmt", index)
     logger.info("Reactome gene sets: %d, %.2f%% of their symbols mapped to Ensembl.",
                 gene_sets["set_id"].nunique(), gmt_coverage["percent_mapped"])
-    missing_sets = set(selected["pathway"]) - set(gene_sets["set_id"])
+    reactome_ids = gene_sets.drop_duplicates("set_id").set_index("set_id")["reactome_id"]
+    missing_sets = set(selected["pathway"]) - set(reactome_ids.index)
     if missing_sets:
         logger.warning("%d selected pathway(s) not in the GMT, ignored: %s", len(missing_sets), sorted(missing_sets)[:5])
+        selected = selected[~selected["pathway"].isin(missing_sets)]
 
     fi_coverage = CoverageTracker(source="reactome_fi")
     interactions = build_interactions_table(args.fi_file, index, "reactome", fi_coverage, curated_only=True,
@@ -182,38 +189,44 @@ def run(args):
     interactions_by_gene_a = interactions.set_index("gene_a")
 
     seeds, n_unmapped_seeds = read_seeds(args.catalogue_dir / "genetic_gene_scores_input.parquet", index, disease_ids)
-    seeds_by_disease = {d: dict(zip(g["gene_id"], g["score"])) for d, g in seeds.groupby("diseaseId")}
+    seeds_by_disease = dict(tuple(seeds.groupby("diseaseId")))
+    provenance = {
+        "gsea_catalogue": str(args.catalogue_dir),
+        "target_dir": str(args.target_dir),
+        "fi_file": str(args.fi_file),
+        "fdr_cutoff": args.fdr,
+    }
 
-    edges_writer = pq.ParquetWriter(out_dir / "graph_catalogue_edges.parquet", EDGES_SCHEMA)
-    nodes_writer = pq.ParquetWriter(out_dir / "graph_catalogue_nodes.parquet", NODES_SCHEMA)
     summaries = []
-    pathways_by_disease = selected.groupby("diseaseId")["pathway"].apply(set)
-    reactome_ids = gene_sets.drop_duplicates("set_id").set_index("set_id")["reactome_id"]
-    for n, disease_id in enumerate(disease_ids, start=1):
-        pathways = pathways_by_disease[disease_id]
-        seed_scores = seeds_by_disease.get(disease_id, {})
-        graph, edges, nodes_df = build_disease_graph(disease_id, pathways, gene_sets, interactions_by_gene_a,
-                                                     seed_scores)
-        edges_writer.write_table(pa.Table.from_pandas(edges, schema=EDGES_SCHEMA, preserve_index=False))
-        nodes_writer.write_table(pa.Table.from_pandas(nodes_df, schema=NODES_SCHEMA, preserve_index=False))
-        summaries.append({
+    for n, (disease_id, disease_pathways) in enumerate(selected.groupby("diseaseId"), start=1):
+        graph = build_disease_graph(set(disease_pathways["pathway"]), gene_sets, interactions_by_gene_a)
+        seeds_df = seeds_by_disease.get(disease_id, pd.DataFrame(columns=["gene_id", "score"]))
+        seeds_df = seeds_df[["gene_id", "score"]].sort_values(["score", "gene_id"], ascending=[False, True])
+        pathways_df = pd.DataFrame({
+            "set_id": disease_pathways["pathway"].map(reactome_ids).to_numpy(),
+            "gene_set": disease_pathways["pathway"].str.replace(r" \[Reactome\]$", "", regex=True).to_numpy(),
+            "source_db": "reactome",
+            "pval": disease_pathways["pval"].to_numpy(),
+            "fdr": disease_pathways["fdr_reactome"].to_numpy(),
+        }).sort_values(["fdr", "pval"]).drop_duplicates("set_id")
+        summary = {
             "diseaseId": disease_id,
-            "n_pathways": len(pathways),
-            "reactome_ids": sorted(reactome_ids.reindex(sorted(pathways)).dropna()),
+            "n_pathways": len(pathways_df),
             "n_nodes": graph.number_of_nodes(),
             "n_edges": graph.number_of_edges(),
             "n_isolated_nodes": sum(1 for gene in graph.nodes if graph.degree(gene) == 0),
-            "n_seeds": len(seed_scores),
-            "n_seeds_in_graph": int((nodes_df["seed_score"] > 0).sum()),
+            "n_seeds": len(seeds_df),
+            "n_seeds_in_graph": int(seeds_df["gene_id"].isin(set(graph.nodes)).sum()),
             "n_seed_symbols_unmapped": int(n_unmapped_seeds.get(disease_id, 0)),
-        })
+        }
+        write_disease_dir(catalogue_out / f"{disease_id}_disease_graph", graph, seeds_df, pathways_df,
+                          {**summary, **provenance})
+        summaries.append(summary)
         if n % 250 == 0:
             logger.info("  %d/%d diseases", n, len(disease_ids))
 
-    edges_writer.close()
-    nodes_writer.close()
     diseases_df = pd.DataFrame(summaries)
-    diseases_df.to_parquet(out_dir / "graph_catalogue_diseases.parquet", index=False)
+    diseases_df.to_parquet(catalogue_out / "graph_catalogue_diseases.parquet", index=False)
 
     no_seed = int((diseases_df["n_seeds_in_graph"] == 0).sum())
     no_edge = int((diseases_df["n_edges"] == 0).sum())
@@ -221,8 +234,8 @@ def run(args):
                 "%d disease(s) without a seed in the graph, %d without an edge.",
                 len(diseases_df), diseases_df["n_nodes"].median(), diseases_df["n_edges"].median(),
                 diseases_df["n_seeds_in_graph"].median(), no_seed, no_edge)
-    logger.info("Written to %s", out_dir)
-    return out_dir
+    logger.info("Written to %s", catalogue_out)
+    return catalogue_out
 
 
 def main(argv=None):

@@ -1336,3 +1336,29 @@ only); three parquet tables.
 **Changes:** `validation/build_graph_catalogue.py`: `--catalogue-dir`,
 `--target-dir` and `--fi-file` are now required (help text gives example
 paths); `validation/README.md`'s command passes all three.
+
+
+## Prompt 52 — logging error in the catalogue builder
+
+> fix this: (pasted traceback) TypeError: not all arguments converted during
+> string formatting ... logger.info("Mapping gene symbols to Ensembl", args.target_dir)
+
+**Changes:** the message had lost its `%s` but kept the argument; the
+argument was removed. Every other log call was checked for the same mismatch.
+
+
+## Prompt 53 — one directory per disease
+
+> the output catalogue should create one subdirectory per disease. the
+> subdirectory should be named for example
+> "disease_graph_catalogue/MONDO1_disease_graph"
+
+**Changes:** `validation/build_graph_catalogue.py` writes
+`<out-dir>/disease_graph_catalogue/<diseaseId>_disease_graph/` with Stage 3's
+four graph files, `disease_seed_genes.tsv` and `disease_pathways.tsv` (so
+Stage 5 runs on it with `--graph-dir`), plus
+`disease_graph_catalogue/graph_catalogue_diseases.parquet`; the combined
+edges/nodes parquet files are gone. All 3,766 tested disease IDs were checked
+to be safe directory names. Tests rewritten (7, including Stage 5 scoring a
+disease directory); README updated, including the data folder's new name
+`validation/Disease_graph_catalogue`. 144 tests passed.
