@@ -100,9 +100,10 @@ Reactome's hierarchy) are collapsed to the smallest one first, and p-values are 
 
 **Benchmark holdout.** `--benchmark-holdout-file` lists genes, one per line (symbol, synonym or Ensembl
 ID; `#` starts a comment). They are removed from the seeds and the GSEA ranking, and Stage 4 ignores
-their own evidence, so a held-out gene can only come back as a ranked candidate. This is what
-`validation/leave_one_out.py` uses. A held-out gene can be ranked only if the remaining seeds still
-detect one of its pathways; otherwise it is not in the graph.
+their own evidence, so a held-out gene can only come back as a ranked candidate. A held-out gene can be
+ranked only if the remaining seeds still detect one of its pathways; otherwise it is not in the graph.
+(`validation/leave_one_out.py` does not use this option: it holds seeds out on the precomputed disease graphs,
+see `validation/README.md`.)
 
 **Diseases with few seed genes.** GSEA needs at least 5 seed genes in a pathway, and blitzgsea's
 calibration can fail on small rankings. In those cases Stage 2 logs a warning and writes an empty

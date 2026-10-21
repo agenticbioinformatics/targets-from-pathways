@@ -79,26 +79,74 @@ Other options: `--fdr` (default 0.05) and `--out-dir` (default: `--catalogue-dir
 ## Leave-one-out
 
 ```
-python validation/leave_one_out.py --disease MONDO_0005265 --from-manifest out/manifest.json --jobs 8
+python validation/leave_one_out.py \
+    --catalogue validation/Disease_graph_catalogue/disease_graph_catalogue \
+    --diseases EFO_0003767,MONDO_0004975 --jobs 8
 ```
 
-For each seed gene (one with a genetic-association score > 0 for the disease), the pipeline is rerun as
-if that gene were not associated with the disease: it is removed from the seed set, its score and rank among the candidates are recorded.
-A held-out gene that is on no pathway GSEA still detects without it drops out of the graph; it is recorded as not ranked, and the metrics are computed over the genes that were ranked.
+Runs on the disease graph catalogue above. Choose diseases with `--diseases` (comma-separated IDs) or
+`--n-diseases N` (the first N, sorted by ID); without either, every disease of the catalogue is run.
 
-- `validation/scores_left_out.tsv`: `gene`, `score` (BFWalk by default; `--method rwr` for RWR)
-- `validation/leave_one_out.log`: AUROC and recall@k for BFWalk and RWR, random ranking
+For each disease, every seed that is in its graph is held out in turn:
+1. the seed is removed from the seeds;
+2. every graph gene that is not one of the remaining seeds is a candidate, the held-out gene among them;
+3. the candidates are scored with Stage 5's BFWalk and RWR (`pipeline/stage5_score_candidates.py`, uniform
+   seeds), and the held-out gene's rank among them is recorded (mid-rank: ties count half, 1 = best).
 
-Each gene is a full Stage 2-5 run; add `--max-genes 50` to try a random sub-sample
-first. Without an existing `out/`, use `--data-dir data/` instead of `--from-manifest` to run Stage 1.
+Over the held-out seeds of a disease it reports, for BFWalk, RWR and a random ranking: **AUROC** (per gene, the
+fraction of the other candidates it outscores, averaged) and **recall@k** (the fraction ranked within the top k),
+with a permutation p-value against `--n-random` random rankings. The ROC curve plots, for each fraction of
+candidates taken from the top, the fraction of held-out seeds recovered; its area is the AUROC.
+
+Seeds that are not in the graph (on none of the disease's pathways) cannot be held out and are left out.
+A disease with fewer than 2 seeds in its graph is skipped. The graph is not rebuilt for each held-out seed:
+its pathways were selected by a GSEA that included that seed's score, so the result measures recovery given
+the disease's pathways, and is somewhat optimistic.
+
+Written to `--out-dir` (default `validation/leave_one_out/`):
+
+```
+leave_one_out/
+├── leave_one_out_summary.tsv          one row per disease and method: AUROC, recall@k, p-values
+├── leave_one_out.log
+├── roc_curve_all_diseases.png         all held-out seeds of all diseases pooled
+└── EFO_0003767_leave_one_out/
+    ├── scores_left_out_details.tsv    one row per held-out seed: scores, ranks, candidates, genetic evidence
+    ├── metrics.tsv, leave_one_out.log
+    ├── roc_curve.png                  BFWalk, RWR and random
+    ├── full/candidate_scores.tsv      all seeds, nothing held out
+    └── ENSG00000.../                  one directory per held-out seed
+        ├── candidate_scores.tsv       every candidate's bfwalk_score and rwr_score
+        ├── result.json                the held-out gene's scores and ranks
+        └── seed.log
+```
+
+Other options: `--max-seeds N` (a random sample of N seeds per disease), `--jobs` (seeds scored in
+parallel), `--k`, `--n-random`, `--seed`, `--restart-prob`, `--bfwalk-alpha`.
 
 ## Pipeline vs Open Targets
 
 ```
-python validation/compare_scores.py
+python validation/compare_scores.py \
+    --association-dir data/opentargets/26.06/association_by_datasource_direct
 ```
 
-Ranks the same held-out genes by their Open Targets score for the disease, leaving out the genetic
-evidence that was hidden from the pipeline, and compares that ranking with BFWalk and RWR. It also
-correlates genetic evidence, Open Targets, BFWalk and RWR scores. `validation/compare_scores.log` ends
-with a YES/NO answer per method to "is the pipeline better than sorting the Open Targets data by score?".
+Run after `leave_one_out.py` (same `--diseases` / `--n-diseases` options; reads `--leave-one-out-dir`,
+default `validation/leave_one_out/`). For each disease it ranks every held-out seed among the candidates of its
+own leave-one-out run by its Open Targets score for the disease over every datatype except
+`genetic_association` (the evidence that made it a seed): "sorting the Open Targets data by score" without
+the answer. It compares that ranking with BFWalk and RWR (AUROC, recall@k, a paired Wilcoxon test on the
+per-seed AUROC), correlates genetic evidence, Open Targets, BFWalk and RWR scores, and answers per method
+"is the pipeline better than sorting the Open Targets data by score?" (`better`, `worse` or `no_difference`
+at p < 0.05).
+
+The baseline uses the local Open Targets 26.06 **direct** associations, while the seeds come from the
+catalogue's 26.03 **indirect** genetic scores; a disease missing from the 26.06 data gets a baseline of 0 for
+every gene (logged).
+
+Writes, in each `<diseaseId>_leave_one_out/`: `compare_scores.log`, `compare_scores_details.tsv` and
+`roc_curve_vs_open_targets.png`; and in `--leave-one-out-dir`: `compare_scores_summary.tsv` (one row per disease
+and method, with the verdict), `compare_scores.log` (how many diseases each answer) and
+`roc_curve_vs_open_targets_all_diseases.png`.
+
+Both scripts are tested by `tests/test_leave_one_out.py` on a hand-built catalogue.

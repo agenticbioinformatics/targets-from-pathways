@@ -1362,3 +1362,42 @@ edges/nodes parquet files are gone. All 3,766 tested disease IDs were checked
 to be safe directory names. Tests rewritten (7, including Stage 5 scoring a
 disease directory); README updated, including the data folder's new name
 `validation/Disease_graph_catalogue`. 144 tests passed.
+
+
+## Prompt 54 — leave-one-out and compare_scores over the graph catalogue
+
+> now the validation/leave_one_out.py script needs to be rewritten. the aim
+> is to go over the disease graph catalogue, for each disease take the graph
+> and the seeds, iterate over the seeds: at each iteration take the seed out
+> of the seeds list, calculate its scores using bfwalk and rwr and its rank.
+> calculate AUROC and recall at k as it is being done now. the same with
+> compare_scores.py. I would like the scripts to generate one leave-one-out
+> subdirectory per disease, inside it there should be one subdirectory per
+> seed. inside it there should be scores, logs, output files. also generate
+> a png plot with the ROC curve (both bfwalk, rwr and random ranks).
+
+Answers to questions: the Open Targets baseline uses the local 26.06
+association_by_datasource_direct; runs are for --diseases / --n-diseases as
+in build_graph_catalogue.py (per-seed files kept as plain TSV).
+
+**Changes:**
+- `validation/leave_one_out.py` rewritten: reads
+  `<catalogue>/<diseaseId>_disease_graph/`; holds out every seed in the graph
+  (`--max-seeds` to sample), scores the candidates with Stage 5's
+  `bfwalk_scores` / `rwr_scores` (worker processes, `--jobs`), records mid-ranks;
+  same AUROC / recall@k / random permutation metrics as before. Writes
+  `<out-dir>/<diseaseId>_leave_one_out/` (per-seed directories with
+  candidate_scores.tsv, result.json, seed.log; full/ with all seeds;
+  details, metrics, log, roc_curve.png) and a summary TSV, log and pooled ROC
+  at the top. No pipeline stages are rerun any more (no Stage 1-4).
+- `validation/compare_scores.py` rewritten: per disease, ranks each held-out
+  seed among its own run's candidates by its Open Targets score without
+  genetic_association (`--association-dir`), compares with BFWalk/RWR
+  (metrics, paired Wilcoxon, Spearman, full-run overlap), writes per-disease
+  log/details/ROC vs Open Targets and a summary of verdicts.
+- `tests/test_leave_one_out.py`: 5 tests on a hand-built star graph with
+  hand-computed tied ranks (2.5 of 4, AUROC 0.5) and Open Targets ranks.
+- `validation/README.md` sections rewritten; docs/README.md no longer says
+  leave_one_out.py uses Stage 2's holdout option. Known limitation documented:
+  the graph's pathways were selected with the held-out seed included.
+  149 tests passed. Not run on the real catalogue (left to the user).

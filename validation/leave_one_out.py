@@ -1,54 +1,59 @@
-"""Leave-one-out validation of the pipeline for one disease.
+"""Leave-one-out validation over the disease graph catalogue (validation/build_graph_catalogue.py).
 
-For each held-out gene (by default every seed gene that is a node of the disease's graph), the pipeline's
-Stages 2-5 are rerun with that gene treated as not associated with the disease: Stage 2's
---benchmark-holdout-file removes it from the seed genes and the GSEA signature, and Stage 4 ignores its
-Open Targets evidence. The gene is then a candidate like any other, and its score and rank among that run's
-candidates measure whether the pipeline recovers it.
+For each disease, its graph and seeds come from <catalogue>/<diseaseId>_disease_graph/. Every seed that is a
+graph node is held out in turn: it is removed from the seeds, every graph gene that is not one of the remaining
+seeds is a candidate (the held-out gene among them), and the candidates are scored with Stage 5's BFWalk and
+random walk with restart (pipeline/stage5_score_candidates.py). The held-out gene's rank among the candidates
+measures whether the pipeline recovers it. The graph itself is not rebuilt: its pathways were selected by a GSEA
+that included the held-out gene, so this measures recovery given the disease's pathways.
 
-Writes to --out-dir (default validation/):
-- scores_left_out.tsv          gene, score (the --method score of each held-out gene in its own run)
-- scores_left_out_details.tsv  per gene: genetic evidence, both pipeline scores and ranks, the Open Targets
-                               baseline score and rank, and the candidate pool size (read by compare_scores.py)
-- leave_one_out.log            AUROC and recall@k of the pipeline next to a random ranking
-Runs go to --work-dir (default validation/runs/<disease>/): Stage 1 once, one full run without a holdout, and
-one directory per held-out gene, deleted after scoring (kept when a stage fails, with its pipeline.log).
+Writes into --out-dir/<diseaseId>_leave_one_out/:
+- full/candidate_scores.tsv       all seeds, nothing held out (read by compare_scores.py)
+- <gene>/candidate_scores.tsv     every candidate's bfwalk_score and rwr_score with <gene> held out
+- <gene>/result.json, seed.log    the held-out gene's scores and ranks, and what was run
+- scores_left_out_details.tsv     one row per held-out seed (read by compare_scores.py)
+- metrics.tsv, leave_one_out.log  AUROC and recall@k of BFWalk and RWR next to a random ranking
+- roc_curve.png                   ROC curves of BFWalk, RWR and a random ranking
+and into --out-dir: leave_one_out_summary.tsv (one row per disease and method), leave_one_out.log, and
+roc_curve_all_diseases.png (every held-out seed of every disease pooled).
 
-Metrics, over the held-out genes that are candidates in their own run:
-- rank: mid-rank among the run's candidates (ties count half), 1 = best.
+Metrics, over the held-out seeds:
+- rank: mid-rank among the candidates (ties count half), 1 = best.
 - AUROC: per gene, the fraction of the other candidates it outscores (ties count half); averaged over genes.
+  The ROC curve plots, for each fraction x of the candidates taken from the top, the fraction of held-out genes
+  ranked within it; its area is this AUROC.
 - recall@k: the fraction of held-out genes ranked within the top k.
-- random: a uniformly random ranking of the same candidates; expectation, plus a permutation p-value of the
-  pipeline's metric against --n-random random rankings.
+- random: a uniformly random ranking of the same candidates; expectation, plus a permutation p-value of each
+  method's metric against --n-random random rankings.
 """
 
 import argparse
 import json
 import logging
 import os
-import re
-import shutil
-import subprocess
+import signal
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
+import matplotlib
 
-REPO_DIR = Path(__file__).resolve().parent.parent
-PIPELINE_DIR = REPO_DIR / "pipeline"
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+
 VALIDATION_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(VALIDATION_DIR.parent / "pipeline"))
+import stage5_score_candidates as sc  # noqa: E402
+from stage0_schemas import SeedGenesSchema, load_graph  # noqa: E402
 
 METHODS = ["bfwalk", "rwr"]
-ENSEMBL_GENE_ID = re.compile(r"^ENSG\d{11}$")
-# The Open Targets baseline uses every datatype except this one: the held-out gene's genetic evidence is
-# exactly what the validation hides.
-HIDDEN_DATATYPE = "genetic_association"
-RECORD_COLUMNS = [
-    "gene", "symbol", "status", "genetic_evidence", "ot_score", "n_candidates",
-    "bfwalk_score", "bfwalk_rank", "rwr_score", "rwr_rank", "ot_rank",
-]
+GRAPH_SUFFIX = "_disease_graph"
+LOO_SUFFIX = "_leave_one_out"
+RECORD_COLUMNS = ["gene", "status", "genetic_evidence", "n_seeds", "n_candidates",
+                  "bfwalk_score", "bfwalk_rank", "rwr_score", "rwr_rank"]
 
 logger = logging.getLogger("leave_one_out")
 
@@ -56,29 +61,27 @@ logger = logging.getLogger("leave_one_out")
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         prog="leave_one_out.py",
-        description="Leave-one-out validation for one disease: rerun Stages 2-5 once per held-out gene with "
-        "that gene treated as not associated with the disease, and score its recovery (AUROC, recall@k) "
-        "against a random ranking.",
+        description="Leave-one-out validation over the disease graph catalogue: hold out each seed of a disease "
+        "in turn, score the candidates with BFWalk and RWR, and measure the held-out gene's recovery (AUROC, "
+        "recall@k) against a random ranking.",
     )
-    parser.add_argument("--disease", required=True, help="Disease ID, e.g. MONDO_0005265.")
-    parser.add_argument("--data-dir", type=Path, default=REPO_DIR / "data", help="Stage 1 source cache. Default: data/.")
-    parser.add_argument("--from-manifest", type=Path, default=None,
-                        help="Use this existing Stage 1 manifest.json for --disease instead of running Stage 1.")
-    parser.add_argument("--allow-low-coverage", action="store_true", help="Passed to Stage 1.")
-    parser.add_argument("--genes", type=Path, default=None,
-                        help="Held-out genes, one Ensembl ID per line ('#' comments allowed). Default: every seed "
-                        "gene that is a node of the disease's graph.")
-    parser.add_argument("--max-genes", type=int, default=None,
-                        help="Hold out at most this many genes, a random sample (--seed). Default: all.")
-    parser.add_argument("--method", choices=METHODS, default="bfwalk",
-                        help="Score written to scores_left_out.tsv. Both are computed. Default: bfwalk.")
+    parser.add_argument("--catalogue", type=Path, required=True,
+                        help="build_graph_catalogue.py's output, e.g. "
+                        "validation/Disease_graph_catalogue/disease_graph_catalogue.")
+    parser.add_argument("--out-dir", type=Path, default=VALIDATION_DIR / "leave_one_out",
+                        help="Output directory. Default: validation/leave_one_out/.")
+    parser.add_argument("--diseases", default=None,
+                        help="Only these diseases, comma-separated Open Targets IDs, e.g. EFO_0003767,MONDO_0004975.")
+    parser.add_argument("--n-diseases", type=int, default=None,
+                        help="Only the first N diseases of the catalogue (sorted by ID).")
+    parser.add_argument("--max-seeds", type=int, default=None,
+                        help="Hold out at most this many seeds per disease, a random sample (--seed). Default: all.")
     parser.add_argument("--k", default="10,50,100,500,1000", help="Comma-separated k values for recall@k.")
     parser.add_argument("--n-random", type=int, default=1000, help="Random rankings for the p-values. Default: 1000.")
-    parser.add_argument("--seed", type=int, default=0, help="Random seed (gene sample, random rankings). Default: 0.")
-    parser.add_argument("--jobs", type=int, default=1, help="Held-out genes processed in parallel. Default: 1.")
-    parser.add_argument("--work-dir", type=Path, default=None,
-                        help="Pipeline runs. Default: validation/runs/<disease>/.")
-    parser.add_argument("--out-dir", type=Path, default=VALIDATION_DIR, help="Output files. Default: validation/.")
+    parser.add_argument("--seed", type=int, default=0, help="Random seed (seed sample, random rankings). Default: 0.")
+    parser.add_argument("--restart-prob", type=float, default=0.5, help="RWR restart probability. Default: 0.5.")
+    parser.add_argument("--bfwalk-alpha", type=float, default=0.5, help="BFWalk attenuation. Default: 0.5.")
+    parser.add_argument("--jobs", type=int, default=1, help="Held-out seeds scored in parallel. Default: 1.")
     return parser.parse_args(argv)
 
 
@@ -112,14 +115,19 @@ def ranking_metrics(ranks, n_candidates, ks):
     return metrics
 
 
+def random_ranks(n_candidates, size, rng):
+    """size random rankings: each held-out gene at a uniform rank among its own candidates."""
+    n_candidates = np.asarray(n_candidates, dtype=int)
+    return rng.integers(1, n_candidates + 1, size=(size, len(n_candidates)))
+
+
 def random_metrics(n_candidates, ks, n_random, rng):
     """Expected metrics of a uniformly random ranking, and n_random sampled values of each metric."""
     n_candidates = np.asarray(n_candidates, dtype=int)
     expected = {"auroc": 0.5}
     for k in ks:
         expected[f"recall@{k}"] = float(np.mean(np.minimum(k, n_candidates) / n_candidates))
-    # A random ranking puts each held-out gene at a uniform rank among its run's candidates.
-    sampled_ranks = rng.integers(1, n_candidates + 1, size=(n_random, len(n_candidates)))
+    sampled_ranks = random_ranks(n_candidates, n_random, rng)
     samples = {"auroc": np.nanmean((n_candidates - sampled_ranks) / np.maximum(n_candidates - 1, 1), axis=1)}
     for k in ks:
         samples[f"recall@{k}"] = np.mean(sampled_ranks <= k, axis=1)
@@ -165,157 +173,192 @@ def parse_ks(raw):
     return ks
 
 
+def plot_roc(rankings, n_candidates, path, title, rng):
+    """ROC curve of each ranking: x = fraction of the other candidates ranked above the held-out gene, y = the
+    fraction of held-out genes recovered within that top fraction. Area under it = the mean AUROC."""
+    n_candidates = np.asarray(n_candidates, dtype=float)
+    rankings = dict(rankings)
+    rankings["random"] = random_ranks(n_candidates, 1, rng)[0]
+    figure, axis = plt.subplots(figsize=(5, 5))
+    for name, ranks in rankings.items():
+        false_positive_fraction = (np.asarray(ranks, dtype=float) - 1) / np.maximum(n_candidates - 1, 1)
+        x = np.concatenate([[0.0], np.sort(false_positive_fraction), [1.0]])
+        y = np.concatenate([[0.0], np.arange(1, len(false_positive_fraction) + 1) / len(false_positive_fraction), [1.0]])
+        auroc = 1.0 - float(np.mean(false_positive_fraction))
+        style = {"linestyle": ":", "color": "grey"} if name == "random" else {}
+        axis.step(x, y, where="post", label=f"{name} (AUROC {auroc:.3f})", **style)
+    axis.plot([0, 1], [0, 1], linestyle="--", color="lightgrey", linewidth=1)
+    axis.set_xlabel("fraction of candidates ranked above the held-out gene")
+    axis.set_ylabel("fraction of held-out genes recovered")
+    axis.set_title(title, fontsize=10)
+    axis.set_xlim(0, 1)
+    axis.set_ylim(0, 1)
+    axis.legend(loc="lower right", fontsize=9)
+    figure.tight_layout()
+    figure.savefig(path, dpi=150)
+    plt.close(figure)
+
+
 # ---------------------------------------------------------------------------------------------------------
-# Pipeline runs
+# Scoring
 # ---------------------------------------------------------------------------------------------------------
 
 
-def run_stage(script, args, log_path):
-    command = [sys.executable, str(PIPELINE_DIR / script)] + [str(arg) for arg in args]
-    with open(log_path, "a") as log:
-        log.write(f"$ {' '.join(command)}\n")
-        log.flush()
-        result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
-    if result.returncode != 0:
-        raise RuntimeError(f"{script} failed with exit code {result.returncode} (see {log_path})")
+def select_diseases(catalogue, diseases, n_diseases):
+    available = sorted(path.name[: -len(GRAPH_SUFFIX)] for path in catalogue.glob(f"*{GRAPH_SUFFIX}") if path.is_dir())
+    if not available:
+        raise SystemExit(f"No *{GRAPH_SUFFIX} directories in {catalogue} - run build_graph_catalogue.py first.")
+    if diseases:
+        requested = [disease.strip() for disease in diseases.split(",") if disease.strip()]
+        missing = sorted(set(requested) - set(available))
+        if missing:
+            logger.warning("Not in the catalogue (no significant Reactome pathway, or not built): %s", ", ".join(missing))
+        available = [disease for disease in available if disease in requested]
+    if n_diseases is not None:
+        if n_diseases < 1:
+            raise SystemExit(f"--n-diseases must be at least 1 (got {n_diseases}).")
+        available = available[:n_diseases]
+    return available
 
 
-def stage1_files(manifest_path):
-    manifest = json.loads(manifest_path.read_text())
-    names = ["manifest.json"]
-    for artifact in manifest["output_artifacts"]:
-        names.append(Path(artifact["path"]).name)
-    return names
+def score_candidates(seeds, weight, gene_index, graph, restart_prob, bfwalk_alpha, bfwalk_threads):
+    """Stage 5's BFWalk and RWR scores of every graph gene that is not a seed."""
+    scores = pd.DataFrame({"bfwalk_score": pd.Series(sc.bfwalk_scores(weight, gene_index, seeds, bfwalk_alpha,
+                                                                         bfwalk_threads))})
+    scores["rwr_score"] = pd.Series(sc.rwr_scores(graph, seeds, restart_prob))
+    scores.index.name = "gene"
+    return scores.sort_values("bfwalk_score", ascending=False, kind="stable")
 
 
-def prepare_stage1(args, work_dir):
-    """Return the Stage 1 directory for args.disease: --from-manifest's, an earlier run's, or a new one."""
-    if args.from_manifest is not None:
-        stage1_dir = args.from_manifest.resolve().parent
+# Each worker process loads the disease's graph once (set by init_worker) instead of receiving it per seed.
+_WORKER = {}
+
+
+def init_worker(disease_dir, restart_prob, bfwalk_alpha, bfwalk_threads):
+    # Ctrl+C reaches every process of the terminal's process group; only the parent handles it (see
+    # run_seeds), so workers do not each print a traceback.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    weight, _, gene_index, _ = load_graph(disease_dir)
+    _WORKER.update(weight=weight, gene_index=gene_index, graph=sc.build_digraph(weight, gene_index),
+                   restart_prob=restart_prob, bfwalk_alpha=bfwalk_alpha, bfwalk_threads=bfwalk_threads)
+
+
+def hold_out(gene, seeds, seed_dir):
+    """Score the candidates with gene removed from the seeds; write seed_dir and return gene's record."""
+    started = time.time()
+    remaining = sorted(set(seeds) - {gene})
+    seed_dir.mkdir(parents=True, exist_ok=True)
+    record = {"gene": gene, "n_seeds": len(remaining)}
+    if not remaining:
+        record.update(status="no_seed_left")
     else:
-        stage1_dir = work_dir / "stage1"
-        manifest_path = stage1_dir / "manifest.json"
-        if manifest_path.exists():
-            logger.info("Reusing Stage 1 output in %s.", stage1_dir)
-        else:
-            stage1_dir.mkdir(parents=True, exist_ok=True)
-            logger.info("Running Stage 1 for %s (log: %s).", args.disease, stage1_dir / "stage1.log")
-            stage1_args = ["--disease", args.disease, "--data-dir", args.data_dir, "--out-dir", stage1_dir]
-            if args.allow_low_coverage:
-                stage1_args.append("--allow-low-coverage")
-            run_stage("stage1_ingest.py", stage1_args, stage1_dir / "stage1.log")
-    manifest = json.loads((stage1_dir / "manifest.json").read_text())
-    resolved = manifest["disease"]["efo_id"]
-    requested = manifest["cli_parameters"].get("disease", resolved)
-    if args.disease not in (resolved, requested):
-        raise SystemExit(f"{stage1_dir / 'manifest.json'} is for {resolved}, not --disease {args.disease}.")
-    logger.info("Disease: %s (%s).", manifest["disease"]["name"], resolved)
-    return stage1_dir
-
-
-def run_pipeline_copy(stage1_dir, run_dir, holdout_gene, bfwalk_threads):
-    """Copy Stage 1's output into run_dir and run Stages 2-5 there, optionally holding out one gene."""
-    if run_dir.exists():
-        shutil.rmtree(run_dir)
-    run_dir.mkdir(parents=True)
-    for name in stage1_files(stage1_dir / "manifest.json"):
-        shutil.copy(stage1_dir / name, run_dir / name)
-    manifest = run_dir / "manifest.json"
-    log_path = run_dir / "pipeline.log"
-    stage2_args = ["--manifest", manifest]
-    if holdout_gene is not None:
-        (run_dir / "holdout.txt").write_text(holdout_gene + "\n")
-        stage2_args += ["--benchmark-holdout-file", run_dir / "holdout.txt"]
-    run_stage("stage2_gsea_discovery.py", stage2_args, log_path)
-    run_stage("stage3_build_graph.py", ["--manifest", manifest], log_path)
-    run_stage("stage4_weights.py", ["--manifest", manifest], log_path)
-    run_stage("stage5_score_candidates.py", ["--graph-dir", run_dir, "--method", ",".join(METHODS),
-                                             "--bfwalk-threads", bfwalk_threads], log_path)
-    return pd.read_csv(run_dir / "candidate_scores.tsv", sep="\t").set_index("gene")
-
-
-def ot_scores(ot_disease_subset):
-    """Open Targets baseline: each gene's highest score for the disease over every datatype except the hidden
-    one. Genes without such evidence score 0."""
-    visible = ot_disease_subset[ot_disease_subset["datatype_id"] != HIDDEN_DATATYPE]
-    return visible.groupby("gene_id")["score"].max()
-
-
-def genetic_evidence(ot_disease_subset):
-    hidden = ot_disease_subset[ot_disease_subset["datatype_id"] == HIDDEN_DATATYPE]
-    return hidden.groupby("gene_id")["score"].max()
-
-
-def score_held_out_gene(gene, candidates, baseline):
-    """Record for one held-out gene from its run's candidate_scores (indexed by gene)."""
-    record = {"gene": gene, "n_candidates": len(candidates)}
-    if gene not in candidates.index:
-        # Its pathways left the graph with it, so it is no candidate: the pipeline cannot rank it.
-        record["status"] = "not_in_graph"
-        return record
-    record["status"] = "ranked"
-    for method in METHODS:
-        scores = candidates[f"{method}_score"]
-        record[f"{method}_score"] = float(scores[gene])
-        record[f"{method}_rank"] = mid_rank(scores, gene)
-    pool_baseline = baseline.reindex(candidates.index).fillna(0.0)
-    record["ot_rank"] = mid_rank(pool_baseline, gene)
+        scores = score_candidates(remaining, _WORKER["weight"], _WORKER["gene_index"], _WORKER["graph"],
+                                  _WORKER["restart_prob"], _WORKER["bfwalk_alpha"], _WORKER["bfwalk_threads"])
+        scores.to_csv(seed_dir / "candidate_scores.tsv", sep="\t")
+        record.update(status="ranked", n_candidates=len(scores))
+        for method in METHODS:
+            record[f"{method}_score"] = float(scores.loc[gene, f"{method}_score"])
+            record[f"{method}_rank"] = mid_rank(scores[f"{method}_score"], gene)
+    (seed_dir / "result.json").write_text(json.dumps(record, indent=2))
+    lines = [f"held-out gene: {gene}", f"remaining seeds: {len(remaining)}", f"status: {record['status']}"]
+    if record["status"] == "ranked":
+        for method in METHODS:
+            lines.append(f"{method}: score {record[f'{method}_score']:.6g}, rank {record[f'{method}_rank']:g} "
+                         f"of {record['n_candidates']} candidates")
+    lines.append(f"restart_prob {_WORKER['restart_prob']}, bfwalk_alpha {_WORKER['bfwalk_alpha']}, "
+                 f"{time.time() - started:.1f} s")
+    (seed_dir / "seed.log").write_text("\n".join(lines) + "\n")
     return record
 
 
-def held_out_genes(args, full_dir, rng):
-    if args.genes is not None:
-        genes = []
-        for line in args.genes.read_text().splitlines():
-            entry = line.split("#")[0].strip()
-            if entry:
-                genes.append(entry)
-        not_ensembl = [gene for gene in genes if not ENSEMBL_GENE_ID.match(gene)]
-        if not_ensembl:
-            raise SystemExit(f"--genes {args.genes}: not Ensembl gene IDs: {not_ensembl[:10]}")
-        source = str(args.genes)
-    else:
-        seeds = pd.read_csv(full_dir / "disease_seed_genes.tsv", sep="\t")["gene_id"]
-        graph_genes = set(json.loads((full_dir / "graph_gene_index.json").read_text()))
-        genes = sorted(set(seeds) & graph_genes)
-        n_outside = len(set(seeds) - graph_genes)
-        source = f"seed genes in the graph ({n_outside} of {len(seeds)} seeds are on no disease-relevant pathway " \
-                 f"and cannot be ranked by the pipeline at all)"
-    genes = sorted(set(genes))
-    if args.max_genes is not None and len(genes) > args.max_genes:
-        genes = sorted(rng.choice(genes, args.max_genes, replace=False))
-        source += f", random sample of {args.max_genes} (seed {args.seed})"
-    logger.info("Held-out genes: %d - %s.", len(genes), source)
-    return genes
+def disease_logger(log_path):
+    """A logger writing to the disease's own leave_one_out.log as well as the run's log and the console."""
+    child = logging.getLogger(f"leave_one_out.{log_path.parent.name}")
+    for handler in list(child.handlers):
+        child.removeHandler(handler)
+    handler = logging.FileHandler(log_path, mode="w")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%Y-%m-%d %H:%M:%S"))
+    child.addHandler(handler)
+    return child
 
 
-def run_leave_one_out(args, stage1_dir, work_dir, genes, baseline, evidence, symbols):
+def run_disease(disease, args, ks, rng):
+    """Leave-one-out for one disease. Returns (summary rows, details of the ranked seeds) or None."""
+    disease_dir = args.catalogue / f"{disease}{GRAPH_SUFFIX}"
+    out_dir = args.out_dir / f"{disease}{LOO_SUFFIX}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log = disease_logger(out_dir / "leave_one_out.log")
+
+    _, _, gene_index, _ = load_graph(disease_dir)
+    seed_table = SeedGenesSchema.validate(pd.read_csv(disease_dir / "disease_seed_genes.tsv", sep="\t"))
+    evidence = dict(zip(seed_table["gene_id"], seed_table["score"]))
+    seeds = sorted(set(seed_table["gene_id"]) & set(gene_index))
+    held_out = seeds
+    if args.max_seeds is not None and len(seeds) > args.max_seeds:
+        held_out = sorted(rng.choice(seeds, args.max_seeds, replace=False))
+    log.info("%s: %d genes in the graph, %d seeds (%d of the disease's %d scored genes are not in the graph and "
+             "cannot be held out); holding out %d.", disease, len(gene_index), len(seeds),
+             len(seed_table) - len(seeds), len(seed_table), len(held_out))
+    if len(seeds) < 2:
+        log.warning("Fewer than 2 seeds in the graph: holding one out leaves nothing to propagate from - skipped.")
+        return None
+
     bfwalk_threads = max(1, (os.cpu_count() or 1) // max(1, args.jobs))
+    init_args = (disease_dir, args.restart_prob, args.bfwalk_alpha, bfwalk_threads)
+    started = time.time()
+    records = run_seeds(seeds, held_out, out_dir, args.jobs, init_args)
+    details = pd.DataFrame(records)
+    details["genetic_evidence"] = details["gene"].map(evidence)
+    details = details.reindex(columns=RECORD_COLUMNS)
+    details.to_csv(out_dir / "scores_left_out_details.tsv", sep="\t", index=False, na_rep="NA")
 
-    def one(gene):
-        run_dir = work_dir / "loo" / gene
-        try:
-            candidates = run_pipeline_copy(stage1_dir, run_dir, gene, bfwalk_threads)
-        except RuntimeError as error:
-            return {"gene": gene, "status": f"failed: {error}"}
-        shutil.rmtree(run_dir)
-        return score_held_out_gene(gene, candidates, baseline)
+    ranked = details[details["status"] == "ranked"]
+    rankings = {method: ranked[f"{method}_rank"] for method in METHODS}
+    table = metrics_table(rankings, ranked["n_candidates"], ks, args.n_random, rng)
+    table.to_csv(out_dir / "metrics.tsv", sep="\t", index=False)
+    plot_roc(rankings, ranked["n_candidates"], out_dir / "roc_curve.png",
+             f"{disease}: leave-one-out, {len(ranked)} held-out seeds", rng)
+    log.info("Leave-one-out metrics (%d held-out seeds, median %d candidates, %.0f s):\n%s", len(ranked),
+             int(ranked["n_candidates"].median()), time.time() - started, format_metrics(table))
 
-    records = {}
-    with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
-        futures = [pool.submit(one, gene) for gene in genes]
-        for n_done, future in enumerate(as_completed(futures), start=1):
-            record = future.result()
-            record["symbol"] = symbols.get(record["gene"], record["gene"])
-            record["genetic_evidence"] = float(evidence.get(record["gene"], 0.0))
-            record["ot_score"] = float(baseline.get(record["gene"], 0.0))
-            records[record["gene"]] = record
-            rank_text = ""
-            if record["status"] == "ranked":
-                rank_text = f"{args.method} rank {record[f'{args.method}_rank']:.0f}/{record['n_candidates']}"
-            logger.info("[%d/%d] %s (%s): %s %s", n_done, len(genes), record["gene"], record["symbol"],
-                        record["status"], rank_text)
-    return pd.DataFrame([records[gene] for gene in genes]).reindex(columns=RECORD_COLUMNS)
+    summary = []
+    for method in METHODS:
+        row = {"diseaseId": disease, "method": method, "n_held_out": len(ranked),
+               "median_candidates": float(ranked["n_candidates"].median())}
+        for metric_row in table[table["ranking"] == method].itertuples():
+            row[metric_row.metric] = metric_row.value
+            row[f"{metric_row.metric}_p_vs_random"] = metric_row.p_vs_random
+        summary.append(row)
+    return summary, ranked.assign(diseaseId=disease)
+
+
+def run_seeds(seeds, held_out, out_dir, jobs, init_args):
+    """The full run and one run per held-out seed, in worker processes. On Ctrl+C the queued runs are cancelled
+    and the workers are terminated at once, instead of the pool waiting for every queued seed to finish."""
+    pool = ProcessPoolExecutor(max_workers=max(1, jobs), initializer=init_worker, initargs=init_args)
+    try:
+        full = pool.submit(score_candidates_full, seeds, out_dir / "full")
+        futures = [pool.submit(hold_out, gene, seeds, out_dir / gene) for gene in held_out]
+        records = [future.result() for future in futures]
+        full.result()
+    except BaseException:
+        # pool._processes is private, but it is the only handle on the workers; terminating them is what
+        # stops a BFWalk run that is already in progress.
+        workers = list((pool._processes or {}).values())
+        pool.shutdown(wait=False, cancel_futures=True)
+        for worker in workers:
+            worker.terminate()
+        raise
+    pool.shutdown()
+    return records
+
+
+def score_candidates_full(seeds, full_dir):
+    """All seeds, nothing held out: the run compare_scores.py compares with Open Targets."""
+    full_dir.mkdir(parents=True, exist_ok=True)
+    score_candidates(seeds, _WORKER["weight"], _WORKER["gene_index"], _WORKER["graph"], _WORKER["restart_prob"],
+                     _WORKER["bfwalk_alpha"], _WORKER["bfwalk_threads"]).to_csv(full_dir / "candidate_scores.tsv",
+                                                                               sep="\t")
 
 
 def setup_logging(log_path):
@@ -329,48 +372,42 @@ def setup_logging(log_path):
 
 def main(argv=None):
     args = parse_args(argv)
-    work_dir = (args.work_dir or VALIDATION_DIR / "runs" / args.disease).resolve()
-    work_dir.mkdir(parents=True, exist_ok=True)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     setup_logging(args.out_dir / "leave_one_out.log")
     ks = parse_ks(args.k)
     rng = np.random.default_rng(args.seed)
     logger.info("leave_one_out.py %s", " ".join(sys.argv[1:] if argv is None else argv))
 
-    stage1_dir = prepare_stage1(args, work_dir)
-    full_dir = work_dir / "full"
-    if (full_dir / "candidate_scores.tsv").exists():
-        logger.info("Reusing the full run (no holdout) in %s.", full_dir)
-    else:
-        logger.info("Full run (no holdout) in %s.", full_dir)
-        run_pipeline_copy(stage1_dir, full_dir, None, os.cpu_count() or 1)
+    diseases = select_diseases(args.catalogue, args.diseases, args.n_diseases)
+    logger.info("Diseases: %d.", len(diseases))
+    summaries, all_ranked = [], []
+    try:
+        for n, disease in enumerate(diseases, start=1):
+            logger.info("[%d/%d] %s", n, len(diseases), disease)
+            result = run_disease(disease, args, ks, rng)
+            if result is not None:
+                summaries.extend(result[0])
+                all_ranked.append(result[1])
+    except KeyboardInterrupt:
+        logger.error("Interrupted (Ctrl+C): all jobs stopped. Diseases finished before it keep their results; "
+                     "no summary was written.")
+        return 130
 
-    ot_disease_subset = pd.read_parquet(full_dir / "ot_disease_subset.parquet")
-    baseline = ot_scores(ot_disease_subset)
-    evidence = genetic_evidence(ot_disease_subset)
-    genes_df = pd.read_parquet(full_dir / "genes.parquet", columns=["gene_id", "symbol"])
-    symbols = dict(zip(genes_df["gene_id"], genes_df["symbol"]))
-
-    genes = held_out_genes(args, full_dir, rng)
-    records = run_leave_one_out(args, stage1_dir, work_dir, genes, baseline, evidence, symbols)
-
-    scores = records[["gene", f"{args.method}_score"]].rename(columns={f"{args.method}_score": "score"})
-    scores.to_csv(args.out_dir / "scores_left_out.tsv", sep="\t", index=False, na_rep="NA")
-    records.insert(0, "disease", args.disease)
-    records.to_csv(args.out_dir / "scores_left_out_details.tsv", sep="\t", index=False, na_rep="NA")
-    logger.info("Wrote %s and %s.", args.out_dir / "scores_left_out.tsv", args.out_dir / "scores_left_out_details.tsv")
-
-    ranked = records[records["status"] == "ranked"]
-    n_failed = int(records["status"].str.startswith("failed").sum())
-    logger.info("Held-out genes ranked: %d of %d (%d not in their run's graph, %d failed).", len(ranked),
-                len(records), int((records["status"] == "not_in_graph").sum()), n_failed)
-    if ranked.empty:
-        logger.error("No held-out gene could be ranked - no metrics.")
+    if not summaries:
+        logger.error("No disease could be validated - no metrics.")
         return 1
-    table = metrics_table({method: ranked[f"{method}_rank"] for method in METHODS},
-                          ranked["n_candidates"], ks, args.n_random, rng)
-    logger.info("Leave-one-out metrics (%d held-out genes; median candidate pool %d genes; %s scores the output):\n%s",
-                len(ranked), int(ranked["n_candidates"].median()), args.method, format_metrics(table))
+    summary = pd.DataFrame(summaries)
+    summary.to_csv(args.out_dir / "leave_one_out_summary.tsv", sep="\t", index=False)
+    pooled = pd.concat(all_ranked, ignore_index=True)
+    plot_roc({method: pooled[f"{method}_rank"] for method in METHODS}, pooled["n_candidates"],
+             args.out_dir / "roc_curve_all_diseases.png",
+             f"Leave-one-out, {pooled['diseaseId'].nunique()} diseases, {len(pooled)} held-out seeds", rng)
+    per_method = summary.groupby("method")[["auroc"] + [c for c in summary.columns if c.startswith("recall@")
+                                                         and not c.endswith("p_vs_random")]].mean()
+    logger.info("Mean over %d diseases (each disease weighted equally):\n%s", summary["diseaseId"].nunique(),
+                per_method.to_string(float_format=lambda v: f"{v:.3f}"))
+    logger.info("Wrote %s and %s.", args.out_dir / "leave_one_out_summary.tsv",
+                args.out_dir / "roc_curve_all_diseases.png")
     return 0
 
 
