@@ -50,14 +50,14 @@ def parse_args(argv=None):
         description="Build one Stage 3-style graph per disease from the Open Targets disease-pathway GSEA "
         "catalogue (Reactome pathways only), with each disease's genetic-association scores as seeds.",
     )
-    repo = Path(__file__).resolve().parent.parent
-    parser.add_argument("--catalogue-dir", type=Path, default=repo / "validation" / "Disease_pathways_graph_catalogue",
-                        help="Directory with the GSEA catalogue files (default: %(default)s).")
-    parser.add_argument("--target-dir", type=Path, default=repo / "data" / "opentargets" / "26.06" / "target",
-                        help="Open Targets target parquet directory, for symbol -> Ensembl (default: %(default)s).")
-    parser.add_argument("--fi-file", type=Path,
-                        default=repo / "data" / "reactome" / "FIsInGene_04142025_with_annotations.txt",
-                        help="Reactome functional-interaction file, unzipped (default: %(default)s).")
+    parser.add_argument("--catalogue-dir", type=Path, required=True,
+                        help="Directory with the GSEA catalogue files, e.g. validation/Disease_pathways_graph_catalogue.")
+    parser.add_argument("--target-dir", type=Path, required=True,
+                        help="Open Targets target parquet directory, for symbol -> Ensembl, "
+                        "e.g. data/opentargets/26.06/target.")
+    parser.add_argument("--fi-file", type=Path, required=True,
+                        help="Reactome functional-interaction file, unzipped, "
+                        "e.g. data/reactome/FIsInGene_04142025_with_annotations.txt.")
     parser.add_argument("--out-dir", type=Path, default=None, help="Output directory. Default: --catalogue-dir.")
     parser.add_argument("--fdr", type=float, default=0.05, help="FDR cutoff (BH over Reactome). Default: 0.05.")
     parser.add_argument("--diseases", default=None,
@@ -164,7 +164,7 @@ def run(args):
         selected = selected[selected["diseaseId"].isin(disease_ids)]
         logger.info("--n-diseases: building the first %d.", len(disease_ids))
 
-    logger.info("Mapping gene symbols to Ensembl", args.target_dir)
+    logger.info("Mapping gene symbols to Ensembl")
     genes_df = build_genes_table(read_target_table(sorted(args.target_dir.glob("*.parquet"))))
     index = build_symbol_index(genes_df)
     gene_sets, gmt_coverage = read_reactome_gene_sets(args.catalogue_dir / "merged_gene_sets.gmt", index)

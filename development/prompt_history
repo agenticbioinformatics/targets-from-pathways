@@ -1327,3 +1327,12 @@ only); three parquet tables.
   507 seeds in the graph). A full build was started and then stopped at the
   user's request (250/2,555 diseases); its partial output files were deleted.
   The full build is left for the user to run.
+
+
+## Prompt 51 — required input paths for the catalogue builder
+
+> remove the default for CATALOGUE_DIR and TARGET_DIR and fi-file.
+
+**Changes:** `validation/build_graph_catalogue.py`: `--catalogue-dir`,
+`--target-dir` and `--fi-file` are now required (help text gives example
+paths); `validation/README.md`'s command passes all three.

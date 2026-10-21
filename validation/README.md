@@ -5,10 +5,16 @@ Does the pipeline recover disease's known genes, and does it do so better than s
 ## Disease graph catalogue
 
 ```
-python validation/build_graph_catalogue.py                                        # all included diseases
-python validation/build_graph_catalogue.py --n-diseases 10                        # the first 10, for a test run
-python validation/build_graph_catalogue.py --diseases EFO_0003767,MONDO_0004975   # diseases of interest
+python validation/build_graph_catalogue.py \
+    --catalogue-dir validation/Disease_pathways_graph_catalogue \
+    --target-dir data/opentargets/26.06/target \
+    --fi-file data/reactome/FIsInGene_04142025_with_annotations.txt
 ```
+
+All three paths are required: the GSEA catalogue, the Open Targets `target` table and the unzipped Reactome
+functional-interaction file (Stage 1 downloads the last two into `data/`). Add `--n-diseases 10` to build
+only the first 10 included diseases for a test run, or `--diseases EFO_0003767,MONDO_0004975` for diseases
+of interest.
 
 One graph per Open Targets disease, built from the genome-wide disease-pathway GSEA catalogue in
 `validation/Disease_pathways_graph_catalogue/` (Open Targets 26.03; see its `README.md` for how the GSEA
@@ -51,8 +57,7 @@ The log ends with a summary (median graph size, and how many diseases have no se
 edge). For example, Alzheimer disease (`MONDO_0004975`) has 63 pathways, 5,173 genes, 135,967 edges and
 507 of its 1,700 seeds in the graph.
 
-Options: `--fdr` (default 0.05), `--diseases` (comma-separated IDs), `--n-diseases N` (the first N included
-diseases, sorted by ID), `--catalogue-dir`, `--target-dir`, `--fi-file` and `--out-dir`. Tested by
+Other options: `--fdr` (default 0.05) and `--out-dir` (default: `--catalogue-dir`). Tested by
 `tests/test_graph_catalogue.py` on tiny synthetic inputs in the same formats.
 
 ## Leave-one-out
