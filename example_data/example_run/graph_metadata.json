@@ -1,6 +1,5 @@
 {
-  "comembership_edges": true,
-  "created_at": "2026-10-20T15:48:52.220469+00:00",
+  "created_at": "2026-10-21T13:06:40.710611+00:00",
   "disease": {
     "efo_id": "MONDO_0000001",
     "n_associated_genes": 21,
@@ -18,8 +17,6 @@
     "ENSG00000000009": 0.77,
     "ENSG00000000010": 0.74,
     "ENSG00000000011": 0.71,
-    "ENSG00000000012": 0.5,
-    "ENSG00000000013": 0.45,
     "ENSG00000000017": 0.05,
     "ENSG00000000018": 0.04,
     "ENSG00000000019": 0.03,
@@ -27,25 +24,16 @@
     "ENSG00000000021": 0.06,
     "ENSG00000000022": 0.0,
     "ENSG00000000023": 0.0,
-    "ENSG00000000024": 0.0,
-    "ENSG00000000025": 0.0,
-    "ENSG00000000026": 0.0,
-    "ENSG00000000027": 0.0,
-    "ENSG00000000028": 0.0
+    "ENSG00000000024": 0.0
   },
-  "n_comembership_unordered_pairs": 128,
-  "n_disease_pathway_genes": 19,
   "n_disease_pathways": 3,
-  "n_edges": 258,
+  "n_edges": 10,
   "n_interaction_duplicate_pairs_collapsed": 0,
-  "n_interaction_edges_added": 4,
-  "n_interaction_edges_out_of_scope": 1,
-  "n_nodes": 25,
-  "n_pathways_union": 6,
-  "n_seed_genes_in_graph": 18,
+  "n_interaction_edges_added": 10,
+  "n_interaction_edges_out_of_scope": 3,
+  "n_nodes": 19,
+  "n_seed_genes_in_graph": 16,
   "n_seed_genes_total": 18,
-  "n_seed_pathway_genes": 25,
-  "n_seed_pathways": 6,
   "reactome_sources": [
     {
       "db": "reactome",
@@ -64,10 +52,20 @@
     "datatypes": [
       "genetic_association"
     ],
-    "edge_weight_mode": "avg",
     "holdout_genes": [],
-    "n_edges_weighted": 258,
-    "n_genes_total": 25,
-    "n_genes_with_evidence": 18
+    "n_genes_total": 19,
+    "n_genes_with_evidence": 16
+  },
+  "stage4_user_weights": {
+    "default_edge_weight": 1.0,
+    "default_node_weight": 1.0,
+    "edge_weights_file": null,
+    "n_edge_weights_not_in_graph": 0,
+    "n_edge_weights_used": 0,
+    "n_node_weights_not_in_graph": 0,
+    "n_node_weights_used": 0,
+    "node_weight_mode": null,
+    "node_weights_file": null,
+    "weighted": false
   }
 }

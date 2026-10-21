@@ -32,8 +32,9 @@ def run_stage(label, script, args, python_exe):
 
 
 def run_pipeline(disease=None, data_dir=None, out_dir=None, from_manifest=None,
-                 method="bfwalk", stage1_args=None, python_exe=None):
-    """Return the path of candidates_annotated.tsv. stage1_args are extra options for stage1_ingest.py."""
+                 method="bfwalk", stage1_args=None, python_exe=None, node_weights=None, edge_weights=None):
+    """Return the path of candidates_annotated.tsv. stage1_args are extra options for stage1_ingest.py;
+    node_weights / edge_weights are Stage 4's optional user weight files."""
     python_exe = python_exe or sys.executable
     stage1_args = stage1_args or []
 
@@ -56,8 +57,12 @@ def run_pipeline(disease=None, data_dir=None, out_dir=None, from_manifest=None,
 
     run_stage("Stage 2 (disease-pathway discovery)", "stage2_gsea_discovery.py", ["--manifest", manifest], python_exe)
     run_stage("Stage 3 (graph construction)", "stage3_build_graph.py", ["--manifest", manifest], python_exe)
-    run_stage("Stage 4 (genetic-evidence weighting)", "stage4_genetic_evidence_weights.py",
-              ["--manifest", manifest], python_exe)
+    stage4_args = ["--manifest", manifest]
+    if node_weights is not None:
+        stage4_args += ["--node-weights", Path(node_weights).resolve()]
+    if edge_weights is not None:
+        stage4_args += ["--edge-weights", Path(edge_weights).resolve()]
+    run_stage("Stage 4 (optional user weights)", "stage4_genetic_evidence_weights.py", stage4_args, python_exe)
     run_stage("Stage 5 (candidate scoring)", "stage5_score_candidates.py",
               ["--graph-dir", run_dir, "--method", method], python_exe)
     run_stage("Stage 6 (contextual annotation)", "stage6_annotate_context.py", ["--manifest", manifest], python_exe)
@@ -84,12 +89,17 @@ def main(argv=None):
                         help="Skip Stage 1 and start from this manifest.json (its directory is the run directory).")
     parser.add_argument("--method", default="bfwalk",
                         help="Stage 5 --method: bfwalk and/or rwr, comma-separated (default: bfwalk).")
+    parser.add_argument("--node-weights", type=Path,
+                        help="Stage 4 --node-weights: optional TSV of gene_id, weight to weight the graph with.")
+    parser.add_argument("--edge-weights", type=Path,
+                        help="Stage 4 --edge-weights: optional TSV of gene_a, gene_b, weight to weight the graph with.")
     parser.add_argument("--report", action="store_true", help="Also write report.html in the run directory (Stage 7).")
     args, stage1_args = parser.parse_known_args(argv)
 
     annotated = run_pipeline(disease=args.disease, data_dir=args.data_dir, out_dir=args.out_dir,
                              from_manifest=args.from_manifest, method=args.method,
-                             stage1_args=stage1_args)
+                             stage1_args=stage1_args, node_weights=args.node_weights,
+                             edge_weights=args.edge_weights)
     if args.report:
         build_report(annotated.parent, annotated.parent / "report.html")
 

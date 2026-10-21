@@ -1149,3 +1149,66 @@ pipeline-vs-Open-Targets comparison, without results.
 > add these prompts to development/prompt_history
 
 **Changes:** this log gained Prompts 30-43.
+
+
+## Prompt 44 — unweighted GSEA-pathway graph, seeds with genetic score > 0
+
+> in stage 3 remove including "all genes on any pathway that contains a seed
+> gene" from the graph building. the graph should only include interactions
+> between all genes on those pathways that were detected by GSEA. also,
+> remove genetic evidence from edge weights. the graph should be unweighed.
+> the seeds for GSEA and network propagation should be those genes that have
+> the genetic evidence / association to the disease > 0 in the open targets
+> data.
+
+**Changes:**
+- Stage 2: seeds (GSEA signature and `disease_seed_genes.tsv`) are the genes
+  whose strongest `genetic_association` score is > 0.
+- Stage 3: nodes are the genes of the GSEA pathways only (no seed-pathway
+  rule); edges are the Reactome functional interactions between them only
+  (co-membership edges and `--comembership-edges` removed); every edge has
+  weight 1. Stage 3 now stops with a message when GSEA found no pathway
+  (formerly the small-disease fallback) or no seed is on a GSEA pathway.
+- Stage 4: no longer rewrites `graph_weight.npz` (`--edge-weight-mode`
+  removed); it only scores genes for Stage 6's annotation.
+- Stage 7: evidence traces show only GSEA pathways; the header names the
+  unweighted graph.
+- Example data: new seed -> candidate interactions on the GSEA pathways
+  (the old ones were mostly out of scope); `example_run/` regenerated
+  (3 candidates instead of 7). Tests and docs updated; 124 tests passed.
+
+
+## Prompt 45 — is Stage 4 still needed?
+
+> now if I understand correclty step 4 can be removed altogether and its
+> functionality moved to the annotation stage?
+
+**Changes:** none. Answer: yes — Stage 4 only fed Stage 6's
+`genetic_evidence_score`, which is 0 for every candidate under Stage 2's
+seeds (any gene scoring > 0 is a seed), so it could be moved or dropped.
+
+
+## Prompt 46 — optional user node / edge weights in Stage 4
+
+> leave this stage and modify it to include a possiblity for the user to
+> upload their own node or edge weights if the user wants to. as input it
+> should take a file with node weights and/or a file with edge weights (both
+> optional). explain this in one sentence in the main readme and explain in
+> detail in docs/README.
+
+**Changes:**
+- Stage 4: optional `--node-weights` (TSV `gene_id`, `weight`) and
+  `--edge-weights` (TSV `gene_a`, `gene_b`, `weight`; matches the pair in
+  either direction). An edge weighs the mean (or `--node-weight-mode
+  product`) of its genes' node weights times its edge weight; missing genes
+  and edges weigh `--default-node-weight` / `--default-edge-weight` (1).
+  Weights must be > 0, IDs Ensembl; rows outside the graph are skipped and
+  logged, no edge is added or removed. Weights are applied to Stage 3's
+  structure (reset to 1), so re-runs do not compound; without files the graph
+  stays unweighted. Recorded in `graph_metadata.json` under
+  `stage4_user_weights`. The genetic-evidence scores for Stage 6 are kept.
+- `stage0_schemas.py`: `UserNodeWeightsSchema`, `UserEdgeWeightsSchema`.
+- `run_pipeline.py` forwards `--node-weights` / `--edge-weights`; the Stage 7
+  header says when the graph carries user weights.
+- README: one sentence; docs/README: a detailed Stage 4 section. 10 new
+  tests; 134 tests passed.

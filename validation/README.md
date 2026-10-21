@@ -8,7 +8,7 @@ Does the pipeline recover disease's known genes, and does it do so better than s
 python validation/leave_one_out.py --disease MONDO_0005265 --from-manifest out/manifest.json --jobs 8
 ```
 
-For each seed gene (one with genetic-association evidence for the disease), the pipeline is rerun as
+For each seed gene (one with a genetic-association score > 0 for the disease), the pipeline is rerun as
 if that gene were not associated with the disease: it is removed from the seed set, its score and rank among the candidates are recorded.
 
 - `validation/scores_left_out.tsv`: `gene`, `score` (BFWalk by default; `--method rwr` for RWR)

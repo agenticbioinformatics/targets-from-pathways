@@ -14,7 +14,7 @@
       "source": "reactome_gmt"
     }
   },
-  "created_at": "2026-10-20T15:48:50.145510Z",
+  "created_at": "2026-10-21T12:45:05.465046Z",
   "disease": {
     "efo_id": "MONDO_0000001",
     "n_associated_genes": 21,
@@ -36,7 +36,7 @@
     },
     {
       "path": "example_data/example_run/interactions.parquet",
-      "sha256": "0f8b55de0819fed1504c911c81b519291bda3aaca885f54e95895b9b083fe47d"
+      "sha256": "0a58e5a5b80ffe5e85f7e5f2e8ee7440d8687a7b43a1e957fb040ae2d6707733"
     }
   ],
   "run_id": "example0000000001",

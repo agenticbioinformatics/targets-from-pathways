@@ -14,18 +14,20 @@ genetic_association evidence, which Stage 2 writes to disease_seed_genes.tsv:
 - G12, G13: two weaker seeds, added only to R-HSA-100 to make it a
   near-duplicate *superset* of R-HSA-101.
 - G17..G21: weak seeds forming an unrelated pathway.
-- N22..N28 (ENSG00000000022-28): non-seed genes on pathways with seeds - the
-  candidates Stage 5 should rank. N22 has a known_drug row only, which Stage 4
-  ignores (it counts genetic_association evidence only).
-- N29..N33: non-seed genes on a pathway with no seed gene at all - they must
+- N22..N24 (ENSG00000000022-24): non-seed genes on the disease pathways GSEA
+  finds - the candidates Stage 5 should rank. N22 has a known_drug row only,
+  which Stage 4 ignores (it counts genetic_association evidence only).
+- N25..N28: non-seed genes on a pathway with one seed, too few for GSEA - they
   stay out of the Stage 3 graph.
+- N29..N33: non-seed genes on a pathway with no seed gene at all - they must
+  stay out of the Stage 3 graph too.
 
 Gene sets (mimicking a Reactome ancestor/descendant hierarchy pair):
 - R-HSA-100 "Ancestor Broad Signaling" = {G2..G13, N22, N23} (14 genes).
 - R-HSA-101 "Child Broad Signaling"    = {G2..G11, N22, N23} (12 genes);
   Jaccard(100, 101) = 12/14 = 0.857 > 0.7, so Stage 2's collapsing drops the
-  ancestor (100) before GSEA. 100 still enters the Stage 3 graph, because it
-  contains seed genes.
+  ancestor (100) before GSEA, so 100 is not in the Stage 3 graph (but its
+  genes shared with 101 are).
 - R-HSA-200 "Signaling Pathway A" = {G1..G6, N24} (7 genes) - distinct from
   101 (Jaccard = 5/14 = 0.36).
 - R-HSA-300 "Unrelated Weak Pathway" = {G17..G21} (5 genes), all weak seeds -
@@ -33,9 +35,9 @@ Gene sets (mimicking a Reactome ancestor/descendant hierarchy pair):
   too (depletion is still enrichment).
 - R-HSA-400 "Scattered Noise Pathway" = {G1, G4, G9, G13, G20} spanning the
   top, middle and bottom of the ranking - no coherent enrichment, so it fails
-  the significance filter (it still enters the graph: it contains seeds).
+  the significance filter, so it is not in the graph.
 - R-HSA-500 "Seed-Adjacent Pathway" = {G1, N25..N28} - only one seed, too few
-  for GSEA to test; it enters the graph only through the seed-pathway rule.
+  for GSEA to test, so it is not in the graph.
 - R-HSA-600 "Seedless Pathway" = {N29..N33} - no seed, not significant, so
   it is not in the graph.
 
@@ -49,15 +51,21 @@ Also writes genes.parquet (approved symbol "GENE##" per gene) to exercise
 synonym "OLDG17" is deliberately not its approved symbol, to exercise the
 synonym-resolution path.
 
-Also writes interactions.parquet, for Stage 3 and Stage 4:
+Also writes interactions.parquet, for Stage 3 (the graph's only edges, all
+of weight 1):
 - G1 -> G2 (sign=+1, confidence=0.9): both seeds, in the graph.
 - G4 -> G9 (sign=-1, confidence=0.6): also in the graph.
-- G12 -> G1 (sign=+1, confidence=0.99): G12 is only in R-HSA-100, which is in
-  the graph because it contains seeds, so this edge is kept.
-- G2 -> N25 (sign=+1, confidence=0.8): a seed -> candidate edge that should
-  lift N25 above N26..N28, its pathway-mates.
+- G3 -> N22, G5 -> N22, G7 - N22 (undirected): three seeds reach N22.
+- G6 -> N24 (sign=+1): one seed reaches N24.
+- N24 -> N23 (sign=+1): N23 is reached only through N24, two steps from a
+  seed, so it should rank below N22 and N24.
+- G18 - G19 (undirected): within R-HSA-300, the low-ranked cluster.
+- G12 -> G1 (sign=+1, confidence=0.99): G12 is only in R-HSA-100, which Stage
+  2 collapses away, so this row is dropped as out of scope.
+- G2 -> N25 (sign=+1, confidence=0.8): N25 is only in R-HSA-500, which GSEA
+  cannot test, so this row is dropped too.
 - N29 -> N22 (sign=+1, confidence=0.95): N29 is only in the seedless pathway,
-  so this row must be dropped as out of scope.
+  so this row is dropped as well.
 
 Also writes ot_target_subset.parquet (id / tractability / safetyLiabilities
 columns, the Open Targets `target` schema subset Stage 6 reads) and records
@@ -216,10 +224,23 @@ def build_interactions() -> pd.DataFrame:
          "source_version": "04142025", "evidence_type": "curated", "confidence": 0.9},
         {"gene_a": G[4], "gene_b": G[9], "directed": True, "sign": -1, "source_db": "reactome",
          "source_version": "04142025", "evidence_type": "curated", "confidence": 0.6},
-        # G12 is only in R-HSA-100, which is in the graph because it contains seeds.
+        # Seeds reach N22 and N24 directly; N23 only through N24.
+        {"gene_a": G[3], "gene_b": N[22], "directed": True, "sign": 1, "source_db": "reactome",
+         "source_version": "04142025", "evidence_type": "curated", "confidence": 0.9},
+        {"gene_a": G[5], "gene_b": N[22], "directed": True, "sign": -1, "source_db": "reactome",
+         "source_version": "04142025", "evidence_type": "curated", "confidence": 0.7},
+        {"gene_a": G[7], "gene_b": N[22], "directed": False, "sign": 0, "source_db": "reactome",
+         "source_version": "04142025", "evidence_type": "predicted", "confidence": 0.5},
+        {"gene_a": G[6], "gene_b": N[24], "directed": True, "sign": 1, "source_db": "reactome",
+         "source_version": "04142025", "evidence_type": "curated", "confidence": 0.8},
+        {"gene_a": N[24], "gene_b": N[23], "directed": True, "sign": 1, "source_db": "reactome",
+         "source_version": "04142025", "evidence_type": "curated", "confidence": 0.8},
+        {"gene_a": G[18], "gene_b": G[19], "directed": False, "sign": 0, "source_db": "reactome",
+         "source_version": "04142025", "evidence_type": "predicted", "confidence": 0.6},
+        # Out of scope for Stage 3: G12 is only in R-HSA-100, which Stage 2 collapses away.
         {"gene_a": G[12], "gene_b": G[1], "directed": True, "sign": 1, "source_db": "reactome",
          "source_version": "04142025", "evidence_type": "curated", "confidence": 0.99},
-        # Seed -> candidate: should lift N25 above its pathway-mates N26..N28.
+        # Out of scope for Stage 3: N25 is only in R-HSA-500, which GSEA cannot test.
         {"gene_a": G[2], "gene_b": N[25], "directed": True, "sign": 1, "source_db": "reactome",
          "source_version": "04142025", "evidence_type": "curated", "confidence": 0.8},
         # Out of scope for Stage 3: N29 is only in the seedless pathway, so this row must be dropped.

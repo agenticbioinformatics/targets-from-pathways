@@ -129,7 +129,6 @@ def load_run(run_dir):
         "ot": optional["ot_disease_subset.parquet"],
         "disease_pathways": optional["disease_pathways.tsv"],
         "seeds": seeds,
-        "stage4_ran": "stage4_genetic_evidence" in graph_metadata,
         "missing": missing,
     }
 
@@ -157,8 +156,8 @@ def evidence_trace(gene_id, run):
         disease_sets = set()
         if run["disease_pathways"] is not None:
             disease_sets = set(run["disease_pathways"]["set_id"])
-        # Only pathways that Stage 3 used to build the graph: disease pathways and pathways with seed genes.
-        candidate_sets = set(gene_sets.loc[gene_sets["gene_id"] == gene_id, "set_id"]) & (disease_sets | set(n_seeds_per_set))
+        # Only pathways that Stage 3 used to build the graph: the disease pathways found by GSEA.
+        candidate_sets = set(gene_sets.loc[gene_sets["gene_id"] == gene_id, "set_id"]) & disease_sets
         for set_id in candidate_sets:
             name = set_names.get(set_id, set_id)
             if set_id in n_seeds_per_set:
@@ -242,7 +241,7 @@ def trace_html(gene_id, symbol, row, trace, rank_column):
             names.append(f"{escape(name)} <span class=\"src\">({n_seeds} seed gene{'s' if n_seeds != 1 else ''})</span>")
         parts.append(html_list(names))
     else:
-        parts.append('<p class="none">none in the Stage 3 pathway union</p>')
+        parts.append('<p class="none">none among the disease-relevant pathways</p>')
 
     if trace["member_pathways"]:
         parts.append('<p class="k">Also a member of (disease-relevant, no seed genes)</p>')
@@ -301,10 +300,10 @@ def render_html(run, n_traces=DEFAULT_N_TRACES):
     versions = []
     for source in manifest.get("sources", []):
         versions.append(f"{source['db']} {source['version']}")
-    if run["stage4_ran"]:
-        graph_kind = "Stage 4 (genetic-evidence-weighted)"
+    if run["graph_meta"].get("stage4_user_weights", {}).get("weighted"):
+        graph_kind = "functional interactions on GSEA pathways, with user node/edge weights (Stage 4)"
     elif run["graph_meta"]:
-        graph_kind = "Stage 3 (structural)"
+        graph_kind = "Stage 3 (unweighted functional interactions on GSEA pathways)"
     else:
         graph_kind = "unknown (no graph_metadata.json)"
 

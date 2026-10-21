@@ -23,8 +23,9 @@ EXAMPLE_RUN = rep.REPO_DIR / "example_data" / "example_run"
 
 
 def _mini_run():
-    """T is the only seed gene. Pathways: P1 = {T, C} (contains a seed),
-    P2 = {C, X} (disease-relevant, no seed). Graph nodes: T, C, X.
+    """T is the only seed gene. Disease-relevant pathways: P1 = {T, C} (contains a seed),
+    P2 = {C, X} (no seed). P3 = {T, C} contains a seed but is not disease-relevant, so it was
+    not used to build the graph and is not shown. Graph nodes: T, C, X.
     Interaction C->T (in graph) and C->Y (Y not in graph -> dropped)."""
     T, C, X, Y = (f"ENSG{n:011d}" for n in (1, 2, 3, 4))
     gene_sets = pd.DataFrame(
@@ -33,6 +34,8 @@ def _mini_run():
             {"set_id": "P1", "set_name": "Seed Pathway", "gene_id": C},
             {"set_id": "P2", "set_name": "Disease Pathway", "gene_id": C},
             {"set_id": "P2", "set_name": "Disease Pathway", "gene_id": X},
+            {"set_id": "P3", "set_name": "Other Seed Pathway", "gene_id": T},
+            {"set_id": "P3", "set_name": "Other Seed Pathway", "gene_id": C},
         ]
     )
     return {
@@ -40,9 +43,8 @@ def _mini_run():
         "seeds": {T},
         "symbols": {T: "TGT", C: "CAND", X: "XG", Y: "YG"},
         "graph_index": {T, C, X},
-        "stage4_ran": True,
         "gene_sets": gene_sets,
-        "disease_pathways": pd.DataFrame([{"set_id": "P2"}]),
+        "disease_pathways": pd.DataFrame([{"set_id": "P1"}, {"set_id": "P2"}]),
         "ot": pd.DataFrame(
             [
                 {"gene_id": C, "datatype_id": "genetic_association", "datasource_id": "eva", "score": 0.7},
@@ -65,7 +67,7 @@ def test_evidence_trace_shared_pathways_and_scoping():
     run, (T, C, X, Y) = _mini_run()
     tr = rep.evidence_trace(C, run)
 
-    assert tr["shared_pathways"] == [("Seed Pathway", 1)]     # P1 has C and one seed (T)
+    assert tr["shared_pathways"] == [("Seed Pathway", 1)]     # P1 has C and one seed (T); P3 is not disease-relevant
     assert tr["member_pathways"] == ["Disease Pathway"]       # P2 has C but no seed
 
     # datatypes: max over datasources, every datatype shown, strongest first
@@ -126,16 +128,16 @@ def test_build_report_is_self_contained_and_symbol_labelled(tmp_path):
     reason="example_data/example_run not populated",
 )
 def test_build_report_traces_only_top_candidates(tmp_path):
-    html = rep.build_report(EXAMPLE_RUN, tmp_path / "report.html", n_traces=3).read_text()
+    html = rep.build_report(EXAMPLE_RUN, tmp_path / "report.html", n_traces=2).read_text()
     annotated = pd.read_csv(EXAMPLE_RUN / "candidates_annotated.tsv", sep="\t")
     tbody = html.split("<tbody", 1)[1].split("</tbody>", 1)[0]
     assert tbody.count("<tr>") == len(annotated)          # the table still lists every candidate
-    assert html.count("<details ") == 3
+    assert html.count("<details ") == 2
     for rank, gid in enumerate(annotated["gene"], start=1):
         has_trace = f'id="g-{gid}"' in html
-        assert has_trace == (rank <= 3)
+        assert has_trace == (rank <= 2)
         assert (f"openGene('g-{gid}')" in tbody) == has_trace  # no link to a trace that is not there
-    assert f"top 3 of {len(annotated)} candidates" in html
+    assert f"top 2 of {len(annotated)} candidates" in html
 
 
 # --------------------------------------------------------------------------

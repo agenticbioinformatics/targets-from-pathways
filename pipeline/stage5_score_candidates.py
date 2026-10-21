@@ -1,7 +1,7 @@
 """Stage 5 - candidate scoring by network propagation from the disease's seed genes.
 
-Seeds are the disease's genetic-association genes (Stage 2's disease_seed_genes.tsv) that are nodes of the
-Stage 3 or Stage 4 graph. Every other graph gene is a candidate, scored by its proximity to the seeds, and
+Seeds are the disease's genes with a genetic-association score > 0 (Stage 2's disease_seed_genes.tsv) that are
+nodes of the Stage 3 graph (or Stage 4's, the same graph with optional user weights). Every other graph gene is a candidate, scored by its proximity to the seeds, and
 written to candidate_scores.tsv. Methods (--method, at least one):
 - bfwalk (default): BFWalk backtrack-free network propagation from the seeds
   (https://github.com/jedrzejkubica/BFWalk). Needs the bfwalk package (for now from TestPyPI, see README).
@@ -34,7 +34,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         prog="stage5_score_candidates.py",
         description="Stage 5 - candidate scoring. Propagates from the disease's seed genes over the graph and "
-        "ranks every non-seed graph gene by BFWalk and/or random-walk-with-restart (--method). Reads the graph files in --graph-dir (Stage 3 or Stage 4) and the seed genes "
+        "ranks every non-seed graph gene by BFWalk and/or random-walk-with-restart (--method). Reads the graph files in --graph-dir (Stage 3 or 4) and the seed genes "
         "(--seed-genes); writes candidate_scores.tsv.",
     )
     parser.add_argument("--graph-dir", required=True, type=Path, help="Directory with the Stage 3/4 graph files.")
@@ -70,7 +70,7 @@ def parse_methods(raw_methods):
 
 
 def read_seeds(seeds_path, gene_index):
-    """Return the seed genes that are graph nodes, sorted. Seeds outside the graph (in no size-capped
+    """Return the seed genes that are graph nodes, sorted. Seeds outside the graph (on no disease-relevant
     pathway) cannot propagate anything, so they are dropped with a log line."""
     if not seeds_path.exists():
         fail(f"--seed-genes {seeds_path} does not exist (run stage2_gsea_discovery.py first?).")
@@ -83,8 +83,8 @@ def read_seeds(seeds_path, gene_index):
 
 
 def build_digraph(weight, gene_index):
-    """Each edge gets "weight" for RWR; Stage 4's weight 0 (both genes without evidence) stays 0, so such an
-    edge carries no flow."""
+    """Each edge gets "weight" for RWR (1 on Stage 3's unweighted graph, or Stage 4's user weight; a weight
+    <= 0 carries no flow)."""
     graph = nx.DiGraph()
     graph.add_nodes_from(gene_index)
     edges = weight.tocoo()
@@ -110,8 +110,9 @@ def rwr_scores(graph, seeds, restart_prob):
 
 
 def bfwalk_scores(weight, gene_index, seeds, alpha, threads):
-    """BFWalk from the seeds, on the directed weighted graph. BFWalk needs edge weights in ]0, 1], so
-    zero-weight edges are dropped (as in RWR, they carry no flow) and the rest are divided by the largest."""
+    """BFWalk from the seeds, on the directed graph. BFWalk needs edge weights in ]0, 1], so zero-weight
+    edges are dropped (as in RWR, they carry no flow) and the rest are divided by the largest (a no-op on
+    an unweighted graph)."""
     if not 0.0 < alpha < 1.0:
         fail(f"--bfwalk-alpha must be strictly between 0 and 1 (got {alpha}).")
     try:

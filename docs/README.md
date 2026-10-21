@@ -17,10 +17,12 @@ python3 pipeline/run_pipeline.py \
     --data-dir data/ --out-dir out/ --report
 ```
 
-There is no target gene: the disease's genes with Open Targets
-`genetic_association` evidence are the **seed genes** (Stage 2 writes them to
-`disease_seed_genes.tsv`), the graph is built around them (Stage 3), and
-Stage 5 propagates from them to rank every non-seed graph gene.
+There is no target gene: the disease's genes with an Open Targets
+`genetic_association` score > 0 are the **seed genes** (Stage 2 writes them to
+`disease_seed_genes.tsv`). GSEA of the seeds finds the disease-relevant
+pathways (Stage 2), the graph is the Reactome functional interactions between
+the genes of those pathways (Stage 3), and Stage 5 propagates from the seeds
+to rank every non-seed graph gene.
 
 Any option `run_pipeline.py` does not recognise is forwarded to
 `stage1_ingest.py`, so a run that needs one of Stage 1's flags is just
@@ -59,13 +61,15 @@ an HGNC symbol where an Ensembl gene ID is required — the `GRB2-1` bug
 class) with an error naming the offending column, as loudly as it accepts a
 valid one.
 
-`python3 -m pytest tests/test_run_directory.py` (8 tests) checks run-directory
+`python3 -m pytest tests/test_run_directory.py` (9 tests) checks run-directory
 integrity on copies of the example run: a copied run reads its own Stage 1
 files even when the manifest lists the original's, an artifact changed after
 Stage 1 is refused, a benchmark holdout gene's own evidence never feeds Stage
-4 (and a re-run without a holdout clears it), re-running Stage 4 gives
-the same graph, a disease with only three seed genes still gets a ranking,
-and seed genes in no pathway stop Stage 3 with a message.
+4 (and a re-run without a holdout clears it), Stage 4 leaves Stage 3's
+unweighted graph unchanged without user weights (and applies and resets them
+correctly with them), genes with a zero genetic-association score are
+not seeds, and a disease with too few seeds for GSEA, or with no seed on a
+disease-relevant pathway, stops Stage 3 with a message.
 
 ## Running Stage 1 (`pipeline/stage1_ingest.py`)
 
@@ -137,12 +141,12 @@ python3 pipeline/stage2_gsea_discovery.py --manifest out/manifest.json
 `pipeline/stage2_gsea_discovery.py` takes no other input — it resolves `gene_sets.parquet`
 and `ot_disease_subset.parquet` entirely from the manifest, and writes three
 files next to it: `disease_pathways.tsv` (the significant pathways),
-`disease_seed_genes.tsv` (`gene_id`, `score`: the genes with
-`genetic_association` evidence — the GSEA ranking signature — minus any
+`disease_seed_genes.tsv` (`gene_id`, `score`: the genes with a
+`genetic_association` score > 0 — the GSEA ranking signature — minus any
 benchmark holdout) and `benchmark_holdout_genes.tsv` (`gene_id`: the
-resolved holdout, header only without `--benchmark-holdout-file`). Stages 3
-and 5 use `disease_seed_genes.tsv` as the seed genes; Stage 4 reads the
-holdout.
+resolved holdout, header only without `--benchmark-holdout-file`). Stage 5
+propagates from `disease_seed_genes.tsv` (Stage 3 only checks that some seeds
+are in the graph); Stage 4 reads the holdout.
 
 A tiny hand-built example (30 genes of which 18 are seeds, 7 gene sets
 including one deliberate ancestor/child near-duplicate pair, one scattered
@@ -182,8 +186,8 @@ validation): excludes genes from the seed set — both the GSEA signature and
 `disease_seed_genes.tsv` — so a held-out gene is never a seed and can only
 come back as a *candidate* in Stage 5, rather than validating itself. Stage 4
 also ignores the held-out genes' own Open Targets evidence (read from
-`benchmark_holdout_genes.tsv`), so it weights neither their edges nor Stage
-6's `genetic_evidence` term. Genes are listed one per line
+`benchmark_holdout_genes.tsv`), so it does not show as their Stage 6
+`genetic_evidence_score`. Genes are listed one per line
 (`#` comments allowed) and resolved to Ensembl IDs via Stage 1's
 `genes.parquet` — symbol, synonym, or bare Ensembl ID (`stage1_ingest.resolve_gene`) — never matched directly against
 `ot_disease_subset` (which carries no symbol column at all). Example:
@@ -198,16 +202,16 @@ python3 pipeline/stage2_gsea_discovery.py --manifest example_data/example_run/ma
 it drops `R-HSA-300` to 4 genes — one below blitzgsea's minimum tested-set
 size — so it disappears from `disease_pathways.tsv` entirely (`3/7 gene sets
 tested`, down from 4) rather than merely losing significance. G17 is no
-longer a seed (17 seeds), but `R-HSA-300` still contains seeds (G18–G21), so
-it stays in the Stage 3 graph and G17 is ranked as a candidate in Stage 5
-(2nd of 8 with the default BFWalk on the Stage 3 graph; 8th of 8 after
-Stage 4, which ignores G17's own evidence).
+longer a seed (17 seeds), and since the Stage 3 graph holds only the genes of
+the GSEA pathways, G17–G21 leave the graph with `R-HSA-300`: G17 cannot be
+ranked. A held-out gene can come back as a candidate only if the remaining
+seeds still detect one of its pathways.
 
 **Diseases with few genetic-association genes** (e.g. a Mendelian disease
 run with Stage 1's `--allow-low-coverage`): GSEA cannot always run. Stage 2
-then logs a warning saying why, writes an empty `disease_pathways.tsv`, and
-the pipeline goes on: Stage 3 builds the graph from the pathways that
-contain a seed gene only. This happens when:
+then logs a warning saying why and writes an empty `disease_pathways.tsv`;
+with no disease-relevant pathway there is no graph, so Stage 3 stops with a
+message. This happens when:
 - there are fewer than 5 seed genes (blitzgsea's minimum overlap per gene
   set);
 - no gene set holds 5 of them;
@@ -215,9 +219,10 @@ contain a seed gene only. This happens when:
   whenever the seed count equals one of its calibration set sizes (up to
   about 230 genes).
 
-If no seed gene is in any pathway, Stage 3 stops with a message: there is
-nothing to propagate from. Spermatogenic failure 5 (`MONDO_0009461`) is an
-example: its one seed gene, AURKC, is in no Reactome pathway.
+If no seed gene is on a disease-relevant pathway, Stage 3 also stops with a
+message: there is nothing to propagate from. Spermatogenic failure 5
+(`MONDO_0009461`) is an example: its one seed gene, AURKC, is in no Reactome
+pathway (and one seed is too few for GSEA anyway).
 
 `python3 -m pytest tests/test_gsea_discovery.py` runs the unit-level GSEA
 tests (`tests/test_gsea_discovery.py`, 12 tests): GSEA skipped with a
@@ -242,13 +247,19 @@ python3 pipeline/stage3_build_graph.py --manifest out/manifest.json
 Reads `gene_sets.parquet` and `interactions.parquet` via the manifest, and
 `disease_pathways.tsv` and `disease_seed_genes.tsv` alongside it by default
 (override with `--disease-pathways` / `--seed-genes`). The graph's nodes are
-all genes of the union of (a) the Stage 2 disease pathways and (b) every
-size-capped pathway that contains at least one seed gene — so each seed
-gene, its pathway-mates, and every gene on the disease pathways are in the
-graph. A Reactome interaction with no direction (`-` in the FI file) is
-added in both directions; a directed one only in its own direction. Writes `graph_weight.npz`, `graph_sign.npz`,
+all genes of the Stage 2 disease pathways (the pathways GSEA found), and its
+edges are the Reactome functional interactions between those genes; sharing
+a pathway adds no edge. The graph is **unweighted**: every edge has weight 1
+in `graph_weight.npz` (interaction confidence is not used as a weight, and
+there is no genetic-evidence weighting). A Reactome interaction with no
+direction (`-` in the FI file) is added in both directions; a directed one
+only in its own direction. The seed genes are read only to check that some
+are in the graph. Writes `graph_weight.npz`, `graph_sign.npz`,
 `graph_gene_index.json`, and `graph_metadata.json` next to the manifest —
 not GraphML; see the module docstring for why.
+
+Stage 3 stops with a message if `disease_pathways.tsv` is empty (GSEA found
+no pathway) or if no seed gene is on a disease pathway.
 
 Against the checked-in example (regenerate with
 `python3 example_data/build_gsea_example.py` if needed):
@@ -257,76 +268,140 @@ Against the checked-in example (regenerate with
 python3 pipeline/stage3_build_graph.py --manifest example_data/example_run/manifest.json
 ```
 
-**Expected output** (log line):
+**Expected output** (log lines):
 
 ```
-INFO build_graph: Genes on the 3 disease-relevant pathways: 19.
-INFO build_graph: Genes on the 6 pathways containing a seed gene: 25.
-INFO build_graph: Graph: 25 nodes, 258 edges (6 pathways in the union; 4 interaction edges added, 1 out of scope).
-INFO build_graph: Seed genes in the graph: 18/18.
+INFO build_graph: Graph: 19 nodes (genes on the 3 disease-relevant pathways), 10 edges (10 interaction edges added, 3 out of scope).
+INFO build_graph: Seed genes in the graph: 16/18.
 ```
 
-The two gene counts overlap (here every disease pathway also contains
-seeds), so the graph's node count is the size of their union, not their sum.
-
-Six of the seven pathways contain a seed gene, so they are all in the graph
-— including `R-HSA-100` (dropped by Stage 2's collapsing, but it contains
-seeds) and `R-HSA-500` (too few seeds for GSEA). Only `R-HSA-600`, the
-seedless pathway, is left out: its genes `N29`–`N33` are not nodes, and the
-one dropped interaction row (`N29 -> N22`) is dropped for that reason —
-proof that interaction edges really are scoped to the pathway-gene pool,
-not added genome-wide. `graph_metadata.json` records `n_seed_pathways`,
-`n_disease_pathway_genes`, `n_seed_pathway_genes`, `n_seed_genes_in_graph`
-and `n_seed_genes_total`.
-
-On a real disease with many genetic-association genes, rule (b) can pull in
-a large share of Reactome; check `scale_report.json`'s projected edge count
-and tighten `--max-set-size` in Stage 1 if the graph gets too big.
+The two seeds left out (`G12`, `G13`) are only on `R-HSA-100` (dropped by
+Stage 2's collapsing) and `R-HSA-400` (not significant). The genes of
+`R-HSA-500` (too few seeds for GSEA) and `R-HSA-600` (no seed) are not
+nodes either, so the three interaction rows touching only those genes
+(`G12 -> G1`, `G2 -> N25`, `N29 -> N22`) are dropped as out of scope — proof
+that interaction edges are scoped to the genes of the GSEA pathways, not
+added genome-wide. `graph_metadata.json` records `n_disease_pathways`,
+`n_nodes`, `n_edges`, `n_seed_genes_in_graph` and `n_seed_genes_total`.
 
 `python3 -m pytest tests/test_build_graph.py` runs the unit-level graph
-tests (6 tests): the exact directed/signed edge list (with `source_db`
-tags) for a hand-built pathway + interaction fixture, an undirected
-interaction coming out symmetric, the co-membership
-weight formula for both a small and a large (overlapping) pathway, that
-a seed gene alone in its own pathway survives as an isolated node, and that
-the pathway union is exactly disease pathways + seed-containing pathways (a
-pathway with neither stays out).
+tests (4 tests): the edges are exactly the in-scope interactions (with
+sign, confidence, `evidence_type` and `source_db`; no co-membership edges),
+the nodes are exactly the genes of the GSEA pathways (a seed-gene pathway
+that GSEA did not detect stays out, and a gene without interactions
+survives as an isolated node), the serialized weight matrix is 1 on every
+edge, and an undirected interaction comes out symmetric.
 
 ## Running Stage 4 (`pipeline/stage4_genetic_evidence_weights.py`)
 
 **Setup:** same as Stage 3, plus `numpy` (already required transitively).
 
+Stage 4 does two independent things: it **optionally weights the graph with
+your own node and/or edge weights**, and it scores each graph gene's genetic
+evidence for Stage 6's annotation.
+
 **Run command**, after Stage 3 has produced the graph artifacts:
 
 ```
-python3 pipeline/stage4_genetic_evidence_weights.py --manifest out/manifest.json
+python3 pipeline/stage4_genetic_evidence_weights.py --manifest out/manifest.json \
+    [--node-weights node_weights.tsv] [--edge-weights edge_weights.tsv]
 ```
 
 Reads `ot_disease_subset.parquet` via the manifest and Stage 3's graph
 artifacts alongside it by default (override with `--graph-dir`/`--out-dir`).
-Only `genetic_association` evidence counts; every other Open Targets
-datatype is ignored, and there is no option to add one:
+Writes **exactly Stage 3's four filenames** (`graph_weight.npz` is
+replaced; `graph_sign.npz` and `graph_gene_index.json` are copied through;
+`graph_metadata.json` is extended), so Stage 5 reads a Stage 3 or a Stage 4
+directory the same way, plus `gene_weights.tsv`.
+
+### Your own node and edge weights (optional)
+
+Stage 3's graph is unweighted: every edge has weight 1. If you have your own
+prior knowledge — e.g. expression in a relevant tissue, a druggability
+score, or interaction confidences from another database — you can turn it
+into weights that Stage 5's propagation (BFWalk and RWR) then follows: a
+heavier edge carries more of the seeds' signal. Both files are optional and
+can be given alone or together; without either, the graph stays unweighted.
+
+**`--node-weights`**: a tab-separated file with a header and two columns:
+
+```
+gene_id	weight
+ENSG00000105974	2.0
+ENSG00000141510	0.5
+```
+
+Each graph edge `u → v` gets the **mean** of `u`'s and `v`'s weights
+(`--node-weight-mode product` multiplies them instead, which penalises an
+edge more strongly when either gene has a low weight). Genes not in the file
+weigh `--default-node-weight` (default 1).
+
+**`--edge-weights`**: a tab-separated file with a header and three columns:
+
+```
+gene_a	gene_b	weight
+ENSG00000105974	ENSG00000141510	0.8
+```
+
+A row weights the graph edge(s) between `gene_a` and `gene_b` in **whichever
+directions the graph has** them (an undirected Reactome interaction is two
+directed edges, and both get the weight), so the order of the two genes does
+not matter. Listing the same pair twice, in either order, is an error. Edges
+not in the file weigh `--default-edge-weight` (default 1).
+
+**With both files**, an edge's weight is the product of its edge weight and
+its combined node weight. For example, with node weights `A = 0.5`, `B = 1`
+and an edge weight of 0.4 for the pair (A, B), the edge `A → B` weighs
+`0.4 × (0.5 + 1) / 2 = 0.3`.
+
+Rules that apply to both files:
+- Genes are **Ensembl gene IDs** (`ENSG` + 11 digits), as everywhere else in
+  the pipeline; symbols are rejected.
+- Every weight must be a finite number **> 0**. A weight of 0 would cut an
+  edge out of propagation; to remove an edge, leave its interaction out of
+  the graph instead.
+- Weights are relative, not bounded: RWR uses them as they are, and BFWalk
+  divides them all by the largest one (it needs weights in `]0, 1]`). Mind
+  the defaults: if your weights are all below 1, every gene or edge missing
+  from the file (weight 1) outweighs the ones you listed — set
+  `--default-node-weight` / `--default-edge-weight` to match your scale.
+- Stage 4 **never adds or removes an edge**. Rows for genes that are not
+  graph nodes, and edge rows for gene pairs that are not graph edges, are
+  skipped, and the log says how many (e.g. `Edge weights: 1 gene pairs
+  weighted, 3 not graph edges (skipped).`).
+- The weights are always applied to Stage 3's structure, starting from 1 on
+  every edge. Re-running Stage 4 with other files, or with none, replaces the
+  previous weighting rather than compounding it; running it without files
+  restores the unweighted graph.
+
+`graph_metadata.json` records what was used under `stage4_user_weights`
+(`weighted`, the two file paths, the mode and defaults, and how many rows
+were used or skipped), and the Stage 7 report header says whether the graph
+was weighted. `run_pipeline.py` passes `--node-weights` / `--edge-weights`
+through to Stage 4; for `--node-weight-mode` and the defaults, run Stage 4
+on its own and then Stages 5-6.
+
+### Genetic-evidence gene scores
+
+Independently of the weights, Stage 4 scores each graph gene with its
+strongest Open Targets `genetic_association` evidence for the disease, for
+Stage 6's `genetic_evidence_score` column only — **these scores are never
+used as weights**. Only `genetic_association` evidence counts; every other
+Open Targets datatype is ignored, and there is no option to add one:
 - `affected_pathway` would be circular: OT 26.06 maps its own `reactome`
   evidence datasource to it (see `pipeline/stage1_ingest.py`'s
   `DATASOURCE_TO_DATATYPE`), and the graph is built from Reactome.
 - `known_drug` would favour genes that are already drug targets for the
   disease.
 
-Writes **exactly Stage 3's four filenames**, not a parallel set, so
-`stage5_score_candidates.py` (Stage 5) can point `--graph` at either a Stage 3 or
-a Stage 4 directory and load it through the same code path:
-`graph_weight.npz` is *replaced* with the genetic-evidence-derived edge
-weight (same sparsity pattern as Stage 3's structural weight — no edge
-added or removed, only re-weighted); `graph_sign.npz`/`graph_gene_index.json`
-are copied through unchanged; `graph_metadata.json` is extended (not
-replaced) with a `genetic_evidence_score` gene->score mapping. Plus a
-separate, human-facing `gene_weights.tsv` that Stage 5 never reads.
-Genes listed in Stage 2's `benchmark_holdout_genes.tsv` (next to the
-manifest; override with `--holdout-genes`) score 0.0 whatever their Open
-Targets rows say, and `graph_metadata.json` records them under
-`stage4_genetic_evidence.holdout_genes`. See the
-attribute-name comment at the top of `pipeline/stage4_genetic_evidence_weights.py` for the
-exact contract.
+The scores go into `graph_metadata.json` as a `genetic_evidence_score`
+gene->score mapping, which Stage 6 reads, and into a human-facing
+`gene_weights.tsv`. Genes listed in Stage 2's `benchmark_holdout_genes.tsv`
+(next to the manifest; override with `--holdout-genes`) score 0.0 whatever
+their Open Targets rows say, and `graph_metadata.json` records them under
+`stage4_genetic_evidence.holdout_genes`. With Stage 2's seeds every candidate
+scores 0 (a gene with a score > 0 is a seed); the column is informative only
+when Stage 5 is given other seeds with `--seed-genes`.
 
 Against the checked-in example:
 
@@ -343,20 +418,40 @@ ENSG00000000003   0.95
 ENSG00000000004   0.92
 ```
 
-Every non-seed gene scores 0: seeds are exactly the genes with
-`genetic_association` evidence. `ENSG...022`'s `known_drug` row is ignored.
+Every non-seed gene scores 0: seeds are exactly the genes with a
+`genetic_association` score > 0. `ENSG...022`'s `known_drug` row is ignored.
+The log also says `No --node-weights / --edge-weights: the graph stays
+unweighted.` To try the weights on the example, give `ENSG00000000022` a
+low node weight:
 
-`--edge-weight-mode product` (default `avg`) changes only the values written
-into `graph_weight.npz`; e.g. the `ENSG...001`→`ENSG...002` edge is
-`avg(0.60, 0.98) = 0.79` by default or `0.60 * 0.98 = 0.588` with `product`.
-Note that with `product`, every edge touching a gene without evidence gets
-weight 0, which cuts most non-seed genes off from RWR/BFWalk propagation.
+```
+printf 'gene_id\tweight\nENSG00000000022\t0.1\n' > /tmp/node_weights.tsv
+python3 pipeline/run_pipeline.py --from-manifest example_data/example_run/manifest.json \
+    --node-weights /tmp/node_weights.tsv
+```
+
+`ENSG00000000022`'s edges (all with seeds) now weigh `(1 + 0.1) / 2 = 0.55`,
+and its BFWalk score drops from 0.5 to about 0.27, below `ENSG00000000024`
+(0.5). Run the command again without `--node-weights` to restore the
+checked-in result.
+
+`python3 -m pytest tests/test_genetic_evidence_weights.py` runs the
+unit-level tests (13 tests): only `genetic_association` rows count (the
+strongest one per gene), and a gene with only `affected_pathway` or
+`known_drug` evidence scores 0; without user weights every edge is reset to
+1; node weights combine by mean or product, with the default for missing
+genes; edge weights match either gene order, skip non-edges and never add
+an edge; node and edge weights multiply; a pair listed twice, and invalid
+files (weight ≤ 0, a symbol instead of an Ensembl ID, a wrong column, a
+duplicate gene), exit non-zero. `tests/test_run_directory.py` also runs
+Stage 4 on the example with both files and checks that a re-run without
+them restores the unweighted graph.
 
 ## Running Stage 5 (`pipeline/stage5_score_candidates.py`)
 
 **Setup:** `pip install networkx scipy numpy pandas pandera pydantic` (or `pip install -r requirements.txt`).
 
-**Run command**, against a Stage 3 *or* Stage 4 graph directory (the two
+**Run command**, against a Stage 3 or Stage 4 graph directory (the two
 share one format — see Stage 4 above):
 
 ```
@@ -379,11 +474,14 @@ non-zero. Each requested method writes its own column (`bfwalk_score`,
 
 - `rwr` = personalised PageRank restarting uniformly on the seeds.
   `--restart-prob` (default 0.5; PageRank `alpha = 1 - restart_prob`).
-  Zero-weight edges (Stage 4, both genes without evidence) carry no flow.
+  Every edge of Stage 3's unweighted graph has weight 1; Stage 4's user
+  weights, if given, are used as they are.
 
 Hub bias, measured on inflammatory bowel disease (`--disease MONDO_0005265`, Open Targets 26.06 +
-Reactome 97, Stage 4 graph, 9,127 candidates from 502 seeds) as the rank correlation of each score with
-the candidate's number of graph neighbours and of Reactome pathways:
+Reactome 97, 9,127 candidates from 502 seeds) as the rank correlation of each score with
+the candidate's number of graph neighbours and of Reactome pathways. These numbers come from an earlier
+graph (genetic-evidence edge weights, co-membership edges, and the pathways of every seed gene) and have
+not been re-measured on the current unweighted GSEA-pathway graph:
 
 | Method | Spearman ρ with node degree | Spearman ρ with no. of Reactome pathways |
 |---|---|---|
@@ -403,42 +501,35 @@ established targets.
 
 `bfwalk` runs [BFWalk](https://github.com/jedrzejkubica/BFWalk)
 (backtrack-free network propagation with in-degree normalisation) with the
-seed genes as its seeds, on the same directed weighted graph. BFWalk needs edge weights in
-`]0, 1]`, so zero-weight edges (Stage 4 genes without evidence) are dropped —
-as in RWR, they carry no flow — and the remaining weights are divided by the
-largest one. Knobs: `--bfwalk-alpha` (attenuation coefficient, default 0.5)
+seed genes as its seeds, on the same directed graph. BFWalk needs edge weights in
+`]0, 1]`, so all weights are divided by the largest one (a no-op on the
+unweighted graph); zero-weight edges from a hand-made graph would be dropped. Knobs: `--bfwalk-alpha` (attenuation coefficient, default 0.5)
 and `--bfwalk-threads` (default 0 = all cores). BFWalk is not on PyPI yet:
 `requirements.txt` installs it from TestPyPI (see the top-level README); it
 will be available via `pip install bfwalk` shortly. Until it is installed,
 run Stage 5 with `--method rwr`. Stages 6 and 7 carry whichever of
 `bfwalk_score` / `rwr_score` was produced through, and keep its ranking.
 
-Against the checked-in example (after Stages 1–4 have run, so
-`example_data/example_run/` holds a **Stage 4** graph):
+Against the checked-in example (after Stages 1–4 have run):
 
 ```
 python3 pipeline/stage5_score_candidates.py --graph-dir example_data/example_run
 ```
 
 **Expected output** (`example_data/example_run/candidate_scores.tsv`, all
-7 candidates; columns per `schemas.CandidateScoresSchema`, ranked by
+3 candidates; columns per `schemas.CandidateScoresSchema`, ranked by
 `bfwalk_score`):
 
 ```
 gene             bfwalk_score
-ENSG00000000024  0.3576
-ENSG00000000025  0.3346
-ENSG00000000022  0.3298
-ENSG00000000023  0.3298
-ENSG00000000026  0.2225
-ENSG00000000027  0.2225
-ENSG00000000028  0.2225
+ENSG00000000022  0.5
+ENSG00000000024  0.5
+ENSG00000000023  0.25
 ```
 
 No candidate has genetic evidence of its own, so the ranking comes from
-network position alone. `N25`'s interaction with seed `G2` lifts it above
-its pathway-mates `N26`–`N28`, which tie last. The 18 seeds are not in the
-table.
+network position alone: `N22` and `N24` have an edge from a seed, `N23` is
+reached only through `N24`. The 16 seeds in the graph are not in the table.
 
 The `gene` column is an **Ensembl gene ID** — the project's one canonical
 identifier (Decision 2), copied verbatim from `graph_gene_index.json`, not
@@ -518,22 +609,18 @@ Against the checked-in example (after Stages 1–5):
 python3 pipeline/stage6_annotate_context.py --manifest example_data/example_run/manifest.json
 ```
 
-**Expected output** (`example_data/example_run/candidates_annotated.tsv`,
-top rows; columns per `schemas.AnnotatedCandidatesSchema`, in Stage 5's
+**Expected output** (`example_data/example_run/candidates_annotated.tsv`; columns per `schemas.AnnotatedCandidatesSchema`, in Stage 5's
 order by `bfwalk_score`):
 
 ```
 gene             bfwalk_score  genetic_evidence_score  tractability  safety           n_safety_liabilities
-ENSG00000000024  0.3576        0.0                     discovery     unknown          0
-ENSG00000000025  0.3346        0.0                     clinical      unknown          0
-ENSG00000000022  0.3298        0.0                     clinical      has_liabilities  1
-ENSG00000000023  0.3298        0.0                     unknown       unknown          0
-ENSG00000000026  0.2225        0.0                     unknown       unknown          0
+ENSG00000000022  0.5           0.0                     clinical      has_liabilities  1
+ENSG00000000024  0.5           0.0                     discovery     unknown          0
+ENSG00000000023  0.25          0.0                     unknown       unknown          0
 ```
 
 The order is exactly `candidate_scores.tsv`'s. `ENSG...022`'s safety
-liability and `ENSG...025`'s clinical tractability are shown, but do not
-move them. `genetic_evidence_score` is 0 for every candidate: candidates
+liability is shown, but does not move it. `genetic_evidence_score` is 0 for every candidate: candidates
 are non-seed genes, and Stage 4 counts only `genetic_association`
 evidence, which is what makes a gene a seed. Genes absent from the
 synthetic `ot_target_subset.parquet` are `unknown`/`unknown`.
@@ -586,8 +673,8 @@ python3 pipeline/stage7_report.py --run-dir out/
 **What the report contains** (single file, opens in any browser):
 
 - header — disease, number of seed genes and candidates, random seed, Reactome / Open
-  Targets versions, whether the graph is Stage 3 (structural) or Stage 4
-  (genetic-evidence-weighted);
+  Targets versions, and the kind of graph (Stage 3's unweighted functional
+  interactions on the GSEA pathways, or with Stage 4's user weights);
 - a **sortable** ranked table, in Stage 5's order — `symbol`, `gene`
   (Ensembl), `rwr`, `bfwalk`, `tractability`, `safety` (click a
   header to sort; `rwr`/`bfwalk` columns appear only if those methods
@@ -595,7 +682,7 @@ python3 pipeline/stage7_report.py --run-dir out/
   candidate;
 - a **click-to-expand evidence trace** for each of the top 100 candidates
   (`--n-traces`; the table still lists every candidate) — its ranking
-  score, the graph pathways it shares with seed
+  score, the disease-relevant (GSEA) pathways it shares with seed
   genes (with the number of seeds in each; and the disease-relevant pathways
   without seeds it is a member of), its Open
   Targets datatypes + scores (strongest first), and the signed interaction edges touching it (edges with a seed
@@ -618,17 +705,19 @@ ranked table — same ordering as Stage 6's `candidates_annotated.tsv`):
 
 ```
 #  symbol  gene             bfwalk  tractability  safety
-1  GENE24  ENSG00000000024  0.3576  discovery     unknown
-2  GENE25  ENSG00000000025  0.3346  clinical      unknown
-3  GENE22  ENSG00000000022  0.3298  clinical      has_liabilities
+1  GENE22  ENSG00000000022  0.5000  clinical      has_liabilities
+2  GENE24  ENSG00000000024  0.5000  discovery     unknown
+3  GENE23  ENSG00000000023  0.2500  unknown       unknown
 ```
 
-Expanding `GENE25` shows: pathways shared with seed genes *Seed-Adjacent
-Pathway* (1 seed gene); no Open Targets rows for this disease; interaction
-`GENE02 → GENE25` (activating, curated, confidence 0.80, badged "with seed").
+Expanding `GENE22` shows: pathways shared with seed genes *Child Broad
+Signaling* (10 seed genes); its `known_drug` Open Targets row (0.500,
+chembl); and the interactions `GENE03 → GENE22`, `GENE05 → GENE22` and
+`GENE07 — GENE22`, each badged "with seed" (`N29 → N22` is omitted: N29 is
+not in the graph).
 
 `python3 -m pytest tests/test_stage7_report.py tests/test_run_pipeline.py`
-runs the tests (10): `evidence_trace`'s seed-pathway / graph-scoping /
+runs the tests (10): `evidence_trace`'s disease-pathway / graph-scoping /
 datatype logic on a hand-built run, `build_report` producing a
 self-contained symbol-labelled HTML with one detail block per candidate and
 no genetic-evidence column,

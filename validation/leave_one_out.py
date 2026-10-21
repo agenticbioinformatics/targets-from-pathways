@@ -279,7 +279,7 @@ def held_out_genes(args, full_dir, rng):
         graph_genes = set(json.loads((full_dir / "graph_gene_index.json").read_text()))
         genes = sorted(set(seeds) & graph_genes)
         n_outside = len(set(seeds) - graph_genes)
-        source = f"seed genes in the graph ({n_outside} of {len(seeds)} seeds are in no size-capped pathway " \
+        source = f"seed genes in the graph ({n_outside} of {len(seeds)} seeds are on no disease-relevant pathway " \
                  f"and cannot be ranked by the pipeline at all)"
     genes = sorted(set(genes))
     if args.max_genes is not None and len(genes) > args.max_genes:

@@ -1,10 +1,11 @@
 """Stage 2 - disease-pathway discovery with GSEA.
 
-Runs preranked GSEA of the disease's genetic-association genes against the Reactome gene sets listed in
-Stage 1's manifest and writes the significant pathways to disease_pathways.tsv next to the manifest.
-The same genetic-association genes (minus any benchmark holdout) are written to disease_seed_genes.tsv:
-Stage 3 builds the graph around them and Stage 5 propagates from them. The holdout itself is written to
-benchmark_holdout_genes.tsv (empty without --benchmark-holdout-file), so Stage 4 can ignore its evidence.
+Runs preranked GSEA of the disease's seed genes - the genes with an Open Targets genetic_association score
+> 0 for the disease - against the Reactome gene sets listed in Stage 1's manifest and writes the significant
+pathways to disease_pathways.tsv next to the manifest. Stage 3 builds the graph from those pathways.
+The same seed genes (minus any benchmark holdout) are written to disease_seed_genes.tsv; Stage 5 propagates
+from them. The holdout itself is written to benchmark_holdout_genes.tsv (empty without
+--benchmark-holdout-file), so Stage 4 can ignore its evidence.
 """
 
 import argparse
@@ -33,8 +34,8 @@ logger = logging.getLogger("gsea_discovery")
 JACCARD_COLLAPSE_THRESHOLD = 0.7
 # blitzgsea tests only gene sets with at least this many signature genes (its min_size default).
 BLITZGSEA_MIN_SIZE = 5
-NO_GSEA_CONSEQUENCE = ("disease_pathways.tsv is written empty, and Stage 3 builds the graph from the pathways "
-                       "that contain a seed gene only.")
+NO_GSEA_CONSEQUENCE = ("disease_pathways.tsv is written empty, so Stage 3 has no pathway to build the graph "
+                       "from and stops.")
 
 
 def parse_args(argv=None):
@@ -79,12 +80,14 @@ def read_holdout_genes(holdout_path, genes_df):
 
 
 def build_signature(ot_disease_subset):
-    """Rank genes by genetic_association evidence only. Open Targets' overall score includes pathway
-    evidence, and testing that against pathways would be circular. A gene's score is its strongest datasource."""
+    """Rank the seed genes by genetic_association evidence only. Open Targets' overall score includes pathway
+    evidence, and testing that against pathways would be circular. A gene's score is its strongest datasource;
+    only genes scoring > 0 are seeds."""
     genetic = ot_disease_subset[ot_disease_subset["datatype_id"] == "genetic_association"]
-    if genetic.empty:
-        fail("ot_disease_subset.parquet has no genetic_association rows - cannot build a GSEA ranking signature.")
     signature = genetic.groupby("gene_id", as_index=False)["score"].max()
+    signature = signature[signature["score"] > 0]
+    if signature.empty:
+        fail("ot_disease_subset.parquet has no genetic_association score > 0 - cannot build a GSEA ranking signature.")
     return signature.rename(columns={"gene_id": "gene"})[["gene", "score"]]
 
 

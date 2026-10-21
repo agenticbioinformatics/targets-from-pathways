@@ -143,6 +143,22 @@ GeneWeightsSchema = DataFrameSchema(
     strict=True,
 )
 
+# Stage 4's optional user-supplied weights (--node-weights / --edge-weights). A weight must be > 0: a zero
+# would silently cut the edge out of propagation, and Stage 3's graph has no way to say "no edge" but leaving it out.
+def positive_weight_column():
+    return Column(float, checks=[Check.greater_than(0.0), Check(np.isfinite, element_wise=True)],
+                  nullable=False, coerce=True)
+
+
+UserNodeWeightsSchema = DataFrameSchema(
+    {"gene_id": ensembl_column(unique=True), "weight": positive_weight_column()},
+    strict=True,
+)
+UserEdgeWeightsSchema = DataFrameSchema(
+    {"gene_a": ensembl_column(), "gene_b": ensembl_column(), "weight": positive_weight_column()},
+    strict=True,
+)
+
 # Stage 5 writes a score column per requested --method; at least one method is always requested.
 PROPAGATION_SCORE_COLUMNS = ["rwr_score", "bfwalk_score"]
 

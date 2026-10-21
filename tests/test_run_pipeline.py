@@ -39,7 +39,7 @@ def test_from_manifest_chains_stages_and_writes_report(tmp_path):
     expected = {
         "stage 2": ["disease_pathways.tsv", "disease_seed_genes.tsv", "benchmark_holdout_genes.tsv"],
         "stage 3": ["graph_weight.npz", "graph_sign.npz", "graph_gene_index.json", "graph_metadata.json"],
-        "stage 4": ["gene_weights.tsv"],  # + graph_* rewritten in place
+        "stage 4": ["gene_weights.tsv"],  # + graph_metadata.json extended in place
         "stage 5": ["candidate_scores.tsv"],
         "stage 6": ["candidates_annotated.tsv"],
         "report": ["report.html"],
@@ -49,7 +49,7 @@ def test_from_manifest_chains_stages_and_writes_report(tmp_path):
             assert (run_dir / name).exists(), f"{stage}: {name} not produced"
 
     annotated = pd.read_csv(run_dir / "candidates_annotated.tsv", sep="\t")
-    assert len(annotated) == 7  # 25 graph genes minus 18 seed genes
+    assert len(annotated) == 3  # 19 genes on the 3 GSEA pathways minus 16 seed genes among them
     assert (run_dir / "disease_seed_genes.tsv").exists()
     # default Stage 5 method, and Stage 6 keeps its ranking - there is no composite score
     assert "bfwalk_score" in annotated.columns and annotated["bfwalk_score"].is_monotonic_decreasing

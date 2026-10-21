@@ -1,10 +1,9 @@
 """Stage 3 - pathway-based gene-gene graph.
 
-Builds a directed, signed graph whose nodes are all genes of the disease-relevant pathways (Stage 2) plus
-all genes of every pathway that contains a seed gene (Stage 2's disease_seed_genes.tsv, the disease's
-genetic-association genes). Edges come from pathway co-membership and from Reactome functional
-interactions between those genes. Writes graph_weight.npz, graph_sign.npz (sparse matrices sharing the
-row/column order in graph_gene_index.json) and graph_metadata.json.
+Builds a directed, signed, unweighted graph whose nodes are all genes of the disease-relevant pathways
+detected by GSEA (Stage 2's disease_pathways.tsv) and whose edges are the Reactome functional interactions
+between those genes. Every edge has weight 1. Writes graph_weight.npz, graph_sign.npz (sparse matrices
+sharing the row/column order in graph_gene_index.json) and graph_metadata.json.
 """
 
 import argparse
@@ -34,10 +33,10 @@ logger = logging.getLogger("build_graph")
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         prog="stage3_build_graph.py",
-        description="Stage 3 - pathway-based gene-gene graph. Builds a directed, signed graph from the union "
-        "of disease-relevant and seed-gene-containing pathways (co-membership edges + Reactome "
-        "functional-interaction edges). Reads gene_sets/interactions via --manifest, disease_pathways.tsv and "
-        "disease_seed_genes.tsv; writes graph_weight.npz / graph_sign.npz / graph_gene_index.json / "
+        description="Stage 3 - pathway-based gene-gene graph. Builds a directed, signed, unweighted graph of the "
+        "Reactome functional interactions between the genes of the disease-relevant pathways found by GSEA. "
+        "Reads gene_sets/interactions via --manifest, disease_pathways.tsv and disease_seed_genes.tsv (only to "
+        "check the seeds are in the graph); writes graph_weight.npz / graph_sign.npz / graph_gene_index.json / "
         "graph_metadata.json.",
     )
     parser.add_argument("--manifest", required=True, type=Path, help="Path to Stage 1's manifest.json.")
@@ -50,40 +49,13 @@ def parse_args(argv=None):
         help="Path to Stage 2's disease_seed_genes.tsv. Default: next to --manifest.",
     )
     parser.add_argument("--out-dir", type=Path, default=None, help="Output directory. Default: --manifest's directory.")
-    parser.add_argument(
-        "--comembership-edges", action=argparse.BooleanOptionalAction, default=True,
-        help="Connect every pair of genes that share a pathway (default). With --no-comembership-edges the "
-        "pathways only choose the genes, and the edges are Reactome functional interactions alone.",
-    )
     return parser.parse_args(argv)
 
 
-def add_comembership_edges(graph, gene_sets_df, pathway_ids, add_edges=True):
-    """Add every gene of the pathways as a node and, if add_edges, connect every pair of genes in each pathway,
-    in both directions, with sign 0 (unknown effect). Each pathway adds 1 / (size - 1) to a pair, so a few
-    large pathways cannot dominate the graph. Returns the number of distinct gene pairs."""
+def add_pathway_genes(graph, gene_sets_df, pathway_ids):
+    """Add every gene of the pathways as a node (also genes without any interaction)."""
     selected = gene_sets_df[gene_sets_df["set_id"].isin(pathway_ids)]
     graph.add_nodes_from(selected["gene_id"].unique())
-    if not add_edges:
-        return 0
-
-    gene_pairs = set()
-    for _, pathway in selected.groupby("set_id"):
-        genes = sorted(pathway["gene_id"].unique())
-        if len(genes) < 2:
-            continue
-        contribution = 1.0 / (len(genes) - 1)
-        source_db = pathway["source_db"].iloc[0]
-        for i in range(len(genes)):
-            for j in range(i + 1, len(genes)):
-                gene_pairs.add((genes[i], genes[j]))
-                for source, target in [(genes[i], genes[j]), (genes[j], genes[i])]:
-                    if graph.has_edge(source, target):
-                        graph[source][target]["comembership_weight"] += contribution
-                    else:
-                        graph.add_edge(source, target, comembership_weight=contribution, sign=0,
-                                       confidence=None, evidence_type=None, source_db=source_db)
-    return len(gene_pairs)
 
 
 def add_interaction_edges(graph, interactions_df, pathway_genes):
@@ -108,38 +80,21 @@ def add_interaction_edges(graph, interactions_df, pathway_genes):
         confidence = None
         if not pd.isna(row.confidence):
             confidence = float(row.confidence)
-        if not graph.has_edge(row.gene_a, row.gene_b):
-            graph.add_edge(row.gene_a, row.gene_b, comembership_weight=0.0)
-        # The interaction sign is more specific than co-membership's sign 0, so it overrides it.
-        edge = graph[row.gene_a][row.gene_b]
-        edge["sign"] = int(row.sign)
-        edge["confidence"] = confidence
-        edge["evidence_type"] = row.evidence_type
-        edge["source_db"] = row.source_db
+        graph.add_edge(row.gene_a, row.gene_b, sign=int(row.sign), confidence=confidence,
+                       evidence_type=row.evidence_type, source_db=row.source_db)
     return int(in_scope.sum()), n_out_of_scope, n_duplicates
 
 
-def build_graph(gene_sets_df, disease_pathways_df, interactions_df, seed_gene_ids, comembership_edges=True):
+def build_graph(gene_sets_df, disease_pathways_df, interactions_df):
     disease_pathway_ids = set(disease_pathways_df["set_id"])
-    seed_pathway_ids = set(gene_sets_df.loc[gene_sets_df["gene_id"].isin(seed_gene_ids), "set_id"])
-    pathway_ids = disease_pathway_ids | seed_pathway_ids
-    disease_pathway_genes = set(gene_sets_df.loc[gene_sets_df["set_id"].isin(disease_pathway_ids), "gene_id"])
-    seed_pathway_genes = set(gene_sets_df.loc[gene_sets_df["set_id"].isin(seed_pathway_ids), "gene_id"])
-
     graph = nx.DiGraph()
-    n_gene_pairs = add_comembership_edges(graph, gene_sets_df, pathway_ids, comembership_edges)
+    add_pathway_genes(graph, gene_sets_df, disease_pathway_ids)
     n_added, n_out_of_scope, n_duplicates = add_interaction_edges(graph, interactions_df, set(graph.nodes))
 
     stats = {
-        "comembership_edges": comembership_edges,
-        "n_pathways_union": len(pathway_ids),
         "n_disease_pathways": len(disease_pathway_ids),
-        "n_seed_pathways": len(seed_pathway_ids),
-        "n_disease_pathway_genes": len(disease_pathway_genes),
-        "n_seed_pathway_genes": len(seed_pathway_genes),
         "n_nodes": graph.number_of_nodes(),
         "n_edges": graph.number_of_edges(),
-        "n_comembership_unordered_pairs": n_gene_pairs,
         "n_interaction_edges_added": n_added,
         "n_interaction_edges_out_of_scope": n_out_of_scope,
         "n_interaction_duplicate_pairs_collapsed": n_duplicates,
@@ -148,7 +103,7 @@ def build_graph(gene_sets_df, disease_pathways_df, interactions_df, seed_gene_id
 
 
 def graph_to_sparse(graph):
-    """Return (weight, sign, gene_index). weight = co-membership weight + interaction confidence.
+    """Return (weight, sign, gene_index). The graph is unweighted: weight is 1 on every edge and 0 elsewhere.
     A stored sign of 0 means either no edge or an unsigned edge, so read sign only where weight > 0.
     Edge direction is the asymmetry between weight[i, j] and weight[j, i]."""
     gene_index = sorted(graph.nodes)
@@ -156,13 +111,7 @@ def graph_to_sparse(graph):
         if not ENSEMBL_GENE_ID_PATTERN.match(gene):
             fail(f"Graph contains a non-Ensembl gene ID: {gene}")
 
-    for _, _, edge in graph.edges(data=True):
-        confidence = edge["confidence"]
-        if confidence is None:
-            confidence = 0.0
-        edge["matrix_weight"] = edge["comembership_weight"] + confidence
-
-    weight = nx.to_scipy_sparse_array(graph, nodelist=gene_index, weight="matrix_weight", format="csr", dtype="float64")
+    weight = nx.to_scipy_sparse_array(graph, nodelist=gene_index, weight=None, format="csr", dtype="float64")
     sign = nx.to_scipy_sparse_array(graph, nodelist=gene_index, weight="sign", format="csr", dtype="int8")
     return weight, sign, gene_index
 
@@ -182,26 +131,20 @@ def run(args):
         fail(f"--seed-genes {seed_genes_path} does not exist (run stage2_gsea_discovery.py first?).")
     seed_gene_ids = set(SeedGenesSchema.validate(pd.read_csv(seed_genes_path, sep="\t"))["gene_id"])
 
-    graph, stats = build_graph(gene_sets_df, disease_pathways_df, interactions_df, seed_gene_ids,
-                               args.comembership_edges)
-    # A seed is a graph node exactly when it is in a pathway; without one, Stage 5 has nothing to propagate from.
-    if stats["n_seed_pathways"] == 0:
-        fail(f"None of the {len(seed_gene_ids)} seed gene(s) in {seed_genes_path} is in a pathway of "
-             f"gene_sets.parquet, so there is nothing to propagate from. Either the genes are in no Reactome "
-             f"pathway, or only in pathways outside Stage 1's --min-set-size/--max-set-size (see "
-             f"scale_report.json); relaxing those limits helps only in the second case.")
-    # The two gene sets overlap (seed pathways can also be disease pathways), so the node count is their union.
-    logger.info("Genes on the %d disease-relevant pathways: %d.", stats["n_disease_pathways"],
-                stats["n_disease_pathway_genes"])
-    logger.info("Genes on the %d pathways containing a seed gene: %d.", stats["n_seed_pathways"],
-                stats["n_seed_pathway_genes"])
-    logger.info("Graph: %d nodes, %d edges (%d pathways in the union; %d interaction edges added, %d out of scope).",
-                stats["n_nodes"], stats["n_edges"], stats["n_pathways_union"],
+    if disease_pathways_df.empty:
+        fail(f"{disease_pathways_path} lists no disease-relevant pathway (GSEA found none), so there is no "
+             f"graph to build. See Stage 2's log for why.")
+    graph, stats = build_graph(gene_sets_df, disease_pathways_df, interactions_df)
+    logger.info("Graph: %d nodes (genes on the %d disease-relevant pathways), %d edges (%d interaction edges "
+                "added, %d out of scope).", stats["n_nodes"], stats["n_disease_pathways"], stats["n_edges"],
                 stats["n_interaction_edges_added"], stats["n_interaction_edges_out_of_scope"])
     weight, sign, gene_index = graph_to_sparse(graph)
-    # Seeds that are in no size-capped pathway are not graph nodes, so they cannot seed Stage 5's propagation.
+    # Seeds that are on no disease pathway are not graph nodes, so they cannot seed Stage 5's propagation.
     n_seeds_in_graph = len(seed_gene_ids & set(gene_index))
     logger.info("Seed genes in the graph: %d/%d.", n_seeds_in_graph, len(seed_gene_ids))
+    if n_seeds_in_graph == 0:
+        fail(f"None of the {len(seed_gene_ids)} seed gene(s) in {seed_genes_path} is on a disease-relevant "
+             f"pathway, so there is nothing to propagate from.")
 
     reactome_sources = []
     for source in manifest.sources:
