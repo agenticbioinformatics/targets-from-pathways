@@ -1,4 +1,0 @@
-gene	bfwalk_score	genetic_evidence_score	tractability	safety	n_safety_liabilities
-ENSG00000000022	0.5	0.0	clinical	has_liabilities	1
-ENSG00000000024	0.5	0.0	discovery	unknown	0
-ENSG00000000023	0.25	0.0	unknown	unknown	0

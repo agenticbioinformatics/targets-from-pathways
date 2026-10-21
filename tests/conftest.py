@@ -1,11 +1,16 @@
-"""Shared fixtures for stage1_ingest.py's test suite.
+"""Shared fixtures.
 
-The tests never touch the network or the real pinned registry: they patch
+Stage 1 tests never touch the network or the real pinned registry: they patch
 stage1_ingest.py's two acquisition entry points (`get_pinned_file`,
 `get_directory_files`) to hand back the tiny committed fixtures under
 tests/fixtures/ instead. Everything downstream of acquisition — extraction,
 identifier mapping, gene_sets/interactions construction, coverage/scale
 reporting, schema validation, and manifest writing — runs unmodified.
+
+Tests of Stages 2-7 start from a synthetic, schema-valid Stage 1 output written by
+tests/fixtures/synthetic_run.py (30 genes, 18 seeds; see its docstring for the design):
+`synthetic_stage1` gives a fresh copy per test, `synthetic_full_run` one run taken through Stages 2-6 and
+the report, shared by the tests that only read it.
 """
 
 from __future__ import annotations
@@ -17,9 +22,13 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "pipeline"))
+import run_pipeline  # noqa: E402
 import stage1_ingest as ingest  # noqa: E402
+from fixtures.synthetic_run import write_synthetic_stage1  # noqa: E402
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+# OLDG17: a synonym (not the approved symbol) of the synthetic run's G17.
+SYNTHETIC_HOLDOUT_FILE = FIXTURES_DIR / "benchmark_holdout_synthetic.txt"
 
 _PINNED_FIXTURES = {
     "reactome_gmt": FIXTURES_DIR / "reactome" / "ReactomePathways.gmt.zip",
@@ -87,3 +96,17 @@ def make_args(out_dir: Path, data_dir: Path, **overrides) -> argparse.Namespace:
     )
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
+
+
+@pytest.fixture
+def synthetic_stage1(tmp_path):
+    """A fresh synthetic Stage 1 run directory (manifest.json and its parquet files)."""
+    return write_synthetic_stage1(tmp_path / "run").parent
+
+
+@pytest.fixture(scope="session")
+def synthetic_full_run(tmp_path_factory):
+    """The synthetic run after run_pipeline.py --from-manifest --report (Stages 2-6 + report). Read-only."""
+    run_dir = write_synthetic_stage1(tmp_path_factory.mktemp("synthetic") / "run").parent
+    run_pipeline.main(["--from-manifest", str(run_dir / "manifest.json"), "--report"])
+    return run_dir

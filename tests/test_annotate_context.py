@@ -141,7 +141,7 @@ def _write_run_dir(path, *, with_bfwalk=True, with_stage4=True):
         "coverage_report": {}, "scale_report": {
             "gene_set_size_distribution_before_cap": [], "gene_set_size_distribution_after_cap": [],
             "sets_retained": 0, "interaction_counts_by_sign": {},
-            "interaction_counts_by_evidence_type": {}, "projected_comembership_edge_count": 0,
+            "interaction_counts_by_evidence_type": {},
         },
     }
     (path / "manifest.json").write_text(json.dumps(manifest))

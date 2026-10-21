@@ -15,13 +15,13 @@ It has two links, joined at Stage 1's output contract:
   an Ensembl id; ``source_db == "reactome"`` on every normalized row.
 
 - **link 2** — Stages 2→6 via ``run_pipeline`` on the shared 30-gene
-  synthetic Stage 1 output the Stage 2-6 unit tests are built around
-  (``example_data/example_run``, copied into ``tmp_path``). blitzgsea
+  synthetic Stage 1 output the Stage 2-6 tests are built around
+  (``tests/fixtures/synthetic_run.py``, written into ``tmp_path``). blitzgsea
   (Stage 2) cannot calibrate a GSEA on the 3-gene signature the
   ``tests/fixtures/`` inputs produce, so the chain continues from that
   larger synthetic Stage 1 output — which is emitted and schema-validated
   exactly like ``stage1_ingest``'s. Every remaining hand-off
-  (``disease_pathways`` + ``disease_seed_genes`` → graph artifacts → ``gene_weights`` →
+  (``disease_pathways`` + ``disease_seed_genes`` → graph artifacts → ``genetic_evidence_scores`` →
   ``candidate_scores`` → ``candidates_annotated``) validates; Ensembl ids
   and ``source_db`` survive to the final table; and the final table carries
   a propagation score for **every** non-seed graph gene (candidates == graph
@@ -31,22 +31,21 @@ It has two links, joined at Stage 1's output contract:
 from __future__ import annotations
 
 import json
-import shutil
 
 import pandas as pd
-import pytest
 import scipy.sparse as sp
 
 import run_pipeline
 import stage1_ingest
 from conftest import make_args
+from fixtures.synthetic_run import write_synthetic_stage1
 from stage0_schemas import (
     ENSEMBL_GENE_ID_PATTERN,
     AnnotatedCandidatesSchema,
     CandidateScoresSchema,
     DiseasePathwaysSchema,
     GeneSetsSchema,
-    GeneWeightsSchema,
+    GeneticEvidenceScoresSchema,
     GenesSchema,
     InteractionsSchema,
     Manifest,
@@ -55,22 +54,12 @@ from stage0_schemas import (
     assert_foreign_key,
 )
 
-REPO = run_pipeline.PIPELINE_DIR.parent
-EXAMPLE_RUN = REPO / "example_data" / "example_run"
-STAGE1_FILES = [
-    "manifest.json", "genes.parquet", "gene_sets.parquet", "interactions.parquet",
-    "ot_disease_subset.parquet", "ot_target_subset.parquet",
-]
 
 
 def _all_ensembl(ids) -> bool:
     return all(ENSEMBL_GENE_ID_PATTERN.match(str(g)) for g in ids)
 
 
-@pytest.mark.skipif(
-    not (EXAMPLE_RUN / "manifest.json").exists(),
-    reason="example_data/example_run not populated (run example_data/build_gsea_example.py)",
-)
 def test_pipeline_schema_conformance_end_to_end(tmp_path, patched_acquisition):
     # ================================================================
     # link 1 — the real Stage 1 code path (tests/fixtures/)
@@ -102,10 +91,7 @@ def test_pipeline_schema_conformance_end_to_end(tmp_path, patched_acquisition):
     # ================================================================
     # link 2 — Stages 2→6 from the 30-gene synthetic Stage 1 output
     # ================================================================
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    for name in STAGE1_FILES:
-        shutil.copy(EXAMPLE_RUN / name, run_dir / name)
+    run_dir = write_synthetic_stage1(tmp_path / "run").parent
 
     # the Stage 1 output contract Stage 2 reads
     genes = pd.read_parquet(run_dir / "genes.parquet")
@@ -125,9 +111,10 @@ def test_pipeline_schema_conformance_end_to_end(tmp_path, patched_acquisition):
     assert set(disease_pathways["source_db"]) <= {"reactome"}  # source_db attribution preserved
     seeds = SeedGenesSchema.validate(pd.read_csv(run_dir / "disease_seed_genes.tsv", sep="\t"))
     seed_ids = set(seeds["gene_id"])
-    # seeds are exactly the genes with genetic_association evidence
+    # seeds are exactly the genes with a genetic_association score > 0
     ot = pd.read_parquet(run_dir / "ot_disease_subset.parquet")
-    assert seed_ids == set(ot.loc[ot["datatype_id"] == "genetic_association", "gene_id"])
+    genetic = ot[(ot["datatype_id"] == "genetic_association") & (ot["score"] > 0)]
+    assert seed_ids == set(genetic["gene_id"])
 
     # --- Stage 3 hand-off (sparse serialization, not a pandera schema) ---
     graph_index = json.loads((run_dir / "graph_gene_index.json").read_text())
@@ -142,9 +129,9 @@ def test_pipeline_schema_conformance_end_to_end(tmp_path, patched_acquisition):
     assert graph_meta["n_seed_genes_in_graph"] == len(seed_ids & set(graph_index))
 
     # --- Stage 4 hand-off ---
-    gene_weights = pd.read_csv(run_dir / "gene_weights.tsv", sep="\t")
-    GeneWeightsSchema.validate(gene_weights)
-    assert _all_ensembl(gene_weights["gene_id"])
+    evidence_scores = pd.read_csv(run_dir / "genetic_evidence_scores.tsv", sep="\t")
+    GeneticEvidenceScoresSchema.validate(evidence_scores)
+    assert _all_ensembl(evidence_scores["gene_id"])
     assert "stage4_genetic_evidence" in json.loads((run_dir / "graph_metadata.json").read_text())
 
     # --- Stage 5 hand-off ---

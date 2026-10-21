@@ -18,8 +18,6 @@ import pandas as pd
 
 from stage0_schemas import AnnotatedCandidatesSchema, fail, ranking_column
 
-PIPELINE_DIR = Path(__file__).resolve().parent
-REPO_DIR = PIPELINE_DIR.parent
 
 logger = logging.getLogger("stage7_report")
 

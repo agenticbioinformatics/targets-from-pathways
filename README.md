@@ -3,121 +3,78 @@
 > The scientific idea was introduced by Jędrzej Kubica, Polina Rusina, Siddharth Sethi and Elvis Poku-Adusei at the Open Targets Hackathon on October 21-22, 2025. The technology was created by agentic AI provided by Claude Sonnet 4.6 and Opus 5.5. The original project is available under the MIT license at [https://github.com/jedrzejkubica/targets-from-pathways](https://github.com/jedrzejkubica/targets-from-pathways)
 
 
-## Quick start
-
-**Install:** `pip install -r requirements.txt`
-
-> **Note:** [BFWalk](https://github.com/jedrzejkubica/BFWalk) (for Stage 5) is still in development and is not on PyPI yet - `requirements.txt` installs it from TestPyPI. It will be available via `pip install bfwalk` shortly. To install it on its own: `pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ bfwalk`. For installation details see [BFWalk](https://github.com/jedrzejkubica/BFWalk).
-
-**Demo** - a tiny example input (30 genes, 18 seeds) is provided:
-
-```
-python example_data/build_gsea_example.py
-```
-
-```
-python pipeline/run_pipeline.py --from-manifest example_data/example_run/manifest.json --report
-```
-
-Expected: the log ends with `Scoring 3 candidates from 16 seeds` and
-`Report written (3 candidates)`; `example_data/example_run/candidates_annotated.tsv`
-ranks the 3 non-seed genes on the GSEA pathways: `ENSG00000000022` and `ENSG00000000024`
-(one step from a seed) above `ENSG00000000023` (two steps).
-Genes on pathways GSEA did not detect (`ENSG...025`-`033`) are not in the graph.
-
-Run `python -m pytest` to check if the pipeline is set up correctly (~135 tests).
-
-
 ## Overview
 
-Given a disease, this pipeline proposes candidate drug targets based on
-pathway topology, using public data: Open Targets (disease-target genetic
-associations, tractability, safety) and Reactome (pathway gene sets and
-functional interactions). The disease's genes with an Open Targets
-`genetic_association` score > 0 are the **seed genes**. The pipeline discovers
-disease-relevant pathways (GSEA of the seed genes), builds an unweighted
-gene-gene graph of the Reactome functional interactions between all genes
-on those pathways, then **propagates the signal from the seeds** (BFWalk by
-default, or random walk with restart) to score every non-seed gene, and
-annotates the ranking with tractability and safety information. The output
-is an interactive HTML report with a ranked and annotated list of candidate
-targets for the disease.
+Given a disease, the pipeline proposes candidate drug targets from pathway topology. The disease's
+**seed genes** are its genes with an Open Targets `genetic_association` score > 0. GSEA of the seeds
+finds the disease-relevant Reactome pathways, and the pipeline builds an unweighted graph of the
+Reactome functional interactions between all genes on those pathways. It then propagates the
+seeds' signal over the graph (BFWalk by default, or random walk with restart) to rank every
+non-seed gene, and annotates the ranking with Open Targets tractability and safety. The result is
+an interactive HTML report.
 
 
-### Pipeline, stage by stage
+## Installation
 
-Each stage is a standalone script (`python pipeline/<script> --help`), each reads the previous stage's output.
+```
+pip install -r requirements.txt
+```
 
-| # | Stage | Description |
+[BFWalk](https://github.com/jedrzejkubica/BFWalk), Stage 5's default method, is not on PyPI yet:
+`requirements.txt` installs it from TestPyPI, and building it needs gcc, zlib-devel and OpenMP.
+Without it, run Stage 5 with `--method rwr`.
+
+Check the installation:
+
+```
+python pipeline/run_pipeline.py --help
+```
+
+It imports every stage first, so if it prints the help, every package is installed; otherwise it lists
+what is missing. `python -m pytest` runs the test suite (no network or downloads needed).
+
+
+## Usage
+
+**Whole pipeline**, one disease to `out/report.html`:
+
+```
+python pipeline/run_pipeline.py --disease MONDO_0005265 --data-dir data/ --out-dir out/ --report
+```
+
+**Stage by stage** - each stage reads the previous stage's files in `out/` (`--help` lists all options):
+
+| Stage | What it does | Command |
 |---|---|---|
-| 1 | `stage1_ingest.py` | Downloads (or reads from `--data-dir`) the version-pinned Open Targets + Reactome sources. Maps every gene name to an Ensembl ID and writes `genes` / `gene_sets` / `interactions` / `ot_disease_subset` tables plus `manifest.json`. |
-| 2 | `stage2_gsea_discovery.py` | Runs FDR-corrected GSEA of the disease-associated genes against Reactome gene sets. Writes `disease_pathways.tsv` and `disease_seed_genes.tsv`. |
-| 3 | `stage3_build_graph.py` | Builds a directed, signed, unweighted gene-gene graph: its nodes are all genes of the disease-relevant pathways found by GSEA, its edges the Reactome functional interactions between them. Writes `graph_weight.npz` / `graph_sign.npz` / `graph_gene_index.json` / `graph_metadata.json`. |
-| 4 | `stage4_genetic_evidence_weights.py` | Optionally weights the graph with your own node and/or edge weights (`--node-weights`, `--edge-weights`; without them the graph stays unweighted), and scores each graph gene from its Open Targets `genetic_association` evidence for Stage 6's annotation. Rewrites the graph files, extends `graph_metadata.json`, and writes `gene_weights.tsv`. |
-| 5 | `stage5_score_candidates.py` | Propagates from the seeds over the graph and ranks every non-seed gene - [BFWalk](https://github.com/jedrzejkubica/BFWalk) by default, or Random Walk with Restart (RWR). Use `--method bfwalk`, `rwr` or `bfwalk,rwr`. Writes `candidate_scores.tsv`. |
-| 6 | `stage6_annotate_context.py` | Joins genetic evidence, and tractability and safety from Open Targets, onto candidates for reading; candidates keep Stage 5's ranking. Writes `candidates_annotated.tsv`. |
-| 7 | `run_pipeline.py` + `stage7_report.py` | `run_pipeline.py` chains Stages 1-6 (subprocess per stage, use `--from-manifest` to skip Stage 1). `stage7_report.py` turns the finished run directory into an interactive HTML report: a sortable table of candidates, where clicking a gene opens its evidence trace in a side panel (top 100 candidates). |
+| 1 | Downloads the pinned Open Targets + Reactome data and maps every gene to an Ensembl ID. | `python pipeline/stage1_ingest.py --disease MONDO_0005265 --data-dir data/ --out-dir out/` |
+| 2 | Runs GSEA of the seed genes against the Reactome pathways. | `python pipeline/stage2_gsea_discovery.py --manifest out/manifest.json` |
+| 3 | Builds the graph: the functional interactions between the genes of the GSEA pathways. | `python pipeline/stage3_build_graph.py --manifest out/manifest.json` |
+| 4 | Optionally weights the graph with your own node and/or edge weights (`--node-weights`, `--edge-weights`; both optional TSV files). | `python pipeline/stage4_weights.py --manifest out/manifest.json` |
+| 5 | Propagates from the seeds and ranks every other graph gene (`--method bfwalk`, `rwr` or `bfwalk,rwr`). | `python pipeline/stage5_score_candidates.py --graph-dir out/` |
+| 6 | Adds Open Targets tractability and safety to the candidates. | `python pipeline/stage6_annotate_context.py --manifest out/manifest.json` |
+| 7 | Writes the HTML report; click a gene to see its evidence. | `python pipeline/stage7_report.py --run-dir out/` |
 
-**Run pipeline**, one disease to an interactive HTML report:
+BFWalk is less biased towards highly connected hub genes than RWR: use it to find candidates beyond
+well-studied hubs, and add RWR when you prefer well-connected genes close to the seeds.
 
-```
-python pipeline/run_pipeline.py \
-    --disease MONDO_0005265 \
-    --data-dir data/ \
-    --out-dir out/ \
-    --report
-```
-
-On the first run Stage 1 downloads the version-pinned Open Targets 26.06 +
-Reactome 97 sources into `--data-dir` (a few GB; cached afterwards). The
-report is written to `out/report.html`.
+See [`docs/README.md`](docs/README.md) for each stage's inputs, outputs and options.
 
 
-**Run pipeline stage-by-stage**:
+## Data
 
-#### Stage 1: Ingesting data
-```
-python pipeline/stage1_ingest.py --disease MONDO_0005265 --data-dir data/ --out-dir out/
-```
+Stage 1 downloads the pinned versions into `--data-dir` on the first run (about 1.5 GB), checks
+their sha256, and reuses them afterwards:
 
-#### Stage 2: Running GSEA
-```
-python pipeline/stage2_gsea_discovery.py --manifest out/manifest.json
-```
+- [Open Targets Platform](https://platform.opentargets.org/) 26.06: `association_by_datasource_direct`
+  (disease-gene evidence), `target` (gene identifiers, tractability, safety) and `disease`.
+- [Reactome](https://reactome.org/) release 97: `ReactomePathways.gmt` (pathway gene sets) and
+  `Ensembl2Reactome.txt`; [Reactome functional interactions](https://reactome.org/tools/reactome-fiviz)
+  `FIsInGene_04142025_with_annotations.txt`.
 
-#### Stage 3: Building a graph
-```
-python pipeline/stage3_build_graph.py --manifest out/manifest.json
-```
+Every stage writes into the run directory (`out/`): parquet tables from Stage 1, TSV tables
+(`disease_pathways.tsv`, `candidate_scores.tsv`, `candidates_annotated.tsv`, ...), the graph as sparse
+matrices (`graph_weight.npz`, `graph_sign.npz`) with `graph_gene_index.json`, and `report.html`.
+Genes are always Ensembl gene IDs.
 
-#### Stage 4: Adding your own weights (optional)
-```
-python pipeline/stage4_genetic_evidence_weights.py --manifest out/manifest.json \
-    --node-weights node_weights.tsv --edge-weights edge_weights.tsv
-```
-Both files are optional TSVs with Ensembl gene IDs and positive weights (`gene_id`, `weight` and `gene_a`, `gene_b`, `weight`) that weight the graph for Stage 5's propagation (also accepted by `run_pipeline.py`); see [docs/README.md](docs/README.md#running-stage-4-pipelinestage4_genetic_evidence_weightspy) for the details.
-
-#### Stage 5: Scoring candidates
-```
-python pipeline/stage5_score_candidates.py --graph-dir out/
-```
-Seeds are read from `out/disease_seed_genes.tsv` (Stage 2) by default; use `--seed-genes seeds.tsv` (a TSV with a `gene_id` column) to use your own seeds. Scores with BFWalk by default; `--method rwr` scores with random walk with restart instead, and `--method bfwalk,rwr` scores with both methods.
-
-> **Note:** Hub bias: correlation of each score with the candidates degrees are **0.13 for BFWalk** and **0.74 for RWR** (measured on inflammatory bowel disease `--disease MONDO_0005265`, Open Targets 26.06 + Reactome 97, on an earlier genetic-evidence-weighted graph; not yet re-measured on the current unweighted graph). We suggest to use BFWalk to find candidates beyond well-connected hub genes, and add RWR when you prefer well-connected, well-studied genes.
-
-#### Stage 6: Annotating candidates
-```
-python pipeline/stage6_annotate_context.py --manifest out/manifest.json
-```
-
-#### Stage 7: HTML reporting
-```
-python pipeline/stage7_report.py --run-dir out/
-```
-
-### More detail
-
-- **[`docs/README.md`](docs/README.md)** - per-stage reference file: inputs, all
-  flags, expected output, and each stage's unit tests.
-- **[`development/README.md`](development/README.md)** - how this pipeline
-  was built (implementation prompts, session log, a transferable skill).
+Development history: [`development/README.md`](development/README.md). Validation scripts:
+[`validation/README.md`](validation/README.md).

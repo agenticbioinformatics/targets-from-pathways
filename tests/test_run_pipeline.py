@@ -1,45 +1,29 @@
-"""Smoke test for run_pipeline.py (the Stages 1-6 orchestrator).
+"""Smoke tests for run_pipeline.py (the Stages 1-6 orchestrator).
 
-Stage 1 needs real Open Targets / Reactome data, so this uses
-``--from-manifest`` on a copy of the checked-in synthetic Stage 1 output
-(``example_data/example_run/``) and checks that Stages 2-6 + the report
-chain through and produce the expected artifacts. It is a "does it wire
+Stage 1 needs real Open Targets / Reactome data, so the chaining test uses the session's
+``synthetic_full_run`` (conftest.py: ``run_pipeline.py --from-manifest --report`` on the synthetic Stage 1
+output) and checks that Stages 2-6 + the report produce the expected artifacts. It is a "does it wire
 up" check, not a correctness check on rankings.
 """
 
 from __future__ import annotations
 
-import shutil
+import subprocess
+import sys
 
 import pandas as pd
 import pytest
 
 import run_pipeline
 
-EXAMPLE_RUN = run_pipeline.PIPELINE_DIR.parent / "example_data" / "example_run"
-STAGE1_FILES = [
-    "manifest.json", "genes.parquet", "gene_sets.parquet", "interactions.parquet",
-    "ot_disease_subset.parquet", "ot_target_subset.parquet",
-]
 
-
-@pytest.mark.skipif(
-    not (EXAMPLE_RUN / "manifest.json").exists(),
-    reason="example_data/example_run not populated",
-)
-def test_from_manifest_chains_stages_and_writes_report(tmp_path):
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    for name in STAGE1_FILES:
-        shutil.copy(EXAMPLE_RUN / name, run_dir / name)
-
-    run_pipeline.main(["--from-manifest", str(run_dir / "manifest.json"), "--report"])
-
+def test_from_manifest_chains_stages_and_writes_report(synthetic_full_run):
+    run_dir = synthetic_full_run
     # every artifact Stages 2-6 + the report are expected to drop
     expected = {
         "stage 2": ["disease_pathways.tsv", "disease_seed_genes.tsv", "benchmark_holdout_genes.tsv"],
         "stage 3": ["graph_weight.npz", "graph_sign.npz", "graph_gene_index.json", "graph_metadata.json"],
-        "stage 4": ["gene_weights.tsv"],  # + graph_metadata.json extended in place
+        "stage 4": ["genetic_evidence_scores.tsv"],  # + graph files rewritten in place
         "stage 5": ["candidate_scores.tsv"],
         "stage 6": ["candidates_annotated.tsv"],
         "report": ["report.html"],
@@ -50,7 +34,6 @@ def test_from_manifest_chains_stages_and_writes_report(tmp_path):
 
     annotated = pd.read_csv(run_dir / "candidates_annotated.tsv", sep="\t")
     assert len(annotated) == 3  # 19 genes on the 3 GSEA pathways minus 16 seed genes among them
-    assert (run_dir / "disease_seed_genes.tsv").exists()
     # default Stage 5 method, and Stage 6 keeps its ranking - there is no composite score
     assert "bfwalk_score" in annotated.columns and annotated["bfwalk_score"].is_monotonic_decreasing
     assert not any(column.startswith("composite") for column in annotated.columns)
@@ -111,3 +94,36 @@ def test_stage1_flags_with_from_manifest_are_rejected(tmp_path, caplog):
         with pytest.raises(SystemExit):
             run_pipeline.main(["--from-manifest", str(tmp_path / "manifest.json"), "--allow-low-coverage"])
     assert "allow-low-coverage" in "\n".join(r.message for r in caplog.records)
+
+
+def test_help_runs_the_installation_check(capsys):
+    with pytest.raises(SystemExit) as exc:
+        run_pipeline.main(["--help"])
+    assert exc.value.code == 0
+    assert "all stages' packages are" in capsys.readouterr().out
+
+
+def test_missing_package_is_reported_before_help(monkeypatch, caplog):
+    real_import = run_pipeline.importlib.import_module
+
+    def import_module(name):
+        if name == "stage2_gsea_discovery":
+            raise ModuleNotFoundError("No module named 'blitzgsea'")
+        return real_import(name)
+
+    monkeypatch.setattr(run_pipeline.importlib, "import_module", import_module)
+    with caplog.at_level("ERROR"):
+        with pytest.raises(SystemExit) as exc:
+            run_pipeline.main(["--help"])
+    assert exc.value.code == 1
+    message = "\n".join(r.message for r in caplog.records)
+    assert "stage2_gsea_discovery.py: No module named 'blitzgsea'" in message
+    assert "pip install -r requirements.txt" in message
+
+
+def test_help_works_as_a_subprocess():
+    # The real command a user types to check the installation.
+    result = subprocess.run([sys.executable, str(run_pipeline.PIPELINE_DIR / "run_pipeline.py"), "--help"],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert "--from-manifest" in result.stdout

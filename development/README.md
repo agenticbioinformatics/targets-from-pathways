@@ -30,15 +30,17 @@ This directory is the paper trail for **Targets from Pathways**.
    CLI argument and are independently runnable. `run_pipeline.py`
    orchestrates them as subprocesses; `stage7_report.py` renders the run.
 
-4. **A synthetic example that bypasses Stage 1.** Stage 1 needs multi-GB
-   pinned Open Targets / Reactome downloads, so `example_data/build_gsea_example.py`
-   hand-writes a tiny, schema-valid Stage 1 output (`example_data/example_run/`)
-   that Stages 2–7 consume offline. Stage 1's own code path is covered by
-   `tests/test_ingest_*.py` against `tests/fixtures/`.
+4. **A synthetic run that bypasses Stage 1.** Stage 1 needs multi-GB
+   pinned Open Targets / Reactome downloads, so a script hand-writes a tiny,
+   schema-valid Stage 1 output that Stages 2–7 consume offline. It started as
+   a checked-in demo (`example_data/example_run/`); the demo was later removed
+   and the generator kept for the tests only (`tests/fixtures/synthetic_run.py`).
+   Stage 1's own code path is covered by `tests/test_ingest_*.py` against
+   `tests/fixtures/`.
 
 5. **Test as you go.** Each stage landed with `tests/test_<stage>.py`
    (hand-computed expected values on tiny fixtures), then the end-to-end
-   schema-conformance test. ~100 tests, no network.
+   schema-conformance test. About 140 tests today, no network.
 
 6. **The plan changed six times.** Multi-database support was added then
    withdrawn (Reactome only); the backtrack-free-walk scoring method and

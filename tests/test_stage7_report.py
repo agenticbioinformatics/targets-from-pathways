@@ -2,20 +2,16 @@
 
 `evidence_trace` is tested as a pure function on
 hand-built inputs; `build_report` is exercised end to end against the
-checked-in example run (read-only — the HTML is written to tmp_path).
+session's synthetic run (conftest.py's `synthetic_full_run`, read-only — the HTML is written to tmp_path).
 """
 
 from __future__ import annotations
 
-import json
 
 import pandas as pd
 import pytest
 
 import stage7_report as rep
-
-EXAMPLE_RUN = rep.REPO_DIR / "example_data" / "example_run"
-
 
 # --------------------------------------------------------------------------
 # evidence_trace
@@ -86,24 +82,20 @@ def test_evidence_trace_shared_pathways_and_scoping():
 
 
 # --------------------------------------------------------------------------
-# build_report end to end (against the checked-in example run)
+# build_report end to end (against the synthetic run)
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    not (EXAMPLE_RUN / "candidates_annotated.tsv").exists(),
-    reason="example_data/example_run not populated — run example_data/build_gsea_example.py + Stages 3-6",
-)
-def test_build_report_is_self_contained_and_symbol_labelled(tmp_path):
-    out = rep.build_report(EXAMPLE_RUN, tmp_path / "report.html")
+def test_build_report_is_self_contained_and_symbol_labelled(tmp_path, synthetic_full_run):
+    out = rep.build_report(synthetic_full_run, tmp_path / "report.html")
     html = out.read_text()
 
     # single self-contained file: no external resources
     assert "http://" not in html and "https://" not in html
     assert "<script>" in html and "<style>" in html
 
-    annotated = pd.read_csv(EXAMPLE_RUN / "candidates_annotated.tsv", sep="\t")
-    genes = pd.read_parquet(EXAMPLE_RUN / "genes.parquet")
+    annotated = pd.read_csv(synthetic_full_run / "candidates_annotated.tsv", sep="\t")
+    genes = pd.read_parquet(synthetic_full_run / "genes.parquet")
     symbols = dict(zip(genes["gene_id"], genes["symbol"]))
     assert set(symbols.values()) != set(symbols.keys())  # symbols really differ from Ensembl ids
 
@@ -129,13 +121,9 @@ def test_build_report_is_self_contained_and_symbol_labelled(tmp_path):
         assert f'class="txt ens">{gid}<' in tbody
 
 
-@pytest.mark.skipif(
-    not (EXAMPLE_RUN / "candidates_annotated.tsv").exists(),
-    reason="example_data/example_run not populated",
-)
-def test_build_report_traces_only_top_candidates(tmp_path):
-    html = rep.build_report(EXAMPLE_RUN, tmp_path / "report.html", n_traces=2).read_text()
-    annotated = pd.read_csv(EXAMPLE_RUN / "candidates_annotated.tsv", sep="\t")
+def test_build_report_traces_only_top_candidates(tmp_path, synthetic_full_run):
+    html = rep.build_report(synthetic_full_run, tmp_path / "report.html", n_traces=2).read_text()
+    annotated = pd.read_csv(synthetic_full_run / "candidates_annotated.tsv", sep="\t")
     tbody = html.split("<tbody", 1)[1].split("</tbody>", 1)[0]
     assert tbody.count("<tr") == len(annotated)          # the table still lists every candidate
     assert html.count('class="trace-entry"') == 2
@@ -152,11 +140,7 @@ def test_build_report_traces_only_top_candidates(tmp_path):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    not (EXAMPLE_RUN / "candidates_annotated.tsv").exists(),
-    reason="example_data/example_run not populated",
-)
-def test_partial_run_dir_degrades_gracefully(tmp_path):
+def test_partial_run_dir_degrades_gracefully(tmp_path, synthetic_full_run):
     """Only manifest.json + candidates_annotated.tsv present, and the table
     has bfwalk_score but no rwr_score or genetic_evidence_score (a default,
     bfwalk-only Stage 5 on a Stage 3 graph). The report still renders: the
@@ -164,8 +148,8 @@ def test_partial_run_dir_degrades_gracefully(tmp_path):
     says which artifact is missing, and a header note lists them."""
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    (run_dir / "manifest.json").write_text((EXAMPLE_RUN / "manifest.json").read_text())
-    ann = pd.read_csv(EXAMPLE_RUN / "candidates_annotated.tsv", sep="\t").drop(
+    (run_dir / "manifest.json").write_text((synthetic_full_run / "manifest.json").read_text())
+    ann = pd.read_csv(synthetic_full_run / "candidates_annotated.tsv", sep="\t").drop(
         columns=["rwr_score", "genetic_evidence_score"], errors="ignore"
     )
     assert "bfwalk_score" in ann.columns
@@ -185,15 +169,15 @@ def test_partial_run_dir_degrades_gracefully(tmp_path):
     assert "http://" not in html and "https://" not in html      # still self-contained
 
 
-def test_load_run_requires_only_manifest_and_annotated(tmp_path):
+def test_load_run_requires_only_manifest_and_annotated(tmp_path, synthetic_full_run):
     """A directory with neither required artifact fails loudly; with both,
     it loads (every other artifact optional)."""
     with pytest.raises(SystemExit):
         rep.load_run(tmp_path)
 
-    (tmp_path / "manifest.json").write_text((EXAMPLE_RUN / "manifest.json").read_text())
+    (tmp_path / "manifest.json").write_text((synthetic_full_run / "manifest.json").read_text())
     (tmp_path / "candidates_annotated.tsv").write_text(
-        (EXAMPLE_RUN / "candidates_annotated.tsv").read_text()
+        (synthetic_full_run / "candidates_annotated.tsv").read_text()
     )
     run = rep.load_run(tmp_path)
     assert run["gene_sets"] is None and run["graph_index"] is None

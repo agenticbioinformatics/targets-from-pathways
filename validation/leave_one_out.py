@@ -228,7 +228,7 @@ def run_pipeline_copy(stage1_dir, run_dir, holdout_gene, bfwalk_threads):
         stage2_args += ["--benchmark-holdout-file", run_dir / "holdout.txt"]
     run_stage("stage2_gsea_discovery.py", stage2_args, log_path)
     run_stage("stage3_build_graph.py", ["--manifest", manifest], log_path)
-    run_stage("stage4_genetic_evidence_weights.py", ["--manifest", manifest], log_path)
+    run_stage("stage4_weights.py", ["--manifest", manifest], log_path)
     run_stage("stage5_score_candidates.py", ["--graph-dir", run_dir, "--method", ",".join(METHODS),
                                              "--bfwalk-threads", bfwalk_threads], log_path)
     return pd.read_csv(run_dir / "candidate_scores.tsv", sep="\t").set_index("gene")

@@ -1,11 +1,11 @@
-"""One-off generator for a tiny, hand-designed Stage 1 output directory used
-to exercise Stages 2-7 end to end (see README.md's quick start). Not run by any
-test suite — re-run manually if the example needs to change.
+"""Test-only builder for a tiny, hand-designed Stage 1 output directory, used by the tests to exercise
+Stages 2-7 end to end without the real Open Targets / Reactome data (see tests/conftest.py's
+synthetic_stage1 fixture).
 
-Writes example_data/example_run/{gene_sets,ot_disease_subset,interactions,genes}.parquet,
-ot_target_subset.parquet, and manifest.json, validated against stage0_schemas.py
-exactly like stage1_ingest.py's real output, so downstream stages exercise
-the identical code path they use on a real Stage 1 run.
+write_synthetic_stage1(out_dir) writes {gene_sets,ot_disease_subset,interactions,genes}.parquet,
+ot_target_subset.parquet and manifest.json, validated against stage0_schemas.py exactly like
+stage1_ingest.py's real output, so downstream stages exercise the identical code path they use on a real
+Stage 1 run.
 
 Gene universe (all fake ENSG ids, 30 genes total). "Seeds" are the genes with
 genetic_association evidence, which Stage 2 writes to disease_seed_genes.tsv:
@@ -83,14 +83,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "pipeline"))
-from stage0_schemas import (  # noqa: E402
+from stage0_schemas import (
     CoverageEntry,
     GeneSetsSchema,
     GeneSetSizeBucket,
@@ -104,8 +102,6 @@ from stage0_schemas import (  # noqa: E402
     Source,
     SourceFile,
 )
-
-OUT_DIR = Path(__file__).parent / "example_run"
 
 DISEASE_ID = "MONDO_0000001"
 
@@ -279,57 +275,58 @@ def build_target_annotations() -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["id", "tractability", "safetyLiabilities"])
 
 
-def main() -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+def write_synthetic_stage1(out_dir: Path) -> Path:
+    """Write the synthetic Stage 1 output into out_dir and return the manifest path."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     gene_sets_df = GeneSetsSchema.validate(build_gene_sets())
-    gene_sets_path = OUT_DIR / "gene_sets.parquet"
+    gene_sets_path = out_dir / "gene_sets.parquet"
     gene_sets_df.to_parquet(gene_sets_path, index=False)
 
     ot_subset_df = OTAssociationsSchema.validate(build_ot_disease_subset())
-    ot_subset_path = OUT_DIR / "ot_disease_subset.parquet"
+    ot_subset_path = out_dir / "ot_disease_subset.parquet"
     ot_subset_df.to_parquet(ot_subset_path, index=False)
 
     genes_df = GenesSchema.validate(build_genes())
-    genes_path = OUT_DIR / "genes.parquet"
+    genes_path = out_dir / "genes.parquet"
     genes_df.to_parquet(genes_path, index=False)
 
     interactions_df = InteractionsSchema.validate(build_interactions())
-    interactions_path = OUT_DIR / "interactions.parquet"
+    interactions_path = out_dir / "interactions.parquet"
     interactions_df.to_parquet(interactions_path, index=False)
 
     # Not a Stage 1 output artifact — this stands in for the Open Targets
     # `target` parquet Stage 1 downloads, so it goes under manifest.sources.
-    target_subset_path = OUT_DIR / "ot_target_subset.parquet"
+    target_subset_path = out_dir / "ot_target_subset.parquet"
     build_target_annotations().to_parquet(target_subset_path, index=False)
 
     def artifact(path: Path) -> OutputArtifact:
-        # repo-root-relative, so the checked-in manifest holds no machine-specific absolute path.
-        return OutputArtifact(path=f"example_data/example_run/{path.name}", sha256=_sha256_bytes(path.read_bytes()))
+        # A bare file name: stages look for each artifact next to the manifest first.
+        return OutputArtifact(path=path.name, sha256=_sha256_bytes(path.read_bytes()))
 
     n_associated = int(ot_subset_df["gene_id"].nunique())
 
     manifest = Manifest(
-        run_id="example0000000001",
+        run_id="synthetic000000001",
         git_commit="unknown",
         created_at=datetime.now(timezone.utc),
         seed=0,
-        disease=ResolvedDisease(efo_id=DISEASE_ID, name="example disease", n_associated_genes=n_associated),
+        disease=ResolvedDisease(efo_id=DISEASE_ID, name="synthetic disease", n_associated_genes=n_associated),
         sources=[
             Source(
                 db="reactome",
                 version="97",
-                files=[SourceFile(path="example_data/fake_reactome.gmt.zip", sha256="0" * 64, bytes=0)],
+                files=[SourceFile(path="fake_reactome.gmt.zip", sha256="0" * 64, bytes=0)],
             ),
             Source(
                 db="opentargets",
                 version="26.06",
                 files=[
-                    SourceFile(path="example_data/fake_association.parquet", sha256="1" * 64, bytes=0),
+                    SourceFile(path="fake_association.parquet", sha256="1" * 64, bytes=0),
                     SourceFile(
-                        # repo-root-relative, like the other source entries — Stage 6
-                        # also retries this basename next to the manifest.
-                        path="example_data/example_run/ot_target_subset.parquet",
+                        # Stage 6 looks for this basename next to the manifest.
+                        path="ot_target_subset.parquet",
                         sha256=_sha256_bytes(target_subset_path.read_bytes()),
                         bytes=target_subset_path.stat().st_size,
                     ),
@@ -351,13 +348,8 @@ def main() -> None:
             sets_retained=7,
             interaction_counts_by_sign={},
             interaction_counts_by_evidence_type={},
-            projected_comembership_edge_count=0,
         ),
     )
-    manifest_path = OUT_DIR / "manifest.json"
+    manifest_path = out_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest.model_dump(mode="json"), indent=2, sort_keys=True))
-    print(f"Wrote {manifest_path}")
-
-
-if __name__ == "__main__":
-    main()
+    return manifest_path

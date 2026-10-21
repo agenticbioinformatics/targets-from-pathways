@@ -1,4 +1,4 @@
-# Example --benchmark-holdout-file for stage2_gsea_discovery.py.
+# --benchmark-holdout-file for the synthetic run (tests/fixtures/synthetic_run.py).
 # One gene symbol (or Ensembl ID) per line; '#' starts a comment.
 # "OLDG17" is G17's synonym (not its approved symbol GENE17), exercising
 # the synonym-resolution path (stage1_ingest.resolve_gene).

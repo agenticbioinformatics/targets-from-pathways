@@ -1,4 +1,4 @@
-"""pytest tests for stage4_genetic_evidence_weights.py (Stage 4: optional user
+"""pytest tests for stage4_weights.py (Stage 4: optional user
 node/edge weights, and genetic-evidence gene scores).
 
 Hand-built inputs, calling ``compute_genetic_evidence_scores``,
@@ -30,7 +30,7 @@ import pandas as pd
 import pytest
 import scipy.sparse as sp
 
-import stage4_genetic_evidence_weights as gew
+import stage4_weights as wts
 
 A, B, C, D = (f"ENSG{n:011d}" for n in (1, 2, 3, 4))
 GENE_INDEX = [A, B, C, D]
@@ -58,7 +58,7 @@ OT_DISEASE_SUBSET = pd.DataFrame(
 
 
 def test_node_weights_reflect_only_allowed_datatypes():
-    scores = gew.compute_genetic_evidence_scores(OT_DISEASE_SUBSET, gew.EVIDENCE_DATATYPES, GENE_INDEX)
+    scores = wts.compute_genetic_evidence_scores(OT_DISEASE_SUBSET, wts.EVIDENCE_DATATYPES, GENE_INDEX)
     assert scores[A] == pytest.approx(0.9)  # max of allowed rows, not the 0.99 decoy
     assert scores[B] == pytest.approx(0.7)
     assert scores[C] == pytest.approx(0.0)
@@ -66,7 +66,7 @@ def test_node_weights_reflect_only_allowed_datatypes():
 
     # The filter is genuinely datatype-driven, not hardcoded: flip the
     # allowlist to affected_pathway only and the picture inverts.
-    scores_pathway_only = gew.compute_genetic_evidence_scores(OT_DISEASE_SUBSET, ["affected_pathway"], GENE_INDEX)
+    scores_pathway_only = wts.compute_genetic_evidence_scores(OT_DISEASE_SUBSET, ["affected_pathway"], GENE_INDEX)
     assert scores_pathway_only[A] == pytest.approx(0.99)
     assert scores_pathway_only[B] == pytest.approx(0.0)
     assert scores_pathway_only[C] == pytest.approx(0.99)
@@ -74,16 +74,16 @@ def test_node_weights_reflect_only_allowed_datatypes():
 
 
 def test_gene_with_only_affected_pathway_evidence_gets_zero_weight():
-    scores = gew.compute_genetic_evidence_scores(OT_DISEASE_SUBSET, gew.EVIDENCE_DATATYPES, GENE_INDEX)
+    scores = wts.compute_genetic_evidence_scores(OT_DISEASE_SUBSET, wts.EVIDENCE_DATATYPES, GENE_INDEX)
     assert scores[C] == 0.0
 
 
 def test_known_drug_evidence_is_never_counted():
     # Only genetic_association counts: known_drug would favour genes already drugged for the disease.
-    assert gew.EVIDENCE_DATATYPES == ["genetic_association"]
+    assert wts.EVIDENCE_DATATYPES == ["genetic_association"]
     known_drug_only = pd.DataFrame([{"gene_id": D, "disease_id": "EFO_TEST", "datatype_id": "known_drug",
                                      "datasource_id": "clinical_precedence", "score": 0.8}])
-    scores = gew.compute_genetic_evidence_scores(known_drug_only, gew.EVIDENCE_DATATYPES, GENE_INDEX)
+    scores = wts.compute_genetic_evidence_scores(known_drug_only, wts.EVIDENCE_DATATYPES, GENE_INDEX)
     assert scores[D] == 0.0
 
 
@@ -115,41 +115,41 @@ def _weights(matrix):
 
 
 def test_without_user_weights_every_edge_is_one():
-    weight, stats = gew.apply_user_weights(_chain_graph() * 5.0, GENE_INDEX, None, None, "mean", 1.0, 1.0)
+    weight, stats = wts.apply_user_weights(_chain_graph() * 5.0, GENE_INDEX, None, None, "mean", 1.0, 1.0)
     # Reset to Stage 3's structure: an earlier weighting never compounds.
     assert set(weight.data) == {1.0} and weight.nnz == 4
     assert stats["n_node_weights_used"] == 0 and stats["n_edge_weights_used"] == 0
 
 
 def test_node_weights_combine_endpoints():
-    weight, stats = gew.apply_user_weights(_chain_graph(), GENE_INDEX, NODE_WEIGHTS, None, "mean", 1.0, 1.0)
+    weight, stats = wts.apply_user_weights(_chain_graph(), GENE_INDEX, NODE_WEIGHTS, None, "mean", 1.0, 1.0)
     assert _weights(weight) == pytest.approx({(A, B): 0.75, (B, A): 0.75, (B, C): 1.5, (C, D): 1.5})
     assert stats["n_node_weights_used"] == 2 and stats["n_node_weights_not_in_graph"] == 1
 
-    weight, _ = gew.apply_user_weights(_chain_graph(), GENE_INDEX, NODE_WEIGHTS, None, "product", 1.0, 1.0)
+    weight, _ = wts.apply_user_weights(_chain_graph(), GENE_INDEX, NODE_WEIGHTS, None, "product", 1.0, 1.0)
     assert _weights(weight) == pytest.approx({(A, B): 0.5, (B, A): 0.5, (B, C): 2.0, (C, D): 2.0})
 
     # A gene missing from the file weighs --default-node-weight.
-    weight, _ = gew.apply_user_weights(_chain_graph(), GENE_INDEX, NODE_WEIGHTS, None, "mean", 0.1, 1.0)
+    weight, _ = wts.apply_user_weights(_chain_graph(), GENE_INDEX, NODE_WEIGHTS, None, "mean", 0.1, 1.0)
     assert _weights(weight)[(B, C)] == pytest.approx((0.1 + 2.0) / 2)
 
 
 def test_edge_weights_match_either_direction_and_never_add_edges():
-    weight, stats = gew.apply_user_weights(_chain_graph(), GENE_INDEX, None, EDGE_WEIGHTS, "mean", 1.0, 0.2)
+    weight, stats = wts.apply_user_weights(_chain_graph(), GENE_INDEX, None, EDGE_WEIGHTS, "mean", 1.0, 0.2)
     assert weight.nnz == 4  # (A, D) is not added
     assert _weights(weight) == pytest.approx({(A, B): 0.4, (B, A): 0.4, (B, C): 0.2, (C, D): 3.0})
     assert stats["n_edge_weights_used"] == 2 and stats["n_edge_weights_not_in_graph"] == 2
 
 
 def test_node_and_edge_weights_multiply():
-    weight, _ = gew.apply_user_weights(_chain_graph(), GENE_INDEX, NODE_WEIGHTS, EDGE_WEIGHTS, "mean", 1.0, 1.0)
+    weight, _ = wts.apply_user_weights(_chain_graph(), GENE_INDEX, NODE_WEIGHTS, EDGE_WEIGHTS, "mean", 1.0, 1.0)
     assert _weights(weight) == pytest.approx({(A, B): 0.75 * 0.4, (B, A): 0.75 * 0.4, (B, C): 1.5, (C, D): 1.5 * 3.0})
 
 
 def test_edge_weights_listing_a_pair_twice_exit():
     twice = pd.DataFrame({"gene_a": [A, B], "gene_b": [B, A], "weight": [0.4, 0.6]})
     with pytest.raises(SystemExit):
-        gew.apply_user_weights(_chain_graph(), GENE_INDEX, None, twice, "mean", 1.0, 1.0)
+        wts.apply_user_weights(_chain_graph(), GENE_INDEX, None, twice, "mean", 1.0, 1.0)
 
 
 @pytest.mark.parametrize("content", [
@@ -163,4 +163,4 @@ def test_invalid_node_weights_file_exits(tmp_path, content):
     path = tmp_path / "node_weights.tsv"
     path.write_text(content)
     with pytest.raises(SystemExit):
-        gew.read_weights_file(path, gew.UserNodeWeightsSchema, "--node-weights")
+        wts.read_weights_file(path, wts.UserNodeWeightsSchema, "--node-weights")

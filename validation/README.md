@@ -10,11 +10,12 @@ python validation/leave_one_out.py --disease MONDO_0005265 --from-manifest out/m
 
 For each seed gene (one with a genetic-association score > 0 for the disease), the pipeline is rerun as
 if that gene were not associated with the disease: it is removed from the seed set, its score and rank among the candidates are recorded.
+A held-out gene that is on no pathway GSEA still detects without it drops out of the graph; it is recorded as not ranked, and the metrics are computed over the genes that were ranked.
 
 - `validation/scores_left_out.tsv`: `gene`, `score` (BFWalk by default; `--method rwr` for RWR)
 - `validation/leave_one_out.log`: AUROC and recall@k for BFWalk and RWR, random ranking
 
-Each gene is a full Stage 2-5 run (about 40 seconds for MONDO_0005265 / IBD); add `--max-genes 50` to try a random sub-sample
+Each gene is a full Stage 2-5 run; add `--max-genes 50` to try a random sub-sample
 first. Without an existing `out/`, use `--data-dir data/` instead of `--from-manifest` to run Stage 1.
 
 ## Pipeline vs Open Targets

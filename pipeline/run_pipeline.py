@@ -3,20 +3,50 @@
 Each stage runs as its own subprocess with its normal CLI, so a failing stage prints its own error and
 stops the run. All stages write into the manifest's directory, which --report then turns into report.html.
 Options this script does not know are passed on to stage1_ingest.py (e.g. --allow-low-coverage).
+
+Every invocation, --help included, first imports every stage, so `run_pipeline.py --help` doubles as an
+installation check: a missing package stops it with the list of what is missing.
 """
 
 import argparse
+import importlib
 import logging
 import subprocess
 import sys
 from pathlib import Path
 
-from stage0_schemas import fail
-from stage7_report import build_report
-
 PIPELINE_DIR = Path(__file__).resolve().parent
+STAGE_MODULES = ["stage0_schemas", "stage1_ingest", "stage2_gsea_discovery", "stage3_build_graph",
+                 "stage4_weights", "stage5_score_candidates", "stage6_annotate_context", "stage7_report"]
 
 logger = logging.getLogger("run_pipeline")
+
+
+def check_installation():
+    """Import every stage module, so a missing package fails now rather than mid-run. Only the standard
+    library is imported before this, so even a missing pandas gets this message instead of a traceback."""
+    missing = []
+    for module in STAGE_MODULES:
+        try:
+            importlib.import_module(module)
+        except ImportError as error:
+            missing.append(f"{module}.py: {error}")
+    if missing:
+        logger.error("The pipeline is not installed correctly:\n  %s\nInstall the requirements with: "
+                     "pip install -r requirements.txt", "\n  ".join(missing))
+        sys.exit(1)
+    # Stage 5 imports BFWalk only when --method bfwalk is used, so --method rwr works without it.
+    try:
+        importlib.import_module("BFWalk.bfwalk")
+    except ImportError:
+        logger.warning("bfwalk is not installed: Stage 5's default --method bfwalk will fail. Install it (see "
+                       "README.md) or run with --method rwr.")
+
+
+def fail(message):
+    # stage0_schemas is importable only after check_installation, so it is imported here, not at the top.
+    from stage0_schemas import fail as stage0_fail
+    stage0_fail(message)
 
 
 def run_stage(label, script, args, python_exe):
@@ -62,7 +92,7 @@ def run_pipeline(disease=None, data_dir=None, out_dir=None, from_manifest=None,
         stage4_args += ["--node-weights", Path(node_weights).resolve()]
     if edge_weights is not None:
         stage4_args += ["--edge-weights", Path(edge_weights).resolve()]
-    run_stage("Stage 4 (optional user weights)", "stage4_genetic_evidence_weights.py", stage4_args, python_exe)
+    run_stage("Stage 4 (optional user weights)", "stage4_weights.py", stage4_args, python_exe)
     run_stage("Stage 5 (candidate scoring)", "stage5_score_candidates.py",
               ["--graph-dir", run_dir, "--method", method], python_exe)
     run_stage("Stage 6 (contextual annotation)", "stage6_annotate_context.py", ["--manifest", manifest], python_exe)
@@ -76,11 +106,15 @@ def run_pipeline(disease=None, data_dir=None, out_dir=None, from_manifest=None,
 
 def main(argv=None):
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    check_installation()
+    from stage7_report import build_report
+
     parser = argparse.ArgumentParser(
         prog="run_pipeline.py",
         description="Chain Stages 1-6 for one disease, or Stages 2-6 from an existing Stage 1 manifest. "
         "Any option not listed below is forwarded to stage1_ingest.py (see `python3 pipeline/stage1_ingest.py "
         "--help`, e.g. --allow-low-coverage, --no-download, --seed, --min-set-size).",
+        epilog="Every run, --help included, first checks that all stages' packages are installed.",
     )
     parser.add_argument("--disease", help="Disease ontology ID, e.g. MONDO_0005265 (Stage 1).")
     parser.add_argument("--data-dir", type=Path, help="Source data cache for Stage 1.")

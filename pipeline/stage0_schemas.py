@@ -117,8 +117,8 @@ DiseasePathwaysSchema = DataFrameSchema(
     strict=True,
 )
 
-# Stage 2's seed genes: the disease's genetic_association genes (minus any benchmark holdout), with their
-# strongest genetic_association score. Stage 3 builds the graph around them and Stage 5 propagates from them.
+# Stage 2's seed genes: the disease's genes with a genetic_association score > 0 (minus any benchmark holdout),
+# with their strongest genetic_association score. GSEA ranks them (Stage 2) and Stage 5 propagates from them.
 # score is optional so that a hand-made seed list (gene_id only) can be passed to Stage 5.
 SeedGenesSchema = DataFrameSchema(
     {
@@ -135,7 +135,7 @@ HoldoutGenesSchema = DataFrameSchema(
     strict=True,
 )
 
-GeneWeightsSchema = DataFrameSchema(
+GeneticEvidenceScoresSchema = DataFrameSchema(
     {
         "gene_id": ensembl_column(unique=True),
         "genetic_evidence_score": Column(float, checks=Check.in_range(0.0, 1.0), nullable=False),
@@ -287,7 +287,6 @@ class ScaleReport(BaseModel):
     sets_retained: int = Field(ge=0)
     interaction_counts_by_sign: Dict[str, int]
     interaction_counts_by_evidence_type: Dict[str, int]
-    projected_comembership_edge_count: int = Field(ge=0)
 
 
 class Manifest(BaseModel):

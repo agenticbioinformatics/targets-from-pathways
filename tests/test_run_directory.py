@@ -1,4 +1,4 @@
-"""pytest tests for run-directory integrity across stages, on copies of the checked-in example run.
+"""pytest tests for run-directory integrity across stages, on fresh synthetic runs (tests/fixtures/synthetic_run.py).
 
 - ``find_artifact`` (stage0_schemas.py): a stage reads the Stage 1 files next to its --manifest, even when
   the manifest lists a path that exists elsewhere (a copied or moved run directory), and refuses a file
@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import json
-import shutil
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -23,29 +23,20 @@ import scipy.sparse as sp
 
 import stage2_gsea_discovery as gsea
 import stage3_build_graph as bg
-import stage4_genetic_evidence_weights as gew
+import stage4_weights as wts
+from fixtures.synthetic_run import write_synthetic_stage1
 from stage0_schemas import find_artifact, load_manifest, sha256_of_file
 
-from test_run_pipeline import EXAMPLE_RUN, STAGE1_FILES
-
-HOLDOUT_FILE = EXAMPLE_RUN.parent / "benchmark_holdout_example.txt"
-HELD_OUT = "ENSG00000000017"  # OLDG17 in benchmark_holdout_example.txt
+HOLDOUT_FILE = Path(__file__).parent / "fixtures" / "benchmark_holdout_synthetic.txt"
+HELD_OUT = "ENSG00000000017"  # OLDG17 in benchmark_holdout_synthetic.txt
 # G5: unlike G17 it stays in the graph when held out (its GSEA pathways remain significant without it).
 HELD_OUT_IN_GRAPH = "ENSG00000000005"
 
-pytestmark = pytest.mark.skipif(
-    not (EXAMPLE_RUN / "manifest.json").exists(),
-    reason="example_data/example_run not populated",
-)
-
 
 def _copy_run(tmp_path, listed_dir=None):
-    """Copy the example's Stage 1 files to tmp_path/run. listed_dir: rewrite the manifest's artifact paths
-    to point there instead."""
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    for name in STAGE1_FILES:
-        shutil.copy(EXAMPLE_RUN / name, run_dir / name)
+    """Write a synthetic Stage 1 run to tmp_path/run. listed_dir: rewrite the manifest's artifact paths
+    to point there instead (as in a run directory copied from elsewhere)."""
+    run_dir = write_synthetic_stage1(tmp_path / "run").parent
     if listed_dir is not None:
         manifest = json.loads((run_dir / "manifest.json").read_text())
         for artifact in manifest["output_artifacts"]:
@@ -72,16 +63,18 @@ def _replace_artifact(run_dir, name, df):
 
 def test_copied_run_reads_its_own_files_not_the_listed_ones(tmp_path):
     # The manifest lists the original run's files, which exist - the copy next to the manifest must win.
-    run_dir = _copy_run(tmp_path, listed_dir=EXAMPLE_RUN)
+    original = write_synthetic_stage1(tmp_path / "original").parent
+    run_dir = _copy_run(tmp_path, listed_dir=original)
     manifest_path = run_dir / "manifest.json"
     assert find_artifact(load_manifest(manifest_path), manifest_path, "genes.parquet") == run_dir / "genes.parquet"
 
 
 def test_listed_path_is_the_fallback(tmp_path):
-    run_dir = _copy_run(tmp_path, listed_dir=EXAMPLE_RUN)
+    original = write_synthetic_stage1(tmp_path / "original").parent
+    run_dir = _copy_run(tmp_path, listed_dir=original)
     (run_dir / "genes.parquet").unlink()
     manifest_path = run_dir / "manifest.json"
-    assert find_artifact(load_manifest(manifest_path), manifest_path, "genes.parquet") == EXAMPLE_RUN / "genes.parquet"
+    assert find_artifact(load_manifest(manifest_path), manifest_path, "genes.parquet") == original / "genes.parquet"
 
 
 def test_artifact_changed_after_stage1_is_refused(tmp_path):
@@ -105,7 +98,7 @@ def _run_stages_2_to_4(run_dir, holdout_file=HOLDOUT_FILE):
         stage2_argv += ["--benchmark-holdout-file", str(holdout_file)]
     gsea.run(gsea.parse_args(stage2_argv))
     bg.run(bg.parse_args(["--manifest", manifest]))
-    gew.run(gew.parse_args(["--manifest", manifest]))
+    wts.run(wts.parse_args(["--manifest", manifest]))
 
 
 def test_holdout_gene_evidence_does_not_feed_stage4(tmp_path):
@@ -146,7 +139,7 @@ def test_stage4_user_weights_and_rerun_without_them(tmp_path):
     assert stage3_weight.nnz > 0 and set(stage3_weight.data) == {1.0}
 
     # Without weight files the graph is unchanged.
-    gew.run(gew.parse_args(["--manifest", manifest]))
+    wts.run(wts.parse_args(["--manifest", manifest]))
     assert abs(stage3_weight - sp.load_npz(run_dir / "graph_weight.npz")).max() == 0
     assert json.loads((run_dir / "graph_metadata.json").read_text())["stage4_user_weights"]["weighted"] is False
 
@@ -155,7 +148,7 @@ def test_stage4_user_weights_and_rerun_without_them(tmp_path):
     g6, n23, n24 = "ENSG00000000006", "ENSG00000000023", "ENSG00000000024"
     (tmp_path / "edges.tsv").write_text(f"gene_a\tgene_b\tweight\n{n24}\t{g6}\t0.25\n")
     (tmp_path / "nodes.tsv").write_text(f"gene_id\tweight\n{n23}\t0.5\n")
-    gew.run(gew.parse_args(["--manifest", manifest, "--edge-weights", str(tmp_path / "edges.tsv"),
+    wts.run(wts.parse_args(["--manifest", manifest, "--edge-weights", str(tmp_path / "edges.tsv"),
                             "--node-weights", str(tmp_path / "nodes.tsv")]))
     weighted = sp.load_npz(run_dir / "graph_weight.npz").toarray()
     assert weighted[index.index(g6), index.index(n24)] == pytest.approx(0.25)
@@ -165,7 +158,7 @@ def test_stage4_user_weights_and_rerun_without_them(tmp_path):
     assert stats["weighted"] is True and stats["n_edge_weights_used"] == 1 and stats["n_node_weights_used"] == 1
 
     # A re-run without the files restores the unweighted graph: weights never compound.
-    gew.run(gew.parse_args(["--manifest", manifest]))
+    wts.run(wts.parse_args(["--manifest", manifest]))
     assert abs(stage3_weight - sp.load_npz(run_dir / "graph_weight.npz")).max() == 0
 
 

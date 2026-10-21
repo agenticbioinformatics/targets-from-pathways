@@ -603,15 +603,11 @@ def count_values(series):
 
 
 def apply_size_cap(gene_sets_df, interactions_df, min_set_size, max_set_size):
-    """Drop gene sets outside [min, max] size and report sizes and the projected Stage 3 edge count."""
+    """Drop gene sets outside [min, max] size and report the set sizes and interaction counts."""
     sizes_before = gene_sets_df.groupby("set_id")["gene_id"].nunique()
     kept_set_ids = sizes_before[(sizes_before >= min_set_size) & (sizes_before <= max_set_size)].index
     kept_gene_sets = gene_sets_df[gene_sets_df["set_id"].isin(kept_set_ids)].reset_index(drop=True)
     sizes_after = sizes_before.loc[kept_set_ids].tolist()
-
-    projected_edges = 0
-    for size in sizes_after:
-        projected_edges += size * (size - 1) // 2
 
     report = ScaleReport(
         gene_set_size_distribution_before_cap=size_distribution(sizes_before.tolist()),
@@ -619,7 +615,6 @@ def apply_size_cap(gene_sets_df, interactions_df, min_set_size, max_set_size):
         sets_retained=len(kept_set_ids),
         interaction_counts_by_sign=count_values(interactions_df["sign"]),
         interaction_counts_by_evidence_type=count_values(interactions_df["evidence_type"]),
-        projected_comembership_edge_count=projected_edges,
     )
     return report, kept_gene_sets
 
@@ -688,7 +683,9 @@ def run_ingest(args):
 
     ot_disease_subset = OTAssociationsSchema.validate(load_disease_association_subset(association_paths, disease_id))
     assert_foreign_key(ot_disease_subset, "gene_id", genes_df)
-    genetic_rows = ot_disease_subset[ot_disease_subset["datatype_id"] == "genetic_association"]
+    # Counted like Stage 2's seeds: genes with a genetic_association score > 0.
+    genetic_rows = ot_disease_subset[(ot_disease_subset["datatype_id"] == "genetic_association")
+                                     & (ot_disease_subset["score"] > 0)]
     n_genetic_genes = genetic_rows["gene_id"].nunique()
     if n_genetic_genes < MIN_GENETIC_ASSOCIATION_GENES and not args.allow_low_coverage:
         fail(

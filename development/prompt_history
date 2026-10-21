@@ -1227,3 +1227,53 @@ symbol shows that gene's trace and highlights its row; another click
 switches gene; `×` or Esc closes it; below 50rem the panel covers the page.
 Tests now check the panel markup; docs updated; example report regenerated
 and checked in headless Chrome at desktop and phone widths. 134 tests passed.
+
+
+## Prompt 48 — /hackathon-cleanup: inconsistencies and documentation
+
+> search for inconsistencies in scripts, READMEs, comments in the code etc,
+> if anything found ask how to resolve them. clarify all documentation (main
+> README, docs/README) where necessary, make it simple and minimalistic, but
+> still docs/README should detail more than the main README.
+
+Questions asked and answers:
+- Stage 4's script name and its `gene_weights.tsv` (genetic-evidence scores,
+  not weights) no longer fit -> rename both.
+- `scale_report.json`'s `projected_comembership_edge_count` is obsolete
+  (no co-membership edges) -> remove it.
+- `example_data/example_run/` was gitignored yet partly tracked -> "remove the
+  example run at all, including all references, instructions etc. the data is
+  synthetic any way ... the user should test the installation by typing
+  something like run_pipeline.py --help (if it works, then the pipeline should
+  work, make sure that it does)."
+- Hub-bias numbers measured on the old graph -> drop the numbers.
+
+**Changes:**
+- `git mv pipeline/stage4_genetic_evidence_weights.py pipeline/stage4_weights.py`
+  (and `tests/test_genetic_evidence_weights.py` -> `tests/test_weights.py`);
+  `gene_weights.tsv` -> `genetic_evidence_scores.tsv`, `GeneWeightsSchema` ->
+  `GeneticEvidenceScoresSchema`; validation and run_pipeline updated.
+- `projected_comembership_edge_count` removed from `ScaleReport`, Stage 1 and
+  the tests.
+- `example_data/` removed (checked-in run, demo instructions, .gitignore
+  line). The generator moved to `tests/fixtures/synthetic_run.py`
+  (`write_synthetic_stage1(out_dir)`), the holdout file to
+  `tests/fixtures/benchmark_holdout_synthetic.txt`; conftest provides
+  `synthetic_stage1` (fresh per test) and `synthetic_full_run` (session,
+  Stages 2-6 + report); tests no longer skip when the example is absent.
+- `run_pipeline.py` imports every stage before parsing arguments, so
+  `--help` doubles as an installation check: missing packages are listed
+  with the pip command (exit 1); a missing BFWalk is only a warning
+  (`--method rwr` works). Verified with the system Python (no packages):
+  clear list instead of a traceback. 3 new tests.
+- Small fixes: Stage 1's 5-gene floor now counts genes with a
+  genetic_association score > 0 (as Stage 2's seeds); stale comments in
+  `stage0_schemas.py` and requirements.txt; the end-to-end test's seed
+  definition; unused constants/imports (`REPO_DIR`, `PIPELINE_DIR` in Stage 7).
+- README rewritten minimal: Overview, Installation (incl. the `--help`
+  check), Usage (one table of stages), Data (sources and formats).
+  docs/README rewritten per stage (what it does, writes, options table)
+  without example walkthroughs, test counts or internal jargon; hub-bias
+  numbers dropped (qualitative advice kept); validation/README timing
+  dropped and the not-ranked case explained; development/README updated
+  for the removed demo. 137 tests passed.

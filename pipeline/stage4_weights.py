@@ -12,8 +12,8 @@ The weights are always applied to Stage 3's structure (every edge reset to 1 fir
 with other files, or with none, does not compound.
 
 Also scores each graph gene with its Open Targets genetic_association evidence for the disease (no other
-datatype), for Stage 6's annotation: added to graph_metadata.json and written to gene_weights.tsv. These scores
-are not used as weights. Genes in Stage 2's benchmark_holdout_genes.tsv score 0.0: their own Open Targets
+datatype), for Stage 6's annotation: added to graph_metadata.json and written to genetic_evidence_scores.tsv.
+These scores are not used as weights. Genes in Stage 2's benchmark_holdout_genes.tsv score 0.0: their own Open Targets
 evidence is what a benchmark is meant to recover, so it must not show as their genetic_evidence_score.
 """
 
@@ -28,7 +28,7 @@ import scipy.sparse as sp
 from pandera.errors import SchemaError
 
 from stage0_schemas import (
-    GeneWeightsSchema,
+    GeneticEvidenceScoresSchema,
     HoldoutGenesSchema,
     OTAssociationsSchema,
     UserEdgeWeightsSchema,
@@ -39,7 +39,7 @@ from stage0_schemas import (
     load_manifest,
 )
 
-logger = logging.getLogger("genetic_evidence_weights")
+logger = logging.getLogger("weights")
 
 # The only Open Targets datatype counted as evidence. affected_pathway would be circular (Open Targets files its
 # Reactome evidence under it, and the graph is built from Reactome), and known_drug would favour genes that are
@@ -49,12 +49,12 @@ EVIDENCE_DATATYPES = ["genetic_association"]
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        prog="stage4_genetic_evidence_weights.py",
+        prog="stage4_weights.py",
         description="Stage 4 - optional user weights. Weights the Stage 3 graph with the user's own node "
         "and/or edge weights (--node-weights / --edge-weights, both optional; without them every edge keeps "
         "weight 1) and rewrites the graph files. Also scores each graph gene from its Open Targets "
         "genetic_association evidence for Stage 6 (not used as a weight); extends graph_metadata.json and "
-        "writes gene_weights.tsv.",
+        "writes genetic_evidence_scores.tsv.",
     )
     parser.add_argument("--manifest", required=True, type=Path, help="Path to Stage 1's manifest.json.")
     parser.add_argument("--graph-dir", type=Path, default=None, help="Stage 3 graph directory. Default: next to --manifest.")
@@ -212,7 +212,7 @@ def run(args):
     sp.save_npz(out_dir / "graph_sign.npz", sign)
     (out_dir / "graph_gene_index.json").write_text(json.dumps(gene_index, indent=2))
 
-    # Stage 6 reads the gene scores from here, not from gene_weights.tsv.
+    # Stage 6 reads the gene scores from here, not from genetic_evidence_scores.tsv.
     metadata["genetic_evidence_score"] = {}
     for gene_id, score in zip(gene_index, node_scores):
         metadata["genetic_evidence_score"][gene_id] = float(score)
@@ -233,14 +233,14 @@ def run(args):
     }
     (out_dir / "graph_metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True))
 
-    weights_df = pd.DataFrame({"gene_id": gene_index, "genetic_evidence_score": node_scores})
-    weights_df = weights_df.sort_values("genetic_evidence_score", ascending=False).reset_index(drop=True)
-    weights_df = GeneWeightsSchema.validate(weights_df)
+    scores_df = pd.DataFrame({"gene_id": gene_index, "genetic_evidence_score": node_scores})
+    scores_df = scores_df.sort_values("genetic_evidence_score", ascending=False).reset_index(drop=True)
+    scores_df = GeneticEvidenceScoresSchema.validate(scores_df)
     rounded = []
-    for score in weights_df["genetic_evidence_score"]:
+    for score in scores_df["genetic_evidence_score"]:
         rounded.append(float(f"{score:.4g}"))
-    weights_df["genetic_evidence_score"] = rounded
-    weights_df.to_csv(out_dir / "gene_weights.tsv", sep="\t", index=False)
+    scores_df["genetic_evidence_score"] = rounded
+    scores_df.to_csv(out_dir / "genetic_evidence_scores.tsv", sep="\t", index=False)
 
     logger.info("Stage 4 complete: %s", out_dir)
     return out_dir

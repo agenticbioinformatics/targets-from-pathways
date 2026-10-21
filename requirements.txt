@@ -16,7 +16,7 @@ statsmodels
 networkx
 scipy
 
-# Stage 4 — genetic-evidence weighting
+# Stage 4 — optional user weights + genetic-evidence gene scores
 pandas
 pyarrow
 
@@ -29,7 +29,7 @@ scipy
 --extra-index-url https://test.pypi.org/simple/
 bfwalk==0.9.0
 
-# Stage 6 — contextual annotation & filtering (reads the OT `target` parquet)
+# Stage 6 — contextual annotation (reads the OT `target` parquet)
 pandas
 pyarrow
 

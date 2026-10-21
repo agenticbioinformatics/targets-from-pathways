@@ -116,7 +116,6 @@ def valid_manifest_dict() -> dict:
             "sets_retained": 5,
             "interaction_counts_by_sign": {"1": 10, "0": 5, "-1": 3},
             "interaction_counts_by_evidence_type": {"curated": 15, "predicted": 3},
-            "projected_comembership_edge_count": 45,
         },
     }
 
