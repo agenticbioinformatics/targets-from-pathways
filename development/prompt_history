@@ -1277,3 +1277,53 @@ Questions asked and answers:
   numbers dropped (qualitative advice kept); validation/README timing
   dropped and the not-ranked case explained; development/README updated
   for the removed demo. 137 tests passed.
+
+
+## Prompt 49 — brainstorm: genome-wide test, graded seeds, empirical null
+
+> The pipeline is limited in use for research. Suggestions: a genome-wide
+> pathway test; graded seed weights instead of a binary cut-off; an
+> empirical null for candidate scores. ... Do not modify the pipeline and
+> don't generate any files for now.
+
+**Changes:** none (conversation only). Plan: competitive, bias-adjusted
+genome-wide pathway test (ORA as baseline); seed weights from the genetic
+score with leave-self-out scoring; a degree-matched seed-permutation null
+with z-scores, empirical p and BH q (cheap if propagation is linear);
+validation by leave-one-out, null calibration, and optionally a time split.
+
+
+## Prompt 50 — validation: disease graph catalogue (Reactome)
+
+> build a catalogue of graphs for every disease in
+> validation/Disease_pathways_graph_catalogue ... include only Reactome ...
+> genetic_gene_scores_input.parquet ... used for propagation (to define
+> seeds). document this catalogue and how it was built in validation/README.
+> create a python script to build the catalogue. before running any code to
+> build it, tell me how many diseases will be included and filtered out.
+> (follow-up) do not run the build graph script, let me run it. also add an
+> option to run N diseases or for diseases of interest, e.g.
+> --diseases MONDO1,MONDO2,MONDO3
+
+**Counts reported first:** 22,771 diseases with a genetic score; 19,005
+never tested by GSEA; of 3,766 tested, 2,555 have a Reactome pathway with
+es > 0 and BH-over-Reactome FDR < 0.05 (2,460 with the file's own FDR);
+1,211 left out.
+
+**Decisions (asked):** BH recomputed over Reactome, FDR < 0.05; Ensembl IDs
+(Open Targets 26.06 target, Stage 1's mapping); Stage 3's graph (curated FIs
+only); three parquet tables.
+
+**Changes:**
+- `validation/build_graph_catalogue.py`: selects pathways, maps symbols with
+  Stage 1's functions, builds each graph with `stage3_build_graph.build_graph`,
+  and streams `graph_catalogue_{edges,nodes}.parquet` plus
+  `graph_catalogue_diseases.parquet` into the catalogue directory.
+  `--diseases` (comma-separated), `--n-diseases N`, `--fdr`, input paths.
+- `tests/test_graph_catalogue.py`: 5 tests on tiny synthetic inputs (BH vs
+  statsmodels, disease selection, Stage 3 edges, seeds, the two options).
+- `validation/README.md`: "Disease graph catalogue" section.
+- A trial on Alzheimer disease ran (63 pathways, 5,173 genes, 135,967 edges,
+  507 seeds in the graph). A full build was started and then stopped at the
+  user's request (250/2,555 diseases); its partial output files were deleted.
+  The full build is left for the user to run.
