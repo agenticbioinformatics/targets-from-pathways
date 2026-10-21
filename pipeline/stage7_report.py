@@ -1,7 +1,8 @@
 """Stage 7 - HTML report.
 
 Turns a run directory into one self-contained interactive HTML file (no server, no external assets):
-a sortable ranked table of every candidate and an evidence trace for the top candidates (--n-traces).
+a sortable ranked table of every candidate and, for the top candidates (--n-traces), an evidence trace that
+opens in a side panel to the right of the table when the gene symbol is clicked.
 Only manifest.json and candidates_annotated.tsv are required; a missing optional file only hides the
 report sections that need it.
 """
@@ -42,14 +43,26 @@ th:hover { color: #06c; }
 tbody tr:nth-child(odd) { background: rgba(127,127,127,.06); }
 .ens { color: #888; font-family: ui-monospace, monospace; font-size: .82rem; }
 a { color: #06c; text-decoration: none; } a:hover { text-decoration: underline; }
-details { border: 1px solid #ddd; border-radius: 6px; margin: .5rem 0; padding: .3rem .7rem; }
-details[open] { background: rgba(127,127,127,.05); }
-summary { cursor: pointer; }
-.trace .k { font-weight: 600; margin: .6rem 0 .1rem; font-size: .86rem; text-transform: uppercase;
+tbody tr.selected { background: rgba(0,102,204,.14); }
+body.panel-open { margin-right: calc(var(--panel-width) + 1rem); }
+:root { --panel-width: min(30rem, 42vw); }
+#tracepanel { position: fixed; top: 0; right: 0; bottom: 0; width: var(--panel-width); overflow-y: auto;
+              background: Canvas; color: CanvasText; border-left: 1px solid #ccc;
+              box-shadow: -4px 0 16px rgba(0,0,0,.15); padding: 1rem 1.2rem; box-sizing: border-box; }
+#tracepanel[hidden], .trace-entry[hidden] { display: none; }
+#tracepanel .close { position: absolute; top: .5rem; right: .7rem; font-size: 1.4rem; line-height: 1;
+                     background: none; border: 0; color: inherit; cursor: pointer; }
+#tracepanel h2 { font-size: 1.05rem; margin: 0 1.5rem .2rem 0; }
+#tracepanel .note { color: #888; font-size: .8rem; margin: 0 0 .6rem; }
+@media (max-width: 50rem) {
+  :root { --panel-width: 100vw; }
+  body.panel-open { margin-right: auto; }
+}
+.trace .k, .panel-label { font-weight: 600; margin: .6rem 0 .1rem; font-size: .86rem; text-transform: uppercase;
             letter-spacing: .03em; color: #777; }
 .trace ul { margin: .1rem 0 .4rem 1.2rem; padding: 0; }
 .trace code { font-size: .82rem; background: rgba(127,127,127,.12); padding: .05rem .3rem; border-radius: 3px; }
-.badge { font-size: .72rem; background: #06c; color: #fff; padding: .05rem .35rem; border-radius: 3px;
+.badge { font-size: .72rem; background: #06c; color: #fff; padding: .05rem .35rem; border-radius: 3px; white-space: nowrap;
          margin-left: .3rem; }
 .badge.tgt { background: #c60; }
 .src { color: #888; font-size: .82rem; }
@@ -75,9 +88,25 @@ function sortTable(i, numeric){
   tb.setAttribute('data-key', key); tb.setAttribute('data-dir', asc ? 'asc' : 'desc');
 }
 function openGene(id){
-  var d = document.getElementById(id);
-  if (d){ d.open = true; d.scrollIntoView({behavior: 'smooth', block: 'start'}); }
+  var entry = document.getElementById(id);
+  if (!entry) return;
+  var panel = document.getElementById('tracepanel');
+  Array.prototype.forEach.call(panel.querySelectorAll('.trace-entry'), function(e){ e.hidden = e !== entry; });
+  Array.prototype.forEach.call(document.querySelectorAll('#ranktbody tr'), function(r){
+    r.classList.toggle('selected', r.getAttribute('data-trace') === id);
+  });
+  panel.hidden = false;
+  panel.scrollTop = 0;
+  document.body.classList.add('panel-open');
 }
+function closeGene(){
+  document.getElementById('tracepanel').hidden = true;
+  document.body.classList.remove('panel-open');
+  Array.prototype.forEach.call(document.querySelectorAll('#ranktbody tr.selected'), function(r){
+    r.classList.remove('selected');
+  });
+}
+document.addEventListener('keydown', function(e){ if (e.key === 'Escape') closeGene(); });
 """.strip()
 
 
@@ -227,9 +256,9 @@ def html_list(items):
 
 def trace_html(gene_id, symbol, row, trace, rank_column):
     parts = [
-        f'<details id="g-{escape(gene_id)}">',
-        f"<summary><b>{escape(symbol)}</b> <span class=ens>{escape(gene_id)}</span> "
-        f"&mdash; {escape(rank_column)} <b>{getattr(row, rank_column):.4f}</b></summary>",
+        f'<section class="trace-entry" id="g-{escape(gene_id)}" hidden>',
+        f"<h2>{escape(symbol)} <span class=ens>{escape(gene_id)}</span></h2>",
+        f'<p class="note">{escape(rank_column)} <b>{getattr(row, rank_column):.4f}</b></p>',
         '<div class="trace">',
         '<p class="k">Pathways shared with seed genes</p>',
     ]
@@ -287,7 +316,7 @@ def trace_html(gene_id, symbol, row, trace, rank_column):
     else:
         parts.append('<p class="none">no signed interaction edges touch this gene</p>')
 
-    parts.append("</div></details>")
+    parts.append("</div></section>")
     return "".join(parts)
 
 
@@ -350,14 +379,17 @@ def render_html(run, n_traces=DEFAULT_N_TRACES):
             cells.append(f'<td data-v="{row.bfwalk_score}">{row.bfwalk_score:.4f}</td>')
         cells.append(f'<td class="txt">{escape(row.tractability)}</td>')
         cells.append(f'<td class="txt">{escape(row.safety)}</td>')
-        table_rows.append("<tr>" + "".join(cells) + "</tr>")
+        if has_trace:
+            table_rows.append(f'<tr data-trace="g-{escape(gene_id)}">' + "".join(cells) + "</tr>")
+        else:
+            table_rows.append("<tr>" + "".join(cells) + "</tr>")
         if has_trace:
             details.append(trace_html(gene_id, symbol, row, evidence_trace(gene_id, run), rank_column))
 
     missing_note = ""
     if run["missing"]:
         missing_note = (f'<p class="warn">Partial run: {escape(", ".join(run["missing"]))} not in the run directory — '
-                        "the affected columns / trace sections are shown as unavailable below.</p>")
+                        "the affected columns / evidence-trace sections are shown as unavailable.</p>")
     trace_note = f"Evidence traces for all {len(details)} candidates."
     if len(details) < len(candidates):
         trace_note = (f"Evidence traces for the top {len(details)} of {len(candidates)} candidates "
@@ -383,7 +415,8 @@ graph: {escape(graph_kind)} &middot; generated {generated}
 <p class="lead">
 Candidates are ranked by <code>{escape(rank_column)}</code>, Stage 5's network propagation
 from the seed genes; tractability and safety annotate them and do not
-change the order. Click a header to sort; click a gene symbol to open its evidence trace.
+change the order. Click a header to sort; click a gene symbol to open its evidence trace
+in the panel on the right (close it with &times; or Esc). {trace_note}
 </p>
 
 <table id="ranktable">
@@ -393,9 +426,11 @@ change the order. Click a header to sort; click a gene symbol to open its eviden
 </tbody>
 </table>
 
-<h2>Evidence trace</h2>
-<p class="lead">{trace_note}</p>
+<aside id="tracepanel" hidden aria-label="Evidence trace">
+<button class="close" onclick="closeGene()" aria-label="Close">&times;</button>
+<p class="panel-label">Evidence trace</p>
 {details_html}
+</aside>
 
 <script>{JAVASCRIPT}</script>
 </body></html>
@@ -415,7 +450,7 @@ def parse_args(argv=None):
         prog="stage7_report.py",
         description="Stage 7 - output/report. Turns a finished run directory (manifest.json + "
         "candidates_annotated.tsv required; other files optional) into ONE self-contained interactive HTML "
-        "file: sortable ranked table and click-to-expand evidence traces for the top candidates.",
+        "file: sortable ranked table, with an evidence-trace side panel that opens when a top candidate's symbol is clicked.",
     )
     parser.add_argument("--run-dir", required=True, type=Path, help="Directory with the Stage 1-6 outputs.")
     parser.add_argument("--out", type=Path, default=None, help="Output HTML path. Default: <run-dir>/report.html.")

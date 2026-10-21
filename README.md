@@ -56,7 +56,7 @@ Each stage is a standalone script (`python pipeline/<script> --help`), each read
 | 4 | `stage4_genetic_evidence_weights.py` | Optionally weights the graph with your own node and/or edge weights (`--node-weights`, `--edge-weights`; without them the graph stays unweighted), and scores each graph gene from its Open Targets `genetic_association` evidence for Stage 6's annotation. Rewrites the graph files, extends `graph_metadata.json`, and writes `gene_weights.tsv`. |
 | 5 | `stage5_score_candidates.py` | Propagates from the seeds over the graph and ranks every non-seed gene - [BFWalk](https://github.com/jedrzejkubica/BFWalk) by default, or Random Walk with Restart (RWR). Use `--method bfwalk`, `rwr` or `bfwalk,rwr`. Writes `candidate_scores.tsv`. |
 | 6 | `stage6_annotate_context.py` | Joins genetic evidence, and tractability and safety from Open Targets, onto candidates for reading; candidates keep Stage 5's ranking. Writes `candidates_annotated.tsv`. |
-| 7 | `run_pipeline.py` + `stage7_report.py` | `run_pipeline.py` chains Stages 1-6 (subprocess per stage, use `--from-manifest` to skip Stage 1). `stage7_report.py` turns the finished run directory into an interactive HTML report for the top 100 candidates. |
+| 7 | `run_pipeline.py` + `stage7_report.py` | `run_pipeline.py` chains Stages 1-6 (subprocess per stage, use `--from-manifest` to skip Stage 1). `stage7_report.py` turns the finished run directory into an interactive HTML report: a sortable table of candidates, where clicking a gene opens its evidence trace in a side panel (top 100 candidates). |
 
 **Run pipeline**, one disease to an interactive HTML report:
 

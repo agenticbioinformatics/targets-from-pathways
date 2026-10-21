@@ -57,7 +57,7 @@ def test_from_manifest_chains_stages_and_writes_report(tmp_path):
 
     html = (run_dir / "report.html").read_text()
     assert "http://" not in html and "https://" not in html
-    assert html.count("<details ") == len(annotated)
+    assert html.count('class="trace-entry"') == len(annotated)
 
 
 def test_missing_required_args_exits():

@@ -108,12 +108,18 @@ def test_build_report_is_self_contained_and_symbol_labelled(tmp_path):
     assert set(symbols.values()) != set(symbols.keys())  # symbols really differ from Ensembl ids
 
     tbody = html.split("<tbody", 1)[1].split("</tbody>", 1)[0]
-    assert tbody.count("<tr>") == len(annotated)          # one table row per candidate
+    assert tbody.count("<tr") == len(annotated)          # one table row per candidate
     # genetic evidence is not in the report, although candidates_annotated.tsv has the column
     assert "genetic_evidence_score" in annotated.columns
     thead = html.split("<thead>", 1)[1].split("</thead>", 1)[0]
     assert "genetic ev." not in thead and "genetic-evidence score" not in html
-    assert html.count("<details ") == len(annotated)      # one detail block per candidate
+    assert html.count('class="trace-entry"') == len(annotated)  # one trace per candidate
+    # The traces live in the side panel, which is closed until a symbol is clicked, not below the table.
+    panel = html.split('<aside id="tracepanel"', 1)[1].split("</aside>", 1)[0]
+    assert panel.startswith(" hidden")
+    assert panel.count('class="trace-entry"') == len(annotated)
+    assert html.index("</table>") < html.index('<aside id="tracepanel"')
+    assert "function openGene" in html and "function closeGene" in html
 
     for gid in annotated["gene"]:
         sym = symbols[gid]
@@ -131,12 +137,13 @@ def test_build_report_traces_only_top_candidates(tmp_path):
     html = rep.build_report(EXAMPLE_RUN, tmp_path / "report.html", n_traces=2).read_text()
     annotated = pd.read_csv(EXAMPLE_RUN / "candidates_annotated.tsv", sep="\t")
     tbody = html.split("<tbody", 1)[1].split("</tbody>", 1)[0]
-    assert tbody.count("<tr>") == len(annotated)          # the table still lists every candidate
-    assert html.count("<details ") == 2
+    assert tbody.count("<tr") == len(annotated)          # the table still lists every candidate
+    assert html.count('class="trace-entry"') == 2
     for rank, gid in enumerate(annotated["gene"], start=1):
         has_trace = f'id="g-{gid}"' in html
         assert has_trace == (rank <= 2)
         assert (f"openGene('g-{gid}')" in tbody) == has_trace  # no link to a trace that is not there
+        assert (f'data-trace="g-{gid}"' in tbody) == has_trace  # the row highlighted while its trace is open
     assert f"top 2 of {len(annotated)} candidates" in html
 
 
@@ -169,7 +176,7 @@ def test_partial_run_dir_degrades_gracefully(tmp_path):
     thead = html.split("<thead>", 1)[1].split("</thead>", 1)[0]
     assert ">rwr<" not in thead and "genetic ev." not in thead   # optional columns dropped
     assert ">composite<" not in thead and ">bfwalk<" in thead    # the score that ran is shown
-    assert html.count("<details ") == len(ann)                   # every candidate still rendered
+    assert html.count('class="trace-entry"') == len(ann)  # every candidate still rendered
 
     assert "Partial run:" in html
     for artifact in ("gene_sets.parquet", "interactions.parquet", "ot_disease_subset.parquet"):

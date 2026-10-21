@@ -1212,3 +1212,18 @@ seeds (any gene scoring > 0 is a seed), so it could be moved or dropped.
   header says when the graph carries user weights.
 - README: one sentence; docs/README: a detailed Stage 4 section. 10 new
   tests; 134 tests passed.
+
+
+## Prompt 47 — evidence trace in a side panel
+
+> in stage 7, the report html should include Evidence trace as a pop up
+> window on the right side of the table when the user clics on the gene of
+> interest, instead of a list below the main table.
+
+**Changes:** `stage7_report.py`: the evidence traces moved from a list of
+`<details>` blocks below the table into a fixed side panel on the right
+(`<aside id="tracepanel">`, hidden until a symbol is clicked). Clicking a
+symbol shows that gene's trace and highlights its row; another click
+switches gene; `×` or Esc closes it; below 50rem the panel covers the page.
+Tests now check the panel markup; docs updated; example report regenerated
+and checked in headless Chrome at desktop and phone widths. 134 tests passed.

@@ -680,8 +680,12 @@ python3 pipeline/stage7_report.py --run-dir out/
   header to sort; `rwr`/`bfwalk` columns appear only if those methods
   ran). Stage 6's `genetic_evidence_score` is not shown: it is 0 for every
   candidate;
-- a **click-to-expand evidence trace** for each of the top 100 candidates
-  (`--n-traces`; the table still lists every candidate) — its ranking
+- an **evidence-trace side panel**: clicking the symbol of one of the top 100
+  candidates (`--n-traces`; the table still lists every candidate) opens a
+  panel on the right of the table with that gene's trace, and highlights its
+  row; clicking another symbol switches the panel to that gene, and `×` or
+  Esc closes it (on a narrow screen the panel covers the page). The trace
+  shows its ranking
   score, the disease-relevant (GSEA) pathways it shares with seed
   genes (with the number of seeds in each; and the disease-relevant pathways
   without seeds it is a member of), its Open
@@ -690,7 +694,7 @@ python3 pipeline/stage7_report.py --run-dir out/
   matching Stage 3's scoping).
 
 Genes are displayed by HGNC symbol; the Ensembl gene ID stays the internal
-key (its own column, and the anchor id for each detail block). Symbols are
+key (its own column, and the id of each trace in the panel). Symbols are
 resolved from `genes.parquet` at render time only.
 
 Only `manifest.json` and `candidates_annotated.tsv` are required; every
@@ -710,7 +714,7 @@ ranked table — same ordering as Stage 6's `candidates_annotated.tsv`):
 3  GENE23  ENSG00000000023  0.2500  unknown       unknown
 ```
 
-Expanding `GENE22` shows: pathways shared with seed genes *Child Broad
+Clicking `GENE22` opens the panel with: pathways shared with seed genes *Child Broad
 Signaling* (10 seed genes); its `known_drug` Open Targets row (0.500,
 chembl); and the interactions `GENE03 → GENE22`, `GENE05 → GENE22` and
 `GENE07 — GENE22`, each badged "with seed" (`N29 → N22` is omitted: N29 is
@@ -719,9 +723,9 @@ not in the graph).
 `python3 -m pytest tests/test_stage7_report.py tests/test_run_pipeline.py`
 runs the tests (10): `evidence_trace`'s disease-pathway / graph-scoping /
 datatype logic on a hand-built run, `build_report` producing a
-self-contained symbol-labelled HTML with one detail block per candidate and
-no genetic-evidence column,
-detail blocks (and symbol links) only for the top `--n-traces`, a partial run
+self-contained symbol-labelled HTML with one trace per candidate, all in the
+side panel (closed by default, after the table), and no genetic-evidence column,
+traces (and symbol links / row highlighting) only for the top `--n-traces`, a partial run
 directory (only `manifest.json` + `candidates_annotated.tsv`) still
 rendering with the optional columns/trace sections marked unavailable, a
 `run_pipeline --from-manifest --report` smoke test that Stages 2–6 chain
