@@ -144,14 +144,14 @@ def run(args):
     out_dir = args.out_dir or args.catalogue_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Reading the GSEA catalogue (Reactome rows) ...")
+    logger.info("Reading the GSEA catalogue (Reactome only)")
     catalogue = pd.read_parquet(args.catalogue_dir / "genetic_disease_pathway_catalogue.parquet",
                                 columns=CATALOGUE_COLUMNS, filters=[("source", "==", "Reactome")])
     if args.diseases:
         requested = {disease.strip() for disease in args.diseases.split(",") if disease.strip()}
         unknown = sorted(requested - set(catalogue["diseaseId"]))
         if unknown:
-            logger.warning("Not in the GSEA catalogue (not tested, or not an Open Targets ID): %s", ", ".join(unknown))
+            logger.warning("Not in the GSEA catalogue (not tested, or not an Open Targets ID)")
         catalogue = catalogue[catalogue["diseaseId"].isin(requested)]
     n_tested, selected = select_reactome_pathways(catalogue, args.fdr)
     disease_ids = sorted(selected["diseaseId"].unique())
@@ -164,7 +164,7 @@ def run(args):
         selected = selected[selected["diseaseId"].isin(disease_ids)]
         logger.info("--n-diseases: building the first %d.", len(disease_ids))
 
-    logger.info("Mapping gene symbols to Ensembl with %s ...", args.target_dir)
+    logger.info("Mapping gene symbols to Ensembl", args.target_dir)
     genes_df = build_genes_table(read_target_table(sorted(args.target_dir.glob("*.parquet"))))
     index = build_symbol_index(genes_df)
     gene_sets, gmt_coverage = read_reactome_gene_sets(args.catalogue_dir / "merged_gene_sets.gmt", index)
