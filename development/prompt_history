@@ -1401,3 +1401,47 @@ in build_graph_catalogue.py (per-seed files kept as plain TSV).
   leave_one_out.py uses Stage 2's holdout option. Known limitation documented:
   the graph's pathways were selected with the held-out seed included.
   149 tests passed. Not run on the real catalogue (left to the user).
+
+
+## Prompt 55 — validation/ cleanup: inconsistencies and README
+
+> /hackathon-cleanup work only on validation/. search for inconsistencies across
+> scripts, READMES and comments in the code. ask how to resolve if any appear.
+> clarify the documentation, make it simple and minimalistic but keep some
+> information about the validation approaches. the validation/README should be
+> structured more or less as follows: three sentences overview, data section,
+> Disease graph catalogue, Leave-one-out, This pipeline vs Open Targets Platform
+> scores, keep the input and output structures.
+
+Inconsistencies found, and the answers given:
+1. Disease IDs: the catalogue uses Open Targets 26.03 IDs, the baseline reads
+   26.06 associations, where many diseases have new MONDO IDs. Only 11 of the
+   100 locally built catalogue diseases were found, so 89 were compared against
+   an all-zero baseline; the README even stated "EFO_0003767, not MONDO_0005265"
+   as a rule. Answer: map the IDs through the 26.06 disease table's
+   cross-references. After mapping: 100 of 100 found, none ambiguous.
+2. Seeds: the README said the genetic scores are the propagation seeds and that
+   unscored genes get 0; the code uses genes with score > 0, all weighted
+   equally. Answer: keep uniform seeds, fix the docs.
+3. The GSEA catalogue and its README are gitignored, but the validation README
+   pointed to them. Answer: the Data section says "available on request from
+   Open Targets (EMBL-EBI)"; the catalogue README stays local.
+
+**Changes:**
+- `validation/compare_scores.py`: new required `--disease-file` (Open Targets
+  disease parquet); `map_disease_ids` translates each catalogue ID with Stage
+  1's rule (same ID, else the first disease listing it in dbXRefs). Diseases
+  still not found are left out with a warning instead of getting an all-zero
+  baseline. The summary gets an `ot_diseaseId` column. Docstring: the baseline is
+  the highest datasource score, not a datatype score.
+- `validation/build_graph_catalogue.py`: the `--diseases` warning now lists the
+  unknown IDs (it computed them but did not print them); docstring says seeds
+  are weighted equally and IDs are 26.03's.
+- `validation/leave_one_out.py`: docstring says remaining seeds are weighted
+  equally.
+- `validation/README.md` rewritten: three-sentence overview, Data, Disease graph
+  catalogue, Leave-one-out, This pipeline vs Open Targets Platform scores;
+  commands and input/output trees kept, details trimmed.
+- `tests/test_leave_one_out.py`: the Open Targets fixture lists the test disease
+  under another ID with the catalogue ID as a cross-reference; new unit test
+  for `map_disease_ids`. 153 tests passed.

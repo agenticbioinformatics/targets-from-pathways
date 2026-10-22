@@ -3,10 +3,13 @@
 Reads leave_one_out.py's output (one <diseaseId>_leave_one_out/ directory per disease) and, per disease,
 compares three rankings of each held-out seed among the candidates of its own leave-one-out run:
 - bfwalk, rwr: the pipeline's scores;
-- open_targets: the gene's highest Open Targets score for the disease over every datatype except
-  genetic_association (the evidence that made it a seed). This is "sorting the Open Targets data by score"
-  without the answer. Scores come from --association-dir (Open Targets association_by_datasource_direct).
-Reports AUROC and recall@k for each (and a random ranking), a paired Wilcoxon test of the pipeline against
+- open_targets: the gene's highest Open Targets datasource score for the disease, over every datasource
+  except the genetic_association ones (the evidence that made it a seed). This is "sorting the Open Targets data
+  by score" without the answer. Scores come from --association-dir (Open Targets association_by_datasource_direct).
+The catalogue's disease IDs are Open Targets 26.03's; each is looked up in --disease-file (the release of
+--association-dir) by ID, else by cross-reference, since 26.06 keeps many older EFO IDs only as dbXRefs.
+A disease found in neither way is left out (logged), not compared against an all-zero baseline.
+Reports AUROC and recall@k for each (next to a random ranking's expectation), a paired Wilcoxon test of the pipeline against
 Open Targets on the per-gene AUROC, Spearman correlations between genetic evidence, the Open Targets score,
 BFWalk and RWR over the held-out seeds, and the same comparison over all candidates of the full run.
 
@@ -18,6 +21,7 @@ roc_curve_vs_open_targets_all_diseases.png.
 
 import argparse
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -25,6 +29,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.compute as pa_compute
 import pyarrow.dataset as pa_dataset
+import pyarrow.parquet as pa_parquet
 from scipy.stats import wilcoxon
 
 from leave_one_out import (
@@ -57,12 +62,13 @@ def parse_args(argv=None):
     parser.add_argument("--association-dir", type=Path, required=True,
                         help="Open Targets association_by_datasource_direct parquet directory, e.g. "
                         "data/opentargets/26.06/association_by_datasource_direct.")
+    parser.add_argument("--disease-file", type=Path, required=True,
+                        help="Open Targets disease parquet of the same release as --association-dir, to translate "
+                        "the catalogue's disease IDs, e.g. data/opentargets/26.06/disease/disease.parquet.")
     parser.add_argument("--diseases", default=None,
                         help="Only these diseases, comma-separated Open Targets IDs, e.g. EFO_0003767,MONDO_0004975.")
     parser.add_argument("--n-diseases", type=int, default=None, help="Only the first N diseases (sorted by ID).")
     parser.add_argument("--k", default="10,50,100,500,1000", help="Comma-separated k values for recall@k.")
-    parser.add_argument("--n-random", type=int, default=1000, help="Random rankings for the p-values. Default: 1000.")
-    parser.add_argument("--seed", type=int, default=0, help="Random seed. Default: 0.")
     return parser.parse_args(argv)
 
 
@@ -82,6 +88,25 @@ def select_diseases(loo_dir, diseases, n_diseases):
             raise SystemExit(f"--n-diseases must be at least 1 (got {n_diseases}).")
         available = available[:n_diseases]
     return available
+
+
+def map_disease_ids(diseases, disease_file):
+    """{catalogue disease ID: its ID in disease_file, or None}, by Stage 1's rule (resolve_disease_id): the same
+    ID, else the first disease listing it as a cross-reference ("EFO_0003767" -> xref "EFO:0003767")."""
+    disease_table = pa_parquet.read_table(disease_file, columns=["id", "dbXRefs"]).to_pandas()
+    known = set(disease_table["id"])
+    by_xref = {}
+    for disease_id, xrefs in zip(disease_table["id"], disease_table["dbXRefs"]):
+        if xrefs is not None:
+            for xref in xrefs:
+                by_xref.setdefault(xref, disease_id)
+    mapped = {}
+    for disease in diseases:
+        if disease in known:
+            mapped[disease] = disease
+        else:
+            mapped[disease] = by_xref.get(re.sub(r"^([A-Za-z]+)_", r"\1:", disease))
+    return mapped
 
 
 def ot_baselines(association_dir, diseases):
@@ -172,7 +197,7 @@ def disease_logger(log_path):
     return child
 
 
-def compare_disease(disease, disease_dir, baseline, ks, args, rng):
+def compare_disease(disease, ot_disease, disease_dir, baseline, ks):
     """Returns (summary rows, ranked seeds with Open Targets columns) or None."""
     log = disease_logger(disease_dir / "compare_scores.log")
     details = pd.read_csv(disease_dir / "scores_left_out_details.tsv", sep="\t")
@@ -180,7 +205,8 @@ def compare_disease(disease, disease_dir, baseline, ks, args, rng):
     if baseline.empty:
         log.warning("%s: no Open Targets evidence other than genetic association in --association-dir - every "
                     "candidate's baseline score is 0.", disease)
-    log.info("Disease %s: %d held-out seeds, %d ranked.", disease, len(details), len(ranked))
+    log.info("Disease %s (Open Targets %s): %d held-out seeds, %d ranked.", disease, ot_disease, len(details),
+             len(ranked))
     if len(ranked) < 2:
         log.warning("Fewer than 2 ranked held-out seeds - nothing to compare.")
         return None
@@ -188,7 +214,7 @@ def compare_disease(disease, disease_dir, baseline, ks, args, rng):
     ranked.to_csv(disease_dir / "compare_scores_details.tsv", sep="\t", index=False, na_rep="NA")
 
     rankings = {"bfwalk": ranked["bfwalk_rank"], "rwr": ranked["rwr_rank"], "open_targets": ranked["ot_rank"]}
-    table = metrics_table(rankings, ranked["n_candidates"], ks, args.n_random, rng)
+    table = metrics_table(rankings, ranked["n_candidates"], ks)
     log.info("\n== Leave-one-out recovery of the held-out seeds\n%s", format_metrics(table))
     columns = ["genetic_evidence", "ot_score", "bfwalk_score", "rwr_score"]
     log.info("\n== Spearman correlation over the held-out seeds (their genetic evidence, their Open Targets "
@@ -197,14 +223,14 @@ def compare_disease(disease, disease_dir, baseline, ks, args, rng):
     if (disease_dir / "full" / "candidate_scores.tsv").exists():
         log.info("\n== %s", full_run_comparison(disease_dir / "full", baseline))
     plot_roc(rankings, ranked["n_candidates"], disease_dir / "roc_curve_vs_open_targets.png",
-             f"{disease}: leave-one-out vs Open Targets, {len(ranked)} held-out seeds", rng)
+             f"{disease}: leave-one-out vs Open Targets, {len(ranked)} held-out seeds")
 
     log.info("\n== Is the pipeline better than sorting the Open Targets data by score? (paired, per held-out seed)")
     summary = []
     for method in PIPELINE_RANKINGS:
         comparison = paired_comparison(ranked, method)
         log.info(verdict_text(method, comparison))
-        summary.append({"diseaseId": disease, "method": method, "n_held_out": len(ranked), **comparison,
+        summary.append({"diseaseId": disease, "ot_diseaseId": ot_disease, "method": method, "n_held_out": len(ranked), **comparison,
                         "verdict": verdict(comparison)})
     return summary, ranked.assign(diseaseId=disease)
 
@@ -222,15 +248,22 @@ def main(argv=None):
     loo_dir = args.leave_one_out_dir
     setup_logging(loo_dir / "compare_scores.log")
     ks = parse_ks(args.k)
-    rng = np.random.default_rng(args.seed)
     diseases = select_diseases(loo_dir, args.diseases, args.n_diseases)
-    logger.info("Diseases: %d. Reading Open Targets associations from %s ...", len(diseases), args.association_dir)
-    baselines = ot_baselines(args.association_dir, diseases)
+    ot_ids = map_disease_ids(diseases, args.disease_file)
+    not_found = [disease for disease in diseases if ot_ids[disease] is None]
+    if not_found:
+        logger.warning("%d disease(s) not in %s, by ID or cross-reference - left out: %s", len(not_found),
+                       args.disease_file, ", ".join(not_found))
+    diseases = [disease for disease in diseases if ot_ids[disease] is not None]
+    n_translated = sum(ot_ids[disease] != disease for disease in diseases)
+    logger.info("Diseases: %d (%d found under another ID by cross-reference). Reading Open Targets associations "
+                "from %s ...", len(diseases), n_translated, args.association_dir)
+    baselines = ot_baselines(args.association_dir, sorted({ot_ids[disease] for disease in diseases}))
 
     summaries, all_ranked = [], []
     for disease in diseases:
-        result = compare_disease(disease, loo_dir / f"{disease}{LOO_SUFFIX}",
-                                 baselines.get(disease, pd.Series(dtype=float)), ks, args, rng)
+        result = compare_disease(disease, ot_ids[disease], loo_dir / f"{disease}{LOO_SUFFIX}",
+                                 baselines.get(ot_ids[disease], pd.Series(dtype=float)), ks)
         if result is not None:
             summaries.extend(result[0])
             all_ranked.append(result[1])
@@ -243,7 +276,7 @@ def main(argv=None):
     pooled = pd.concat(all_ranked, ignore_index=True)
     plot_roc({"bfwalk": pooled["bfwalk_rank"], "rwr": pooled["rwr_rank"], "open_targets": pooled["ot_rank"]},
              pooled["n_candidates"], loo_dir / "roc_curve_vs_open_targets_all_diseases.png",
-             f"Leave-one-out vs Open Targets, {pooled['diseaseId'].nunique()} diseases, {len(pooled)} seeds", rng)
+             f"Leave-one-out vs Open Targets, {pooled['diseaseId'].nunique()} diseases, {len(pooled)} seeds")
     logger.info("\n== Is the pipeline better than sorting the Open Targets data by score? Diseases per answer "
                 "(paired Wilcoxon per disease, p < %g):", ALPHA)
     counts = summary.pivot_table(index="method", columns="verdict", values="diseaseId", aggfunc="count", fill_value=0)

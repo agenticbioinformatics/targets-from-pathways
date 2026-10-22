@@ -7,7 +7,9 @@ For every disease in the GSEA catalogue (--catalogue-dir; see its README.md):
 2. Graph: exactly as Stage 3 builds it (stage3_build_graph.build_graph): nodes are all genes on those pathways
    (gene lists from merged_gene_sets.gmt), edges the curated Reactome functional interactions between them,
    directed and signed, unweighted.
-3. Seeds: the disease's genes in genetic_gene_scores_input.parquet (genetic_association score > 0).
+3. Seeds: the disease's genes in genetic_gene_scores_input.parquet (genetic_association score > 0). The score
+   is kept in disease_seed_genes.tsv; propagation weights all seeds equally.
+Disease IDs are those of the catalogue (Open Targets 26.03).
 Gene symbols are mapped to Ensembl gene IDs with the Open Targets target table, as in Stage 1.
 
 Writes --out-dir/disease_graph_catalogue/, with one <diseaseId>_disease_graph/ directory per included disease
@@ -156,7 +158,8 @@ def run(args):
         requested = {disease.strip() for disease in args.diseases.split(",") if disease.strip()}
         unknown = sorted(requested - set(catalogue["diseaseId"]))
         if unknown:
-            logger.warning("Not in the GSEA catalogue (not tested, or not an Open Targets ID)")
+            logger.warning("Not in the GSEA catalogue (not tested, or not an Open Targets 26.03 ID): %s",
+                           ", ".join(unknown))
         catalogue = catalogue[catalogue["diseaseId"].isin(requested)]
     n_tested, selected = select_reactome_pathways(catalogue, args.fdr)
     disease_ids = sorted(selected["diseaseId"].unique())

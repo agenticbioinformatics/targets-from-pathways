@@ -3,7 +3,7 @@
 For each disease, its graph and seeds come from <catalogue>/<diseaseId>_disease_graph/. Every seed that is a
 graph node is held out in turn: it is removed from the seeds, every graph gene that is not one of the remaining
 seeds is a candidate (the held-out gene among them), and the candidates are scored with Stage 5's BFWalk and
-random walk with restart (pipeline/stage5_score_candidates.py). The held-out gene's rank among the candidates
+random walk with restart (pipeline/stage5_score_candidates.py), all remaining seeds weighted equally. The held-out gene's rank among the candidates
 measures whether the pipeline recovers it. The graph itself is not rebuilt: its pathways were selected by a GSEA
 that included the held-out gene, so this measures recovery given the disease's pathways.
 
@@ -12,10 +12,19 @@ Writes into --out-dir/<diseaseId>_leave_one_out/:
 - <gene>/candidate_scores.tsv     every candidate's bfwalk_score and rwr_score with <gene> held out
 - <gene>/result.json, seed.log    the held-out gene's scores and ranks, and what was run
 - scores_left_out_details.tsv     one row per held-out seed (read by compare_scores.py)
-- metrics.tsv, leave_one_out.log  AUROC and recall@k of BFWalk and RWR next to a random ranking
-- roc_curve.png                   ROC curves of BFWalk, RWR and a random ranking
-and into --out-dir: leave_one_out_summary.tsv (one row per disease and method), leave_one_out.log, and
-roc_curve_all_diseases.png (every held-out seed of every disease pooled).
+- cache_key.json                  what the scores were computed from (see below)
+- metrics.tsv, leave_one_out.log  AUROC and recall@k of BFWalk and RWR next to a random ranking's expectation
+- roc_curve.png                   ROC curves of BFWalk and RWR, with the random ranking (AUROC 0.500) as diagonal
+and into --out-dir: leave_one_out_summary.tsv (one row per disease and method), leave_one_out.log,
+roc_curve_all_diseases.png (every held-out seed of every disease pooled), roc_curves_per_disease.png (one curve
+per disease and method, each method in shades of its own colour) and roc_curves_per_disease_<method>.png (one
+curve per disease for that method); the per-disease plots also show the pooled curve of all diseases.
+
+Caching: a disease is scored again only if something its scores depend on changed: the sha256 of its graph and
+seed files (CACHE_INPUT_FILES), --restart-prob, --bfwalk-alpha, the BFWalk version or the held-out seeds (set by
+--max-seeds and --seed). Otherwise its scores are read back from scores_left_out_details.tsv; the metrics and
+plots are always recomputed, so --k takes effect. cache_key.json is written last, so an interrupted disease is
+scored again. --recompute ignores the cache.
 
 Metrics, over the held-out seeds:
 - rank: mid-rank among the candidates (ties count half), 1 = best.
@@ -23,11 +32,12 @@ Metrics, over the held-out seeds:
   The ROC curve plots, for each fraction x of the candidates taken from the top, the fraction of held-out genes
   ranked within it; its area is this AUROC.
 - recall@k: the fraction of held-out genes ranked within the top k.
-- random: a uniformly random ranking of the same candidates; expectation, plus a permutation p-value of each
-  method's metric against --n-random random rankings.
+- random: the expectation of a uniformly random ranking of the same candidates (AUROC 0.500; recall@k = k /
+  number of candidates, averaged); its ROC curve is the diagonal. No random ranking is sampled.
 """
 
 import argparse
+import importlib.metadata
 import json
 import logging
 import os
@@ -47,13 +57,21 @@ import pandas as pd  # noqa: E402
 VALIDATION_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(VALIDATION_DIR.parent / "pipeline"))
 import stage5_score_candidates as sc  # noqa: E402
-from stage0_schemas import SeedGenesSchema, load_graph  # noqa: E402
+from stage0_schemas import SeedGenesSchema, load_graph, sha256_of_file  # noqa: E402
 
 METHODS = ["bfwalk", "rwr"]
 GRAPH_SUFFIX = "_disease_graph"
 LOO_SUFFIX = "_leave_one_out"
+CACHE_FILE = "cache_key.json"
+# The files of a catalogue disease that its scores are computed from (graph_metadata.json is only a summary).
+CACHE_INPUT_FILES = ["graph_weight.npz", "graph_sign.npz", "graph_gene_index.json", "disease_seed_genes.tsv"]
 RECORD_COLUMNS = ["gene", "status", "genetic_evidence", "n_seeds", "n_candidates",
                   "bfwalk_score", "bfwalk_rank", "rwr_score", "rwr_rank"]
+# Per-disease ROC plots: each method's diseases are shades of its colour map.
+METHOD_COLOUR_MAPS = {"bfwalk": "Blues", "rwr": "Oranges"}
+MAX_LEGEND_DISEASES = 20
+# A uniformly random ranking's expected AUROC; its ROC curve is the diagonal.
+RANDOM_AUROC = 0.5
 
 logger = logging.getLogger("leave_one_out")
 
@@ -77,11 +95,12 @@ def parse_args(argv=None):
     parser.add_argument("--max-seeds", type=int, default=None,
                         help="Hold out at most this many seeds per disease, a random sample (--seed). Default: all.")
     parser.add_argument("--k", default="10,50,100,500,1000", help="Comma-separated k values for recall@k.")
-    parser.add_argument("--n-random", type=int, default=1000, help="Random rankings for the p-values. Default: 1000.")
-    parser.add_argument("--seed", type=int, default=0, help="Random seed (seed sample, random rankings). Default: 0.")
+    parser.add_argument("--seed", type=int, default=0, help="Random seed for the --max-seeds sample. Default: 0.")
     parser.add_argument("--restart-prob", type=float, default=0.5, help="RWR restart probability. Default: 0.5.")
     parser.add_argument("--bfwalk-alpha", type=float, default=0.5, help="BFWalk attenuation. Default: 0.5.")
     parser.add_argument("--jobs", type=int, default=1, help="Held-out seeds scored in parallel. Default: 1.")
+    parser.add_argument("--recompute", action="store_true",
+                        help="Score every disease again, even if its cached results match its inputs.")
     return parser.parse_args(argv)
 
 
@@ -115,41 +134,23 @@ def ranking_metrics(ranks, n_candidates, ks):
     return metrics
 
 
-def random_ranks(n_candidates, size, rng):
-    """size random rankings: each held-out gene at a uniform rank among its own candidates."""
+def random_expected(n_candidates, ks):
+    """Expected metrics of a uniformly random ranking: AUROC 0.5, and recall@k = k / candidates, averaged."""
     n_candidates = np.asarray(n_candidates, dtype=int)
-    return rng.integers(1, n_candidates + 1, size=(size, len(n_candidates)))
-
-
-def random_metrics(n_candidates, ks, n_random, rng):
-    """Expected metrics of a uniformly random ranking, and n_random sampled values of each metric."""
-    n_candidates = np.asarray(n_candidates, dtype=int)
-    expected = {"auroc": 0.5}
+    expected = {"auroc": RANDOM_AUROC}
     for k in ks:
         expected[f"recall@{k}"] = float(np.mean(np.minimum(k, n_candidates) / n_candidates))
-    sampled_ranks = random_ranks(n_candidates, n_random, rng)
-    samples = {"auroc": np.nanmean((n_candidates - sampled_ranks) / np.maximum(n_candidates - 1, 1), axis=1)}
-    for k in ks:
-        samples[f"recall@{k}"] = np.mean(sampled_ranks <= k, axis=1)
-    return expected, samples
+    return expected
 
 
-def permutation_p_value(observed, samples):
-    """One-sided: how often a random ranking does at least as well."""
-    return (1 + int(np.sum(samples >= observed - 1e-12))) / (1 + len(samples))
-
-
-def metrics_table(rankings, n_candidates, ks, n_random, rng):
+def metrics_table(rankings, n_candidates, ks):
     """rankings: {name: per-gene ranks}. Returns a DataFrame of metric rows, with the random ranking's
-    expectation and each ranking's permutation p-value against it."""
-    expected, samples = random_metrics(n_candidates, ks, n_random, rng)
+    expectation next to each."""
+    expected = random_expected(n_candidates, ks)
     rows = []
     for name, ranks in rankings.items():
-        observed = ranking_metrics(ranks, n_candidates, ks)
-        for metric, value in observed.items():
-            rows.append({"ranking": name, "metric": metric, "value": value,
-                         "random_expected": expected[metric],
-                         "p_vs_random": permutation_p_value(value, samples[metric])})
+        for metric, value in ranking_metrics(ranks, n_candidates, ks).items():
+            rows.append({"ranking": name, "metric": metric, "value": value, "random_expected": expected[metric]})
     return pd.DataFrame(rows)
 
 
@@ -158,11 +159,7 @@ def format_metrics(table):
     order = [m for m in ["auroc"] + [c for c in table["metric"].unique() if c.startswith("recall@")]]
     wide = wide.loc[order]
     wide["random (expected)"] = table.drop_duplicates("metric").set_index("metric").loc[order, "random_expected"]
-    lines = [wide.to_string(float_format=lambda v: f"{v:.3f}")]
-    p_values = table.pivot(index="metric", columns="ranking", values="p_vs_random").loc[order]
-    lines.append("\npermutation p-value vs random (one-sided, chance a random ranking does at least as well):")
-    lines.append(p_values.to_string(float_format=lambda v: f"{v:.4f}"))
-    return "\n".join(lines)
+    return wide.to_string(float_format=lambda v: f"{v:.3f}")
 
 
 def parse_ks(raw):
@@ -173,27 +170,75 @@ def parse_ks(raw):
     return ks
 
 
-def plot_roc(rankings, n_candidates, path, title, rng):
-    """ROC curve of each ranking: x = fraction of the other candidates ranked above the held-out gene, y = the
-    fraction of held-out genes recovered within that top fraction. Area under it = the mean AUROC."""
+def roc_curve(ranks, n_candidates):
+    """(x, y, AUROC): x = fraction of the other candidates ranked above the held-out gene, y = the fraction of
+    held-out genes recovered within that top fraction. Area under the curve = the mean AUROC."""
     n_candidates = np.asarray(n_candidates, dtype=float)
-    rankings = dict(rankings)
-    rankings["random"] = random_ranks(n_candidates, 1, rng)[0]
-    figure, axis = plt.subplots(figsize=(5, 5))
-    for name, ranks in rankings.items():
-        false_positive_fraction = (np.asarray(ranks, dtype=float) - 1) / np.maximum(n_candidates - 1, 1)
-        x = np.concatenate([[0.0], np.sort(false_positive_fraction), [1.0]])
-        y = np.concatenate([[0.0], np.arange(1, len(false_positive_fraction) + 1) / len(false_positive_fraction), [1.0]])
-        auroc = 1.0 - float(np.mean(false_positive_fraction))
-        style = {"linestyle": ":", "color": "grey"} if name == "random" else {}
-        axis.step(x, y, where="post", label=f"{name} (AUROC {auroc:.3f})", **style)
-    axis.plot([0, 1], [0, 1], linestyle="--", color="lightgrey", linewidth=1)
+    false_positive_fraction = (np.asarray(ranks, dtype=float) - 1) / np.maximum(n_candidates - 1, 1)
+    x = np.concatenate([[0.0], np.sort(false_positive_fraction), [1.0]])
+    y = np.concatenate([[0.0], np.arange(1, len(false_positive_fraction) + 1) / len(false_positive_fraction), [1.0]])
+    return x, y, 1.0 - float(np.mean(false_positive_fraction))
+
+
+def style_roc_axis(axis, title):
+    """Axes, labels, and the random ranking: the diagonal, AUROC 0.500."""
+    axis.plot([0, 1], [0, 1], linestyle=":", color="grey", linewidth=1.2, label=f"random (AUROC {RANDOM_AUROC:.3f})")
     axis.set_xlabel("fraction of candidates ranked above the held-out gene")
     axis.set_ylabel("fraction of held-out genes recovered")
     axis.set_title(title, fontsize=10)
     axis.set_xlim(0, 1)
     axis.set_ylim(0, 1)
+
+
+def plot_roc(rankings, n_candidates, path, title):
+    """ROC curve of each ranking (see roc_curve), next to the random ranking's diagonal."""
+    figure, axis = plt.subplots(figsize=(5, 5))
+    for name, ranks in rankings.items():
+        x, y, auroc = roc_curve(ranks, n_candidates)
+        axis.step(x, y, where="post", label=f"{name} (AUROC {auroc:.3f})")
+    style_roc_axis(axis, title)
     axis.legend(loc="lower right", fontsize=9)
+    figure.tight_layout()
+    figure.savefig(path, dpi=150)
+    plt.close(figure)
+
+
+def plot_roc_per_disease(pooled, methods, path, title):
+    """One ROC curve per disease and method, plus a thick curve of all diseases pooled per method.
+
+    pooled: the ranked held-out seeds of every disease (diseaseId, n_candidates, <method>_rank). With several
+    methods, each method has its own colour and its diseases are shades of it; a disease has the same shade in
+    every method, so its curves can be matched. With one method, the diseases have distinct colours and the
+    pooled curve is black. Diseases are listed in the legend only up to MAX_LEGEND_DISEASES."""
+    diseases = sorted(pooled["diseaseId"].unique())
+    list_diseases = len(diseases) <= MAX_LEGEND_DISEASES
+    figure, axis = plt.subplots(figsize=(8.5, 5.5))
+    for method in methods:
+        if len(methods) == 1:
+            prefix = ""
+            colours = [plt.cm.tab20(i % 20) for i in range(len(diseases))]
+            pooled_colour = "black"
+        else:
+            prefix = f"{method}: "
+            colour_map = plt.get_cmap(METHOD_COLOUR_MAPS[method])
+            colours = colour_map(np.linspace(0.3, 0.75, len(diseases)) if len(diseases) > 1 else [0.55])
+            pooled_colour = colour_map(1.0)
+        x, y, auroc = roc_curve(pooled[f"{method}_rank"], pooled["n_candidates"])
+        axis.step(x, y, where="post", color=pooled_colour, linewidth=2.8, zorder=3,
+                  label=f"{prefix}all diseases (AUROC {auroc:.3f})")
+        for i, disease in enumerate(diseases):
+            rows = pooled[pooled["diseaseId"] == disease]
+            x, y, auroc = roc_curve(rows[f"{method}_rank"], rows["n_candidates"])
+            if list_diseases:
+                label = f"{prefix}{disease} (AUROC {auroc:.3f})"
+            elif i == 0:
+                label = f"{prefix}{len(diseases)} diseases, one curve each"
+            else:
+                label = None
+            axis.step(x, y, where="post", color=colours[i], linewidth=1, alpha=0.85 if list_diseases else 0.4,
+                      label=label)
+    style_roc_axis(axis, title)
+    axis.legend(loc="upper left", bbox_to_anchor=(1.02, 1), fontsize=7.5, frameon=False)
     figure.tight_layout()
     figure.savefig(path, dpi=150)
     plt.close(figure)
@@ -271,6 +316,38 @@ def hold_out(gene, seeds, seed_dir):
     return record
 
 
+def package_version(name):
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def cache_key(disease_dir, held_out, args):
+    """Everything a disease's leave-one-out scores depend on."""
+    input_sha256 = {}
+    for name in CACHE_INPUT_FILES:
+        input_sha256[name] = sha256_of_file(disease_dir / name)
+    return {"input_sha256": input_sha256, "restart_prob": args.restart_prob, "bfwalk_alpha": args.bfwalk_alpha,
+            "bfwalk_version": package_version("bfwalk"), "held_out": [str(gene) for gene in held_out]}
+
+
+def cached_details(out_dir, key):
+    """The disease's scores_left_out_details.tsv if out_dir holds a complete run for exactly this key, else None."""
+    try:
+        stored = json.loads((out_dir / CACHE_FILE).read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+    details_path = out_dir / "scores_left_out_details.tsv"
+    if stored != key or not details_path.exists() or not (out_dir / "full" / "candidate_scores.tsv").exists():
+        return None
+    details = pd.read_csv(details_path, sep="\t")
+    for gene in details.loc[details["status"] == "ranked", "gene"]:
+        if not (out_dir / gene / "candidate_scores.tsv").exists():
+            return None
+    return details
+
+
 def disease_logger(log_path):
     """A logger writing to the disease's own leave_one_out.log as well as the run's log and the console."""
     child = logging.getLogger(f"leave_one_out.{log_path.parent.name}")
@@ -303,21 +380,30 @@ def run_disease(disease, args, ks, rng):
         log.warning("Fewer than 2 seeds in the graph: holding one out leaves nothing to propagate from - skipped.")
         return None
 
-    bfwalk_threads = max(1, (os.cpu_count() or 1) // max(1, args.jobs))
-    init_args = (disease_dir, args.restart_prob, args.bfwalk_alpha, bfwalk_threads)
     started = time.time()
-    records = run_seeds(seeds, held_out, out_dir, args.jobs, init_args)
-    details = pd.DataFrame(records)
-    details["genetic_evidence"] = details["gene"].map(evidence)
-    details = details.reindex(columns=RECORD_COLUMNS)
-    details.to_csv(out_dir / "scores_left_out_details.tsv", sep="\t", index=False, na_rep="NA")
+    key = cache_key(disease_dir, held_out, args)
+    details = None if args.recompute else cached_details(out_dir, key)
+    if details is not None:
+        log.info("Cached: %s already holds the scores for exactly these input files and parameters - scoring "
+                 "skipped (--recompute to score again).", out_dir)
+    else:
+        # Removed first, so a run interrupted from here on is not taken for a complete one.
+        (out_dir / CACHE_FILE).unlink(missing_ok=True)
+        bfwalk_threads = max(1, (os.cpu_count() or 1) // max(1, args.jobs))
+        init_args = (disease_dir, args.restart_prob, args.bfwalk_alpha, bfwalk_threads)
+        records = run_seeds(seeds, held_out, out_dir, args.jobs, init_args)
+        details = pd.DataFrame(records)
+        details["genetic_evidence"] = details["gene"].map(evidence)
+        details = details.reindex(columns=RECORD_COLUMNS)
+        details.to_csv(out_dir / "scores_left_out_details.tsv", sep="\t", index=False, na_rep="NA")
+        (out_dir / CACHE_FILE).write_text(json.dumps(key, indent=2))
 
     ranked = details[details["status"] == "ranked"]
     rankings = {method: ranked[f"{method}_rank"] for method in METHODS}
-    table = metrics_table(rankings, ranked["n_candidates"], ks, args.n_random, rng)
+    table = metrics_table(rankings, ranked["n_candidates"], ks)
     table.to_csv(out_dir / "metrics.tsv", sep="\t", index=False)
     plot_roc(rankings, ranked["n_candidates"], out_dir / "roc_curve.png",
-             f"{disease}: leave-one-out, {len(ranked)} held-out seeds", rng)
+             f"{disease}: leave-one-out, {len(ranked)} held-out seeds")
     log.info("Leave-one-out metrics (%d held-out seeds, median %d candidates, %.0f s):\n%s", len(ranked),
              int(ranked["n_candidates"].median()), time.time() - started, format_metrics(table))
 
@@ -327,7 +413,7 @@ def run_disease(disease, args, ks, rng):
                "median_candidates": float(ranked["n_candidates"].median())}
         for metric_row in table[table["ranking"] == method].itertuples():
             row[metric_row.metric] = metric_row.value
-            row[f"{metric_row.metric}_p_vs_random"] = metric_row.p_vs_random
+            row[f"{metric_row.metric}_random_expected"] = metric_row.random_expected
         summary.append(row)
     return summary, ranked.assign(diseaseId=disease)
 
@@ -401,12 +487,17 @@ def main(argv=None):
     pooled = pd.concat(all_ranked, ignore_index=True)
     plot_roc({method: pooled[f"{method}_rank"] for method in METHODS}, pooled["n_candidates"],
              args.out_dir / "roc_curve_all_diseases.png",
-             f"Leave-one-out, {pooled['diseaseId'].nunique()} diseases, {len(pooled)} held-out seeds", rng)
+             f"Leave-one-out, {pooled['diseaseId'].nunique()} diseases, {len(pooled)} held-out seeds")
+    per_disease_title = f"Leave-one-out per disease, {pooled['diseaseId'].nunique()} diseases"
+    plot_roc_per_disease(pooled, METHODS, args.out_dir / "roc_curves_per_disease.png", per_disease_title)
+    for method in METHODS:
+        plot_roc_per_disease(pooled, [method], args.out_dir / f"roc_curves_per_disease_{method}.png",
+                             f"{per_disease_title}: {method}")
     per_method = summary.groupby("method")[["auroc"] + [c for c in summary.columns if c.startswith("recall@")
-                                                         and not c.endswith("p_vs_random")]].mean()
+                                                         and not c.endswith("random_expected")]].mean()
     logger.info("Mean over %d diseases (each disease weighted equally):\n%s", summary["diseaseId"].nunique(),
                 per_method.to_string(float_format=lambda v: f"{v:.3f}"))
-    logger.info("Wrote %s and %s.", args.out_dir / "leave_one_out_summary.tsv",
+    logger.info("Wrote %s, %s and roc_curves_per_disease*.png.", args.out_dir / "leave_one_out_summary.tsv",
                 args.out_dir / "roc_curve_all_diseases.png")
     return 0
 
