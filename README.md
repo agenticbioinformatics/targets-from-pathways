@@ -13,6 +13,8 @@ seeds' signal over the graph (BFWalk by default, or random walk with restart) to
 non-seed gene, and annotates the ranking with Open Targets tractability and safety. The result is
 an interactive HTML report.
 
+![docs/pipeline.png](docs/pipeline.png)
+
 
 ## Installation
 

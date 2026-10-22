@@ -5,3 +5,4 @@ out*/
 validation/*
 !validation/*.py
 !validation/README.md
+docs/make_pipeline_figure.py
