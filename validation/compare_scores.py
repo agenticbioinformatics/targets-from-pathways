@@ -9,7 +9,7 @@ compares three rankings of each held-out seed among the candidates of its own le
 The catalogue's disease IDs are Open Targets 26.03's; each is looked up in --disease-file (the release of
 --association-dir) by ID, else by cross-reference, since 26.06 keeps many older EFO IDs only as dbXRefs.
 A disease found in neither way is left out (logged), not compared against an all-zero baseline.
-Reports AUROC and recall@k for each (next to a random ranking's expectation), a paired Wilcoxon test of the pipeline against
+Reports AUROC, AUPRC (as is and / prevalence) and recall@k for each (next to a random ranking's expectation), a paired Wilcoxon test of the pipeline against
 Open Targets on the per-gene AUROC, Spearman correlations between genetic evidence, the Open Targets score,
 BFWalk and RWR over the held-out seeds, and the same comparison over all candidates of the full run.
 
@@ -41,6 +41,8 @@ from leave_one_out import (
     mid_rank,
     parse_ks,
     plot_roc,
+    pr_curve,
+    prevalence,
 )
 from stage1_ingest import DATASOURCE_TO_DATATYPE
 
@@ -147,7 +149,10 @@ def paired_comparison(ranked, method):
     p_value = np.nan
     if np.any(difference != 0):
         p_value = float(wilcoxon(pipeline, open_targets, zero_method="wilcox").pvalue)
+    base = prevalence(ranked["n_candidates"])
     return {"pipeline_auroc": float(np.mean(pipeline)), "ot_auroc": float(np.mean(open_targets)),
+            "pipeline_auprc_fold_enrichment": pr_curve(ranked[PIPELINE_RANKINGS[method]], ranked["n_candidates"])[2] / base,
+            "ot_auprc_fold_enrichment": pr_curve(ranked["ot_rank"], ranked["n_candidates"])[2] / base,
             "n_better": int((difference > 0).sum()), "n_worse": int((difference < 0).sum()),
             "n_tied": int((difference == 0).sum()), "p_value": p_value}
 
@@ -230,8 +235,8 @@ def compare_disease(disease, ot_disease, disease_dir, baseline, ks):
     for method in PIPELINE_RANKINGS:
         comparison = paired_comparison(ranked, method)
         log.info(verdict_text(method, comparison))
-        summary.append({"diseaseId": disease, "ot_diseaseId": ot_disease, "method": method, "n_held_out": len(ranked), **comparison,
-                        "verdict": verdict(comparison)})
+        summary.append({"diseaseId": disease, "ot_diseaseId": ot_disease, "method": method,
+                        "n_held_out": len(ranked), **comparison, "verdict": verdict(comparison)})
     return summary, ranked.assign(diseaseId=disease)
 
 
@@ -281,8 +286,10 @@ def main(argv=None):
                 "(paired Wilcoxon per disease, p < %g):", ALPHA)
     counts = summary.pivot_table(index="method", columns="verdict", values="diseaseId", aggfunc="count", fill_value=0)
     logger.info(counts.reindex(columns=["better", "no_difference", "worse"], fill_value=0).to_string())
-    means = summary.groupby("method")[["pipeline_auroc", "ot_auroc"]].mean()
-    logger.info("\nMean AUROC over diseases:\n%s", means.to_string(float_format=lambda v: f"{v:.3f}"))
+    # AUPRC depends on each disease's prevalence: across diseases only its fold enrichment over random.
+    means = summary.groupby("method")[["pipeline_auroc", "ot_auroc", "pipeline_auprc_fold_enrichment",
+                                       "ot_auprc_fold_enrichment"]].mean()
+    logger.info("\nMean AUROC and AUPRC / prevalence over diseases:\n%s", means.to_string(float_format=lambda v: f"{v:.4f}"))
     logger.info("\nWrote %s and %s.", loo_dir / "compare_scores_summary.tsv",
                 loo_dir / "roc_curve_vs_open_targets_all_diseases.png")
     return 0

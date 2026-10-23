@@ -1445,3 +1445,62 @@ Inconsistencies found, and the answers given:
 - `tests/test_leave_one_out.py`: the Open Targets fixture lists the test disease
   under another ID with the catalogue ID as a cross-reference; new unit test
   for `map_disease_ids`. 153 tests passed.
+
+## Prompt 56 — leave-one-out: combined rankings, AUPRC, precision@k (conversation before /hackathon-cleanup)
+
+> Remove the per-disease ROC plots; add a combined score of BFWalk and RWR, tested with Wilcoxon against each
+> method and random. Then: signed-rank instead of rank-sum (paired data); a second combination, the best rank;
+> scores (min-max scaled) instead of ranks for the addition; then drop the addition and add reciprocal rank
+> fusion, Borda count, robust rank aggregation (Kolde et al.), union and intersection of top-k; AUPRC in addition
+> to AUROC; AUPRC compared within a disease and as AUPRC / prevalence across diseases; average precision, not
+> trapezoids; precision@k at a realistic follow-up depth.
+
+**Changes:**
+- `validation/leave_one_out.py`: rank aggregations `rrf`, `borda`, `rra`, `union`, `intersection`
+  (`combined_scores`), their ranks stored in `scores_left_out_details.tsv` and recomputed from
+  `candidate_scores.tsv` on every cache hit; AUPRC (pooled average precision), AUPRC / prevalence,
+  precision@k at `--follow-up-k` (default 20); `combined_score_tests.tsv` (one-sided Wilcoxon signed-rank, paired
+  by gene); two-panel ROC + precision-recall plots. Removed `roc_curves_per_disease*.png`.
+- `validation/compare_scores.py`: AUPRC in its metrics and summary.
+- Union of top-k turned out to be identical to the "best rank" combination, so it is kept once.
+
+## Prompt 57 — /hackathon-cleanup: check and simplify the combined values
+
+> make sure the combined values are calculated and reported correctly. also make sure that they are described
+> correctly in validation/README. remember to explain the calculated values in one-two sentences. also, in one
+> sentence explain why it is used for this comparison / combination of scores of presumably two complementary
+> methods. simplify the explanations if necessary. also simplify the output tables and figures if possible to
+> make then easily readable. make sure all the validation code works as expected.
+
+Scope: validation/ only (leave_one_out.py, compare_scores.py, README, tests).
+
+Errors found and fixed:
+1. Random baseline of AUPRC: reported as the prevalence (fold enrichment 1), but with few held-out genes a random
+   ranking's pooled AUPRC is well above it (simulated: 1.2 x with 50 genes, 2.5 x with 3). `random_auprc` now
+   estimates it from 200 random rankings (`RANDOM_DRAWS`), and the `random` row shows that.
+2. Per-gene "average precision / prevalence" (n / rank) averages harmonic(n), about 9, for a random ranking, not 1.
+   Replaced by average precision / a random ranking's expected average precision (n / (rank x harmonic(n))),
+   so 1 = random (`average_precision_vs_random`).
+3. Ranks on a cache hit differed from a fresh run (union top-k, 2 genes of EFO_0000096, up to 9 places):
+   `read_csv`'s default float parser changed the last digit of some scores and broke exact ties.
+   Fixed with `float_precision="round_trip"`; fresh, cached and recomputed ranks now identical.
+4. `pr_curve` looped over depths x genes (hours for the full catalogue pooled); now vectorised with sorting
+   (`top_k_size`), checked against a direct sum.
+
+Simplified outputs:
+- `metrics.tsv` and `leave_one_out_summary.tsv`: one row per ranking with the values as columns, plus a `random`
+  row, instead of long metric/value rows with a `*_random_expected` column per metric; precision@k only at the
+  follow-up depth.
+- `combined_score_tests.tsv`: one row per measure and combination (means under the combination, BFWalk, RWR and
+  random; p-values vs each), instead of one row per comparison.
+- Plots: short labels (BFWalk, RWR, RRF, Borda, RRA, union top-k, intersection top-k), one fixed colour per
+  ranking, methods drawn thicker; precision on a log scale; per-disease plot renamed `roc_pr_curve.png`.
+- `compare_scores_summary.tsv`: AUPRC only as fold enrichment, next to AUROC.
+
+Docs: module docstring shortened to point at validation/README.md; the README's leave-one-out section rewritten:
+each combination and each value in one or two sentences plus one sentence on why it is used here; the
+Wilcoxon tests; how to read the plots.
+
+Checked: 160 tests passed; leave_one_out.py on 5 cached diseases (fresh scoring of 2 diseases matched the
+cache), compare_scores.py on its output, build_graph_catalogue.py rebuilt EFO_0000178 byte-identical to the
+catalogue.
