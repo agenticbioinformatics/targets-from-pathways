@@ -265,9 +265,9 @@ def draw_pr(axis, rankings, n_candidates, title, follow_up_k, enrichment=False):
         top, bottom = max(top, precision.max()), min(bottom, precision.min())
     axis.axhline(baseline, linestyle=":", color="grey", linewidth=1.2, label=f"random  precision {value(baseline)}")
     axis.plot([], [], "o", color="white", markeredgecolor="black", markeredgewidth=0.6,
-              label=f"dot: top {follow_up_k} (follow-up depth)")
+              label=f"after top {follow_up_k} genes\n(better ranking is higher and further right)")
     axis.set_xlabel("recall: fraction of held-out genes within the top k")
-    axis.set_ylabel("precision / prevalence (fold over random)" if enrichment
+    axis.set_ylabel("precision / prevalence (x-fold over random)" if enrichment
                     else "precision: held-out genes / candidates in the top k")
     axis.set_title(title, fontsize=10)
     axis.set_xlim(0, 1)
@@ -290,7 +290,7 @@ def plot_roc_pr(rankings, n_candidates, path, title, follow_up_k, enrichment=Fal
     precision@follow_up_k (both / prevalence with enrichment, to pool diseases)."""
     figure, (roc_axis, pr_axis) = plt.subplots(1, 2, figsize=(14, 7))
     draw_roc(roc_axis, rankings, n_candidates, "ROC")
-    draw_pr(pr_axis, rankings, n_candidates, "Precision-recall" + (", fold over random" if enrichment else ""),
+    draw_pr(pr_axis, rankings, n_candidates, "PRC" + (" (x-fold enrichment over random)" if enrichment else ""),
             follow_up_k, enrichment)
     for axis in (roc_axis, pr_axis):
         axis.legend(loc="upper center", bbox_to_anchor=(0.5, -0.11), ncol=2, fontsize=8, frameon=False)
