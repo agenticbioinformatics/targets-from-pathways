@@ -1,8 +1,19 @@
 .vscode
 *cache*
+
 data/
 out*/
+docs/make_pipeline_figure.py
+
 validation/*
 !validation/*.py
 !validation/README.md
-docs/make_pipeline_figure.py
+
+# upload prelimiary results (26/10/2026, 7 diseases and 20 diseases)
+!validation/leave_one_out_7diseases/
+validation/leave_one_out_7diseases/*
+!validation/leave_one_out_7diseases/roc_pr_curve_combined_all_diseases.png
+
+!validation/leave_one_out_20diseases/
+validation/leave_one_out_20diseases/*
+!validation/leave_one_out_20diseases/roc_pr_curve_combined_all_diseases.png

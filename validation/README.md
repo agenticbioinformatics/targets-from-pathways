@@ -1,16 +1,19 @@
 # Validation
 
-Does the pipeline recover known disease-associated genes, and does it better than simply sorting the Open Targets Platform data by association score? We build a **disease graph catalogue**: one graph per disease from a genome-wide disease-pathway GSEA
-catalogue. We then **evaluate the pipeline**: we iteratively hold out each of the disease-associated genes and check how highly the pipeline ranks it, then rank the same held-out genes by their disease association scores from Open Targets and compare the two approaches.
+Here, we built a **disease graph catalogue**: one graph per disease from a disease-pathway GSEA catalogue (>2500 diseases in total). Every disease graph contains genes on disease-relevant pathways and functional interactions between them. The graph catalogue can be used to find new disease-specific genes and/or drug target candidates based on pathway topology. 
+
+
+We **evaluated the pipeline** to test if it can recover known disease-associated genes using leave-one-out cross-validation: we iteratively hold out each of the disease-associated genes and checked how highly the pipeline ranked it. We also examined the complementarity of the two network propagation algorithms (BFWalk and RWR) in recovering known disease-associated genes, and tested how to combine the highest-scoring genes from the two methods using five rank aggregation methods (Reciprocal Rank Fusion, Borda, Robust Rank Aggregation, union and intersection). We then ranked the same held-out genes by their disease association scores from Open Targets, and tested if the pipeline peforms better than simply sorting the Open Targets Platform data by association score.
 
 ## Data
 
-- Disease-pathway GSEA catalogue (Open Targets 26.03), in `validation/Disease_graph_catalogue/`. For now, available on request from Open Targets (EMBL-EBI). GSEA of every disease-associated genes in Open Targets, ranked by
-  their `genetic_association` score, against GO BP, Reactome and MSigDB Hallmark gene sets. Here we use:
-  - `genetic_disease_pathway_catalogue.parquet`: one row per disease and gene set,
-  - `merged_gene_sets.gmt`: gene sets (gene symbols),
-  - `genetic_gene_scores_input.parquet`: disease-associated genes and genetic-association scores.
-- Open Targets Platform 26.06 `target`, `disease` and `association_by_datasource_direct`, and functional interactions from Reactome `FIsInGene_04142025_with_annotations.txt` (Stage 1 of the pipeline downloads them into `data/`).
+- Disease-pathway GSEA catalogue (Open Targets 26.03), in `validation/Disease_graph_catalogue/`. Available on request from Open Targets (EMBL-EBI). GSEA of every disease-associated genes in Open Targets, ranked by
+  their `genetic_association` score, against GO BP, Reactome and MSigDB Hallmark gene sets. Here we used:
+  - `genetic_disease_pathway_catalogue.parquet`: one row per disease and gene set
+  - `merged_gene_sets.gmt`: gene sets (gene symbols)
+  - `genetic_gene_scores_input.parquet`: disease-associated genes and genetic-association scores
+- Open Targets Platform 26.06: `target`, `disease` and `association_by_datasource_direct`
+- functional interactions from Reactome `FIsInGene_04142025_with_annotations.txt`
 
 ## Disease graph catalogue
 
@@ -21,14 +24,14 @@ python validation/build_graph_catalogue.py \
     --fi-file data/reactome/FIsInGene_04142025_with_annotations.txt
 ```
 
-One graph per disease, built exactly as Stage 3 builds it:
-- **Pathways:** the disease's Reactome gene sets with FDR < 0.05 (FDR is recomputed over Reactome only for now). Diseases without such a pathway
+One graph per disease, built exactly as Stage 3 of the pipeline builds it:
+- **Pathways:** the disease's Reactome gene sets with FDR < 0.05 (Reactome only for now). Diseases without such a pathway
   are left out (2,555 of the 3,766 diseases with GSEA results are kept).
-- **Graph:** nodes are all genes on those pathways; edges are the curated Reactome functional interactions
-  between them, directed and signed, all of weight 1.
-- **Seeds:** disease-associated genes with a genetic-association score > 0.
+- **Graph:** nodes are all genes on these pathways; edges are the curated Reactome functional interactions
+  between them.
+- **Seeds:** disease-associated genes (those with genetic-association score > 0).
 
-This script can be run with `--diseases` (and comma-separated diease IDs) or `--n-diseases` (and number of dieases) for some diseases only.
+`build_graph_catalogue.py` can be optionally run with `--diseases` (comma-separated disease IDs) or `--n-diseases` (number of diseases) for some diseases only.
 
 Output directory structure:
 
@@ -44,7 +47,7 @@ validation/Disease_graph_catalogue/disease_graph_catalogue/
     └── disease_pathways.tsv              set_id, gene_set, source_db, pval, fdr
 ```
 
-Stage 5 can score any disease directly, run with: `python pipeline/stage5_score_candidates.py --graph-dir <disease directory>`.
+From here, Stage 5 of the pipeline can use the output directly for network propagation, run it with: `python pipeline/stage5_score_candidates.py --graph-dir <disease directory>`.
 
 ## Leave-one-out
 
@@ -54,13 +57,13 @@ python validation/leave_one_out.py \
     --diseases EFO_0003767,MONDO_0004975 --jobs 8
 ```
 
-For each disease, each seed is iteratively is held out from the seeds: Stage 5's BFWalk and RWR score them from the remaining seeds. A disease with fewer than 2 seeds in its graph is skipped.
+For each disease, every seed is iteratively held out from the seeds set: Stage 5 (BFWalk and RWR) scores these held-out genes using the remaining seeds.
 
-Without `--diseases` or `--n-diseases`, every disease in the catalogue is run. `--max-seeds N` holds out a random sample of N seeds per disease (`--seed`). A disease already scored from the same input files and parameters is not scored again; but `--recompute` can force re-running.
+Without `--diseases` or `--n-diseases`, every disease in the catalogue is run. `--max-seeds N` holds out a random sample of N seeds per disease (`--seed`). A disease already scored from the same input files and parameters is not scored again; but `--recompute` forces re-scoring.
 
 ### Combining BFWalk and RWR
 
-BFWalk and RWR propagate the signal from the same seeds in different ways, so each may recover genes the other misses, making the two methods complementary. To evaluate this complementarity and how we should combine the two methods properly, we compare five methods of merging their rankings:
+BFWalk and RWR propagate the signal from seeds over the graph in different ways, so each may recover genes the other misses, making the two methods complementary. To evaluate this complementarity and how the two methods should combined properly, we compared five methods of aggregating their rankings:
 - **Reciprocal Rank Fusion**, RRF (Cormack et al. 2009): each gene scores 1 / (60 + rank) in each method, and the two scores are added. The constant 60 flattens the differences between the very top ranks, so no single rank dominates. Genes near the top of both lists score highest, but a very high rank in one list still counts.
 - **Borda**: genes are ordered by the sum of their two ranks, which is the same as ordering by their average rank. It tests whether the two methods’ average opinion beats either method alone.
 - **Robust Rank Aggregation**, RRA (Kolde et al. 2012): each rank is converted to a fraction of the list (rank / number of candidates) and compared with what two random rankings would give. The gene’s score is the probability that random ranks would do at least as well as its best rank, or as well as both of its ranks, whichever is smaller.
@@ -69,7 +72,7 @@ BFWalk and RWR propagate the signal from the same seeds in different ways, so ea
 
 ### Performance metrics
 
-We evaluate and compare BFWalk, RWR, each combination method from above, and a uniformly random ranking of the same candidates using the following performance metrics:
+We evaluated and compared BFWalk, RWR, each combination method from above, and a uniformly random ranking of the same candidates using the following performance metrics:
 - **AUROC**: for each held-out gene, the fraction of the other candidates it outranks, averaged over all
   held-out genes. 0.5 is random and 1 is perfect.
 - **AUPRC**: the area under the precision-recall curve. The held-out genes from all runs are pooled, and every run's list is cut at the same depth k. As k grows, recall is the fraction of held-out genes found in the top k, and precision is the number of those genes divided by the total number of genes in all the top-k lists.
@@ -113,6 +116,15 @@ validation/leave_one_out/
         ├── result.json                      the held-out gene's scores and ranks
         └── seed.log
 ```
+
+### Preliminary results
+
+
+Both BFWalk and RWR perform better than random in recovering known-disease associated genes. ROC shows that both methods perform the same, and that all rank aggregation methods perform the same as BFWalk and RWR. However, ROC is not suitable for unbalanced datasets. PRC, which is more suitable for such datasets, shows that RWR performs overall better than BFWalk, and that four rank aggregation methods (RRF, Borda, RRA and intersection) perform better than any of the two methods. These results show that BFWalk and RWR are complementary, and that aggregating ranks from BFWalk and RWR is a better choice in recovering known disease-associated genes than using any of the two methods alone.
+
+![leave_one_out_7diseases/roc_pr_curve_combined_all_diseases.png](leave_one_out_7diseases/roc_pr_curve_combined_all_diseases.png)
+*Figure 1: ROC and PRC for BFWalk, RWR and five rank aggregation methods (RRF, Borda, RRA, union and intersection) in 7 tested diseases.*
+
 
 ## This pipeline vs Open Targets Platform scores
 
