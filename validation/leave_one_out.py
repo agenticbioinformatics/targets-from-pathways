@@ -82,7 +82,7 @@ def parse_args(argv=None):
                         help="Only the first N diseases of the catalogue (sorted by ID).")
     parser.add_argument("--max-seeds", type=int, default=None,
                         help="Hold out at most this many seeds per disease, a random sample (--seed). Default: all.")
-    parser.add_argument("--k", default="10,50,100,500,1000",
+    parser.add_argument("--k", default="10,50,100",
                         help="Comma-separated k values for recall@k and precision@k.")
     parser.add_argument("--follow-up-k", type=int, default=20,
                         help="The depth whose genes would realistically be followed up: precision@k at it is "
@@ -520,8 +520,8 @@ def run_disease(disease, args, ks, rng):
     held_out = seeds
     if args.max_seeds is not None and len(seeds) > args.max_seeds:
         held_out = sorted(rng.choice(seeds, args.max_seeds, replace=False))
-    log.info("%s: %d genes in the graph, %d seeds (%d of the disease's %d scored genes are not in the graph and "
-             "cannot be held out); holding out %d.", disease, len(gene_index), len(seeds),
+    log.info("%s: %d genes in the graph, %d seeds (%d / %d disease-associated genes are not in the graph); "
+             "holding out %d.", disease, len(gene_index), len(seeds),
              len(seed_table) - len(seeds), len(seed_table), len(held_out))
     if len(seeds) < 2:
         log.warning("Fewer than 2 seeds in the graph: holding one out leaves nothing to propagate from - skipped.")
@@ -531,8 +531,7 @@ def run_disease(disease, args, ks, rng):
     key = cache_key(disease_dir, held_out, args)
     details = None if args.recompute else cached_details(out_dir, key)
     if details is not None:
-        log.info("Cached: %s already holds the scores for exactly these input files and parameters - scoring "
-                 "skipped (--recompute to score again).", out_dir)
+        log.info("Cached: scores already exist (--recompute to score again).")
         details = add_combined_ranks(details, out_dir)
     else:
         # Removed first, so a run interrupted from here on is not taken for a complete one.
@@ -610,7 +609,6 @@ def main(argv=None):
     logger.info("leave_one_out.py %s", " ".join(sys.argv[1:] if argv is None else argv))
 
     diseases = select_diseases(args.catalogue, args.diseases, args.n_diseases)
-    logger.info("Diseases: %d.", len(diseases))
     summaries, all_ranked = [], []
     try:
         for n, disease in enumerate(diseases, start=1):
@@ -636,15 +634,10 @@ def main(argv=None):
     plot_roc_pr({ranking: pooled[f"{ranking}_rank"] for ranking in RANKINGS}, pooled["n_candidates"],
                 args.out_dir / "roc_pr_curve_combined_all_diseases.png", title, args.follow_up_k, enrichment=True)
     tests = write_combined_score_tests(pooled, args.out_dir / "combined_score_tests.tsv", args.seed)
-    logger.info("Is any rank aggregation better than BFWalk, RWR, or random? Per-gene means and one-sided Wilcoxon "
-                "signed-rank p-values (for all diseases):\n%s", tests[tests["diseaseId"] == "all"]
-                .drop(columns=["diseaseId", "n_held_out"]).to_string(index=False, float_format=lambda v: f"{v:.3g}"))
     # AUPRC and precision@k depend on each disease's prevalence: across diseases only their fold enrichments.
-    per_ranking = summary.groupby("ranking", sort=False)[
-        ["auroc", "auprc_fold_enrichment", f"precision@{args.follow_up_k}_fold_enrichment"]
-        + [f"recall@{k}" for k in ks]].mean()
-    logger.info("Mean over %d diseases:\n%s", summary["diseaseId"].nunique(),
-                format_metrics(per_ranking))
+    metrics = (["auroc", "auprc_fold_enrichment", f"precision@{args.follow_up_k}_fold_enrichment"]
+               + [f"recall@{k}" for k in ks])
+    log_summary(summary, tests, metrics)
     logger.info("Wrote %s, roc_curve_all_diseases.png, roc_pr_curve_combined_all_diseases.png and "
                 "combined_score_tests.tsv.", args.out_dir / "leave_one_out_summary.tsv")
     return 0
@@ -660,6 +653,42 @@ def write_combined_score_tests(pooled, path, seed):
     tests = pd.DataFrame(rows)
     tests.to_csv(path, sep="\t", index=False, na_rep="NA")
     return tests
+
+
+def method_wins(summary, metrics):
+    """BFWalk vs RWR, disease by disease. Returns (per metric: the number of diseases where BFWalk scores
+    higher, where RWR does, and where they tie; per disease: the number of metrics where each scores higher)."""
+    by_disease = summary.set_index(["ranking", "diseaseId"])[metrics]
+    bfwalk, rwr = by_disease.loc["bfwalk"], by_disease.loc["rwr"]
+    per_metric = pd.DataFrame({"bfwalk_higher": (bfwalk > rwr).sum(), "rwr_higher": (rwr > bfwalk).sum(),
+                               "tied": (bfwalk == rwr).sum()})
+    per_metric.index.name = "metric"
+    per_disease = pd.DataFrame({"bfwalk_higher": (bfwalk > rwr).sum(axis=1), "rwr_higher": (rwr > bfwalk).sum(axis=1)})
+    return per_metric, per_disease
+
+
+def log_summary(summary, tests, metrics):
+    """Is any rank aggregation better than BFWalk, RWR, or random: each ranking's metrics averaged over the
+    diseases, then the pooled p-values of combined_score_tests; last, BFWalk vs RWR disease by disease."""
+    n_diseases = summary["diseaseId"].nunique()
+    per_ranking = summary.groupby("ranking", sort=False)[metrics].mean()
+    pooled = tests[tests["diseaseId"] == "all"]
+    sections = [f"Mean over {n_diseases} diseases:\n{format_metrics(per_ranking)}"]
+    for other in ["random"] + METHODS:
+        p_values = pooled.pivot(index="combination", columns="measure", values=f"p_vs_{other}")
+        sections.append(f"p_vs_{other}: one-sided Wilcoxon signed-rank p-values (all diseases pooled) that the "
+                        f"combination's per-gene measure is greater than {RANKING_LABELS.get(other, other)}'s:\n"
+                        + format_metrics(p_values.reindex(index=COMBINATIONS, columns=list(PER_GENE))))
+    logger.info("Is any rank aggregation better than BFWalk, RWR, or random?\n\n%s", "\n\n".join(sections))
+
+    per_metric, per_disease = method_wins(summary, metrics)
+    logger.info("BFWalk vs RWR: the number of diseases (of %d) where each scores higher, per metric:\n%s",
+                n_diseases, per_metric.to_string())
+    bfwalk_diseases = int((per_disease["bfwalk_higher"] > per_disease["rwr_higher"]).sum())
+    rwr_diseases = int((per_disease["rwr_higher"] > per_disease["bfwalk_higher"]).sum())
+    logger.info("In total (higher on more of the %d metrics): BFWalk in %d of %d diseases, RWR in %d, "
+                "neither in %d.", len(metrics), bfwalk_diseases, n_diseases, rwr_diseases,
+                n_diseases - bfwalk_diseases - rwr_diseases)
 
 
 if __name__ == "__main__":
