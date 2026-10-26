@@ -676,19 +676,13 @@ def log_summary(summary, tests, metrics):
     sections = [f"Mean over {n_diseases} diseases:\n{format_metrics(per_ranking)}"]
     for other in ["random"] + METHODS:
         p_values = pooled.pivot(index="combination", columns="measure", values=f"p_vs_{other}")
-        sections.append(f"p_vs_{other}: one-sided Wilcoxon signed-rank p-values (all diseases pooled) that the "
-                        f"combination's per-gene measure is greater than {RANKING_LABELS.get(other, other)}'s:\n"
+        sections.append(f"rank combination method vs {other} (p-value, one-sided Wilcoxon signed-rank test)\n"
                         + format_metrics(p_values.reindex(index=COMBINATIONS, columns=list(PER_GENE))))
     logger.info("Is any rank aggregation better than BFWalk, RWR, or random?\n\n%s", "\n\n".join(sections))
 
     per_metric, per_disease = method_wins(summary, metrics)
     logger.info("BFWalk vs RWR: the number of diseases (of %d) where each scores higher, per metric:\n%s",
                 n_diseases, per_metric.to_string())
-    bfwalk_diseases = int((per_disease["bfwalk_higher"] > per_disease["rwr_higher"]).sum())
-    rwr_diseases = int((per_disease["rwr_higher"] > per_disease["bfwalk_higher"]).sum())
-    logger.info("In total (higher on more of the %d metrics): BFWalk in %d of %d diseases, RWR in %d, "
-                "neither in %d.", len(metrics), bfwalk_diseases, n_diseases, rwr_diseases,
-                n_diseases - bfwalk_diseases - rwr_diseases)
 
 
 if __name__ == "__main__":
