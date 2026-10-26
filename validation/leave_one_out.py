@@ -1,20 +1,16 @@
 """Leave-one-out validation over the disease graph catalogue (validation/build_graph_catalogue.py).
 
-For each disease (<catalogue>/<diseaseId>_disease_graph/), every seed that is a graph node is held out in turn:
-every graph gene that is not one of the remaining seeds is a candidate (the held-out gene among them), and Stage
-5's BFWalk and random walk with restart (pipeline/stage5_score_candidates.py) score the candidates from the
-remaining seeds, weighted equally. Five rank aggregations of the two (combined_scores) ask whether they are
-complementary. Each held-out gene's rank under each ranking gives AUROC, AUPRC, precision@k and recall@k
-(metrics_table), next to a random ranking's; combined_score_tests tests each aggregation against BFWalk, RWR
-and random. validation/README.md defines every value and lists the output files. The graph is not rebuilt: its
-pathways were selected by a GSEA that included the held-out gene, so this measures recovery given the
-disease's pathways.
+For each disease (<catalogue>/<diseaseId>_disease_graph/), every seed (in the graph)is held out iteratively:
+BFWalk and RWR (pipeline/stage5_score_candidates.py) score other genes in the graph.
+Five rank aggregation methods ask whether BFWalk and RWR are
+complementary and which aggregation method is best. Each held-out gene's rank under each ranking gives AUROC, AUPRC,
+precision@k and recall@k. Combined_score_tests check each aggregation against BFWalk, RWR
+and random.
 
 Caching: a disease is scored again only if something its scores depend on changed: the sha256 of its graph and
 seed files (CACHE_INPUT_FILES), --restart-prob, --bfwalk-alpha, the BFWalk version or the held-out seeds (set by
---max-seeds and --seed). Otherwise its scores are read back from scores_left_out_details.tsv; the aggregations,
-metrics and plots are always recomputed, so --k, --follow-up-k and changes to them take effect. cache_key.json is
-written last, so an interrupted disease is scored again. --recompute ignores the cache.
+--max-seeds and --seed). Otherwise its scores are read back from scores_left_out_details.tsv using cache_key.json
+(--recompute ignores the cache and recomputes).
 """
 
 import argparse
@@ -31,16 +27,16 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-from scipy.special import digamma  # noqa: E402
-from scipy.stats import beta, wilcoxon  # noqa: E402
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from scipy.special import digamma
+from scipy.stats import beta, wilcoxon
 
 VALIDATION_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(VALIDATION_DIR.parent / "pipeline"))
-import stage5_score_candidates as sc  # noqa: E402
-from stage0_schemas import SeedGenesSchema, load_graph, sha256_of_file  # noqa: E402
+import stage5_score_candidates as sc
+from stage0_schemas import SeedGenesSchema, load_graph, sha256_of_file
 
 METHODS = ["bfwalk", "rwr"]
 # Rank aggregations of BFWalk and RWR (see combined_scores): whether the two methods are complementary.
@@ -634,20 +630,20 @@ def main(argv=None):
     summary = pd.concat(summaries, ignore_index=True)
     summary.to_csv(args.out_dir / "leave_one_out_summary.tsv", sep="\t", index=False)
     pooled = pd.concat(all_ranked, ignore_index=True)
-    title = f"Leave-one-out, {pooled['diseaseId'].nunique()} diseases, {len(pooled)} held-out seeds"
+    title = f"Leave-one-out ({pooled['diseaseId'].nunique()} diseases, {len(pooled)} held-out genes)"
     plot_roc({method: pooled[f"{method}_rank"] for method in METHODS}, pooled["n_candidates"],
              args.out_dir / "roc_curve_all_diseases.png", title)
     plot_roc_pr({ranking: pooled[f"{ranking}_rank"] for ranking in RANKINGS}, pooled["n_candidates"],
                 args.out_dir / "roc_pr_curve_combined_all_diseases.png", title, args.follow_up_k, enrichment=True)
     tests = write_combined_score_tests(pooled, args.out_dir / "combined_score_tests.tsv", args.seed)
-    logger.info("Is a combination better than BFWalk, RWR, random? Per-gene means and one-sided Wilcoxon "
-                "signed-rank p-values, all diseases pooled:\n%s", tests[tests["diseaseId"] == "all"]
+    logger.info("Is any rank aggregation better than BFWalk, RWR, or random? Per-gene means and one-sided Wilcoxon "
+                "signed-rank p-values (for all diseases):\n%s", tests[tests["diseaseId"] == "all"]
                 .drop(columns=["diseaseId", "n_held_out"]).to_string(index=False, float_format=lambda v: f"{v:.3g}"))
     # AUPRC and precision@k depend on each disease's prevalence: across diseases only their fold enrichments.
     per_ranking = summary.groupby("ranking", sort=False)[
         ["auroc", "auprc_fold_enrichment", f"precision@{args.follow_up_k}_fold_enrichment"]
         + [f"recall@{k}" for k in ks]].mean()
-    logger.info("Mean over %d diseases (each disease weighted equally):\n%s", summary["diseaseId"].nunique(),
+    logger.info("Mean over %d diseases:\n%s", summary["diseaseId"].nunique(),
                 format_metrics(per_ranking))
     logger.info("Wrote %s, roc_curve_all_diseases.png, roc_pr_curve_combined_all_diseases.png and "
                 "combined_score_tests.tsv.", args.out_dir / "leave_one_out_summary.tsv")

@@ -1,21 +1,20 @@
 """Build a catalogue of disease graphs from the Open Targets disease-pathway GSEA catalogue (Reactome only).
 
-For every disease in the GSEA catalogue (--catalogue-dir; see its README.md):
+The GSEA catalogue contains for >3000 diseases:
 1. Pathways: the Reactome rows of genetic_disease_pathway_catalogue.parquet, with the Benjamini-Hochberg FDR
    recomputed over the disease's Reactome pathways only (both ES signs, non-null p-values), keeping es > 0 and
    FDR < --fdr. A disease with no such pathway is left out.
 2. Graph: exactly as Stage 3 builds it (stage3_build_graph.build_graph): nodes are all genes on those pathways
    (gene lists from merged_gene_sets.gmt), edges the curated Reactome functional interactions between them,
    directed and signed, unweighted.
-3. Seeds: the disease's genes in genetic_gene_scores_input.parquet (genetic_association score > 0). The score
-   is kept in disease_seed_genes.tsv; propagation weights all seeds equally.
-Disease IDs are those of the catalogue (Open Targets 26.03).
-Gene symbols are mapped to Ensembl gene IDs with the Open Targets target table, as in Stage 1.
+3. Seeds: disease-associated genes in genetic_gene_scores_input.parquet.
+Gene symbols are mapped to Ensembl gene IDs.
 
-Writes --out-dir/disease_graph_catalogue/, with one <diseaseId>_disease_graph/ directory per included disease
-holding Stage 3's graph files (graph_weight.npz, graph_sign.npz, graph_gene_index.json, graph_metadata.json),
-disease_seed_genes.tsv and disease_pathways.tsv, so Stage 5 can score a disease with --graph-dir <that
-directory>; plus graph_catalogue_diseases.parquet, one summary row per included disease.
+Writes --out-dir/disease_graph_catalogue/, with one <diseaseId>_disease_graph/ subdirectory per disease with
+graph files (graph_weight.npz, graph_sign.npz, graph_gene_index.json, graph_metadata.json),
+disease_seed_genes.tsv and disease_pathways.tsv.
+
+Stage 5 can score a disease with --graph-dir and graph_catalogue_diseases.parquet, one summary row per disease.
 """
 
 import argparse
@@ -29,9 +28,9 @@ import pandas as pd
 import scipy.sparse as sp
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pipeline"))
-import stage3_build_graph as bg  # noqa: E402
-from stage0_schemas import DiseasePathwaysSchema, SeedGenesSchema  # noqa: E402
-from stage1_ingest import (  # noqa: E402
+import stage3_build_graph as bg
+from stage0_schemas import DiseasePathwaysSchema, SeedGenesSchema
+from stage1_ingest import (
     CoverageTracker,
     build_genes_table,
     build_interactions_table,
@@ -49,8 +48,8 @@ CATALOGUE_SUBDIR = "disease_graph_catalogue"
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         prog="build_graph_catalogue.py",
-        description="Build one Stage 3-style graph per disease from the Open Targets disease-pathway GSEA "
-        "catalogue (Reactome pathways only), with each disease's genetic-association scores as seeds.",
+        description="Build one graph per disease from the Open Targets disease-pathway GSEA catalogue"
+        "(Reactome pathways only), with each disease's genetic-association scores as seeds.",
     )
     parser.add_argument("--catalogue-dir", type=Path, required=True,
                         help="Directory with the GSEA catalogue files, e.g. validation/Disease_graph_catalogue.")
@@ -151,7 +150,7 @@ def run(args):
     catalogue_out = (args.out_dir or args.catalogue_dir) / CATALOGUE_SUBDIR
     catalogue_out.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Reading the GSEA catalogue (Reactome only)")
+    logger.info("Reading the GSEA catalogue")
     catalogue = pd.read_parquet(args.catalogue_dir / "genetic_disease_pathway_catalogue.parquet",
                                 columns=CATALOGUE_COLUMNS, filters=[("source", "==", "Reactome")])
     if args.diseases:
@@ -233,7 +232,7 @@ def run(args):
 
     no_seed = int((diseases_df["n_seeds_in_graph"] == 0).sum())
     no_edge = int((diseases_df["n_edges"] == 0).sum())
-    logger.info("Catalogue: %d diseases; median %d nodes, %d edges, %d seeds in the graph. "
+    logger.info("Catalogue: %d diseases; median %d nodes, %d edges, %d seeds. "
                 "%d disease(s) without a seed in the graph, %d without an edge.",
                 len(diseases_df), diseases_df["n_nodes"].median(), diseases_df["n_edges"].median(),
                 diseases_df["n_seeds_in_graph"].median(), no_seed, no_edge)
