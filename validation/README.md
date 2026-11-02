@@ -125,6 +125,9 @@ Both BFWalk and RWR perform better than random in recovering known-disease assoc
 ![leave_one_out_7diseases/roc_pr_curve_combined_all_diseases.png](leave_one_out_7diseases/roc_pr_curve_combined_all_diseases.png)
 *Figure 1: ROC and PRC for BFWalk, RWR and five rank aggregation methods (RRF, Borda, RRA, union and intersection) in 7 tested diseases.*
 
+![leave_one_out_20diseases/roc_pr_curve_combined_all_diseases.png](leave_one_out_20diseases/roc_pr_curve_combined_all_diseases.png)
+*Figure 2: ROC and PRC for BFWalk, RWR and five rank aggregation methods (RRF, Borda, RRA, union and intersection) in 20 tested diseases.*
+
 
 ## This pipeline vs Open Targets Platform scores
 
