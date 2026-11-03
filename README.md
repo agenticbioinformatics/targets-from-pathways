@@ -19,6 +19,12 @@ pip install -r requirements.txt
 >Note: [BFWalk](https://github.com/jedrzejkubica/BFWalk), Stage 5's default method, is not on PyPI yet:
 `requirements.txt` installs it from TestPyPI.
 
+>On macOS, Apple's clang has no OpenMP, which BFWalk's C code needs. Build it with Homebrew GCC
+(`brew install gcc`, use the installed version number):
+>```
+>CC=gcc-15 LDSHARED="gcc-15 -bundle -undefined dynamic_lookup" pip install -r requirements.txt
+>```
+
 Check the installation:
 
 ```
