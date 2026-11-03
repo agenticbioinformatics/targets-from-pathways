@@ -1,7 +1,8 @@
 # Stage 0 — shared schemas (inter-stage data contracts)
 pydantic>=2.0
-pandera
-pandas
+# pandas 3 and pandera 0.35 each break tests; tested with pandera 0.26.1 / 0.30.1 and pandas 2.3.3
+pandera>=0.26,<0.31
+pandas>=2,<3
 numpy
 
 # Stage 1 — ingest & canonicalize (download, parquet I/O, ID mapping)

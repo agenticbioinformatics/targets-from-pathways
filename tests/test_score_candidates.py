@@ -107,7 +107,7 @@ def test_rwr_rejects_bad_restart_prob():
 
 
 def test_bfwalk_follows_edge_direction_and_attenuates():
-    pytest.importorskip("BFWalk.bfwalk")
+    pytest.importorskip("bfwalk")
     scores = sc.bfwalk_scores(_weight_matrix(), GENE_INDEX, SEEDS, alpha=0.5, threads=1)
     assert S1 not in scores and S2 not in scores
     assert all(v >= 0 for v in scores.values())
@@ -117,7 +117,7 @@ def test_bfwalk_follows_edge_direction_and_attenuates():
 
 
 def test_bfwalk_ignores_zero_weight_edges_and_rescales_weights():
-    pytest.importorskip("BFWalk.bfwalk")
+    pytest.importorskip("bfwalk")
     weight = (_weight_matrix() * 4.0).tolil()  # weights > 1 are rescaled into ]0, 1]
     weight[GENE_INDEX.index(S1), GENE_INDEX.index(D)] = 0.0  # evidence-free edges carry no flow
     weight[GENE_INDEX.index(S2), GENE_INDEX.index(D)] = 0.0
@@ -137,7 +137,7 @@ def test_bfwalk_rejects_bad_alpha():
 
 
 def test_default_run_emits_bfwalk_only(tmp_path):
-    pytest.importorskip("BFWalk.bfwalk")
+    pytest.importorskip("bfwalk")
     _write_graph_dir(tmp_path)
     df = _run(tmp_path, extra=["--bfwalk-threads", "1"])  # no --method -> argparse default
     assert list(df.columns) == ["gene", "bfwalk_score"]
@@ -160,7 +160,7 @@ def test_rwr_only_emits_rwr_only(tmp_path):
 @pytest.mark.parametrize("method", ["rwr,bfwalk", "bfwalk,rwr"])
 def test_both_methods_emit_both_columns_ranked_by_bfwalk(tmp_path, method):
     # Ranked by the last method in the fixed order rwr, bfwalk - not by the order given on the command line.
-    pytest.importorskip("BFWalk.bfwalk")
+    pytest.importorskip("bfwalk")
     _write_graph_dir(tmp_path)
     df = _run(tmp_path, method, extra=["--bfwalk-threads", "1"])
     assert list(df.columns) == ["gene", "rwr_score", "bfwalk_score"]

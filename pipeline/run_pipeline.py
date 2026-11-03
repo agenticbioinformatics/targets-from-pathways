@@ -37,7 +37,7 @@ def check_installation():
         sys.exit(1)
     # Stage 5 imports BFWalk only when --method bfwalk is used, so --method rwr works without it.
     try:
-        importlib.import_module("BFWalk.bfwalk")
+        importlib.import_module("bfwalk")
     except ImportError:
         logger.warning("bfwalk is not installed: Stage 5's default --method bfwalk will fail. Install it (see "
                        "README.md) or run with --method rwr.")

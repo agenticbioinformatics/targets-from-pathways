@@ -116,7 +116,7 @@ def bfwalk_scores(weight, gene_index, seeds, alpha, threads):
     if not 0.0 < alpha < 1.0:
         fail(f"--bfwalk-alpha must be strictly between 0 and 1 (got {alpha}).")
     try:
-        from BFWalk.bfwalk import calculate_scores
+        from bfwalk import calculate_scores
     except ImportError:
         fail("--method bfwalk needs the bfwalk package: pip install --index-url https://test.pypi.org/simple/ "
              "--extra-index-url https://pypi.org/simple/ bfwalk")
