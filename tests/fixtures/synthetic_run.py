@@ -25,14 +25,13 @@ genetic_association evidence, which Stage 2 writes to disease_seed_genes.tsv:
 Gene sets (mimicking a Reactome ancestor/descendant hierarchy pair):
 - R-HSA-100 "Ancestor Broad Signaling" = {G2..G13, N22, N23} (14 genes).
 - R-HSA-101 "Child Broad Signaling"    = {G2..G11, N22, N23} (12 genes);
-  Jaccard(100, 101) = 12/14 = 0.857 > 0.7, so Stage 2's collapsing drops the
-  ancestor (100) before GSEA, so 100 is not in the Stage 3 graph (but its
-  genes shared with 101 are).
+  both are enriched at the top of the ranking, so both are disease pathways
+  (Stage 2 no longer collapses near-duplicate sets).
 - R-HSA-200 "Signaling Pathway A" = {G1..G6, N24} (7 genes) - distinct from
   101 (Jaccard = 5/14 = 0.36).
 - R-HSA-300 "Unrelated Weak Pathway" = {G17..G21} (5 genes), all weak seeds -
-  a *coherent* low-ranked cluster, which GSEA correctly reports as significant
-  too (depletion is still enrichment).
+  a coherent low-ranked cluster: its ES is negative, so it is not a disease
+  pathway and G17..G21 are not in the graph.
 - R-HSA-400 "Scattered Noise Pathway" = {G1, G4, G9, G13, G20} spanning the
   top, middle and bottom of the ranking - no coherent enrichment, so it fails
   the significance filter, so it is not in the graph.

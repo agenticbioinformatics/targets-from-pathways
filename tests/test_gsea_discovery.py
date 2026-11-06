@@ -1,268 +1,145 @@
-"""pytest tests for stage2_gsea_discovery.py (Stage 2: GSEA disease-pathway discovery).
+"""Tests for stage2_gsea_discovery.py (Stage 2: GSEA disease-pathway discovery).
 
-Everything here is a synthetic, hand-built DataFrame — no manifest.json or
-parquet round-trip — calling stage2_gsea_discovery.py's functions directly.
-Resolving artifacts out of a real manifest is Stage 1 plumbing, already
-covered by tests/test_ingest_*.py and stage0_schemas.py's
-``find_artifact``; what needs covering here is the GSEA/statistics
-logic itself.
+Synthetic DataFrames, calling Stage 2's functions directly; manifest plumbing is covered by the ingest tests and
+the end-to-end test. GSEA itself (gsea_core.py) is deterministic and checked against the DisPathCatalogue v2
+code in test_gsea_core.py, so these tests can assert exact outcomes.
 
-blitzgsea is *not* perfectly deterministic run-to-run even with a fixed
-``seed`` (observed: its internal calibration pool occasionally lands on one
-of two nearby outcomes, presumably worker-scheduling-order dependent).
-Every assertion below therefore checks a threshold relationship (p-value or
-FDR against a cutoff), never an exact float — and the fixture's margins
-were chosen empirically, from several real runs, to hold comfortably on
-either side of that jitter.
-
-25-gene, 9-pathway shared fixture (``_all_gene_sets`` / ``_signature``):
-genes G1 (highest genetic_association score) through G25 (lowest), ranked
-linearly.
-
-- ``strong_pathway`` = G1-G8: a clean, unambiguous top-of-ranking cluster —
-  the "deliberately enriched" pathway (req. 1).
-- ``borderline_pathway`` = G17-G21: a smaller, less extreme cluster,
-  individually significant at the nominal p-value threshold on its own, but
-  not after BH-FDR is applied across the whole tested library (req. 2) —
-  this is the whole point of testing pathways together rather than one at a
-  time.
-- ``dup_ancestor`` = G9-G14 (6 genes) / ``dup_child`` = G9-G13 (5 genes):
-  Jaccard(ancestor, child) = 5/6 = 0.833 > 0.7, so collapsing must drop the
-  larger ancestor and keep the smaller, more specific child (req. 4).
-- ``noise1``..``noise6``: five genes each, scattered across the ranking
-  (no coherent cluster) — non-significant filler that both pads the tested
-  library (so BH-FDR in req. 2 has something to correct against) and
-  exercises "tested but excluded from output" (req. 3).
+Fixture: genes G1 (strongest genetic evidence) to G25, scored linearly, plus Z1-Z40 with no evidence (score 0 in
+the ranking, as every background gene without evidence).
+- strong_pathway = G1-G8: the top of the ranking.
+- borderline_pathway = G11-G15: p < 0.05 on its own, but not after BH-FDR over the tested sets.
+- bottom_pathway = Z1-Z8: no evidence at all, so its ES is negative.
+- noise1-noise8: two scored genes and three without evidence each, scattered.
 """
-
-from __future__ import annotations
 
 import pandas as pd
 import pytest
 
+import gsea_core
 import stage2_gsea_discovery as gd
 
-PVAL_THRESHOLD = 0.05
-FDR_THRESHOLD = 0.1
+FDR_THRESHOLD = 0.05
 
-GENES = [f"G{i}" for i in range(1, 26)]  # G1..G25
+GENES = [f"G{i}" for i in range(1, 26)]
+NO_EVIDENCE = [f"Z{i}" for i in range(1, 41)]
 _SCORES = {gid: round(1.0 - i * (0.98 / 24), 4) for i, gid in enumerate(GENES)}
-
-STRONG_PATHWAY = GENES[0:8]  # G1-G8
-BORDERLINE_PATHWAY = GENES[16:21]  # G17-G21
-DUP_ANCESTOR = GENES[8:14]  # G9-G14 (6 genes)
-DUP_CHILD = GENES[8:13]  # G9-G13 (5 genes) -- subset of DUP_ANCESTOR
-NOISE_SETS = {
-    "noise1": [GENES[2], GENES[11], GENES[17], GENES[22], GENES[6]],
-    "noise2": [GENES[4], GENES[13], GENES[20], GENES[8], GENES[24]],
-    "noise3": [GENES[0], GENES[15], GENES[18], GENES[5], GENES[21]],
-    "noise4": [GENES[3], GENES[9], GENES[16], GENES[23], GENES[12]],
-    "noise5": [GENES[7], GENES[14], GENES[19], GENES[1], GENES[10]],
-    "noise6": [GENES[5], GENES[11], GENES[22], GENES[2], GENES[17]],
-}
+STRONG_PATHWAY = GENES[0:8]
+BORDERLINE_PATHWAY = GENES[10:15]
+BOTTOM_PATHWAY = NO_EVIDENCE[0:8]
+NOISE_SETS = {f"noise{j}": [GENES[(j * 3) % 25], GENES[(j * 7 + 2) % 25], NO_EVIDENCE[j], NO_EVIDENCE[j + 10],
+                            NO_EVIDENCE[j + 20]] for j in range(1, 9)}
 
 
-def _gene_sets_df(specs: dict[str, list[str]], names: dict[str, str] | None = None) -> pd.DataFrame:
+def _gene_sets_df(specs, names=None):
     names = names or {}
-    rows = [
-        {"set_id": set_id, "set_name": names.get(set_id, set_id), "source_db": "reactome", "gene_id": gene_id}
-        for set_id, gene_ids in specs.items()
-        for gene_id in gene_ids
-    ]
+    rows = [{"set_id": set_id, "set_name": names.get(set_id, set_id), "source_db": "reactome", "gene_id": gene_id}
+            for set_id, gene_ids in specs.items() for gene_id in gene_ids]
     return pd.DataFrame(rows)
 
 
-def _all_gene_sets() -> pd.DataFrame:
-    specs = {
-        "strong_pathway": STRONG_PATHWAY,
-        "borderline_pathway": BORDERLINE_PATHWAY,
-        "dup_ancestor": DUP_ANCESTOR,
-        "dup_child": DUP_CHILD,
-        **NOISE_SETS,
-    }
-    names = {
-        "strong_pathway": "Strongly Enriched Pathway",
-        "borderline_pathway": "Borderline Pathway",
-        "dup_ancestor": "Ancestor Broad Pathway",
-        "dup_child": "Child Specific Pathway",
-    }
-    return _gene_sets_df(specs, names)
+def _all_gene_sets():
+    return _gene_sets_df({"strong_pathway": STRONG_PATHWAY, "borderline_pathway": BORDERLINE_PATHWAY,
+                          "bottom_pathway": BOTTOM_PATHWAY, **NOISE_SETS},
+                         {"strong_pathway": "Strongly Enriched Pathway", "borderline_pathway": "Borderline Pathway"})
 
 
-def _signature() -> pd.DataFrame:
-    """Build the ranking signature the same way stage2_gsea_discovery.py does in
-    production: via build_signature() over an ot_disease_subset-shaped
-    DataFrame, not a hand-built (gene, score) table directly."""
-    ot_disease_subset = pd.DataFrame(
-        [
-            {
-                "gene_id": gid,
-                "disease_id": "EFO_TEST",
-                "datatype_id": "genetic_association",
-                "datasource_id": "eva",
-                "score": _SCORES[gid],
-            }
-            for gid in GENES
-        ]
-    )
-    return gd.build_signature(ot_disease_subset)
+def _ot_rows(scores, datasource="eva", datatype="genetic_association"):
+    return [{"gene_id": gene, "disease_id": "EFO_TEST", "datatype_id": datatype, "datasource_id": datasource,
+             "score": score} for gene, score in scores.items()]
+
+
+def _signature():
+    return gd.build_signature(pd.DataFrame(_ot_rows(_SCORES)))
 
 
 @pytest.fixture(scope="module")
-def gsea_result() -> pd.DataFrame:
-    """Collapse + run GSEA once for the shared fixture; every threshold
-    assertion below reads from this same run."""
-    collapsed = gd.collapse_near_duplicate_sets(_all_gene_sets())
-    result, _sets_by_id = gd.run_gsea(_signature(), collapsed, seed=0)
-    return result
+def gsea_result():
+    return gd.run_gsea(_signature(), _all_gene_sets(), seed=0)
 
 
 @pytest.fixture(scope="module")
-def significant(gsea_result: pd.DataFrame) -> pd.DataFrame:
-    return gd.filter_results(gsea_result, PVAL_THRESHOLD, FDR_THRESHOLD)
-
-
-# ==========================================================================
-# 1. The deliberately-enriched pathway is returned with p-value below threshold.
-# ==========================================================================
+def significant(gsea_result):
+    return gd.filter_results(gsea_result, FDR_THRESHOLD)
 
 
 def test_deliberately_enriched_pathway_is_significant(gsea_result, significant):
     strong = gsea_result.set_index("set_id").loc["strong_pathway"]
-    assert strong.pval < PVAL_THRESHOLD
-    assert strong.fdr < FDR_THRESHOLD
-    assert "strong_pathway" in set(significant.set_id)
-
-
-# ==========================================================================
-# 2. BH-FDR correction is actually applied: an individually-significant
-#    pathway becomes non-significant once corrected across the tested library.
-# ==========================================================================
+    assert strong.es > 0 and strong.fdr < FDR_THRESHOLD
+    assert list(significant["set_id"]) == ["strong_pathway"]
+    assert significant.iloc[0]["gene_set"] == "Strongly Enriched Pathway"
 
 
 def test_fdr_correction_makes_borderline_pathway_nonsignificant(gsea_result, significant):
     borderline = gsea_result.set_index("set_id").loc["borderline_pathway"]
-    # Individually significant by the raw p-value alone...
-    assert borderline.pval < PVAL_THRESHOLD
-    # ...but BH-FDR, corrected across all 8 pathways actually tested, pushes
-    # it back out -- this is only possible because run_gsea tests it
-    # alongside the rest of the library rather than in isolation.
+    assert borderline.es > 0 and borderline.pval < 0.05
     assert borderline.fdr > FDR_THRESHOLD
-    assert "borderline_pathway" not in set(significant.set_id)
-    # The positive control from test 1 must still survive: the fixture
-    # isn't just failing everything.
-    assert "strong_pathway" in set(significant.set_id)
+    assert "borderline_pathway" not in set(significant["set_id"])
 
 
-# ==========================================================================
-# 3. Pathways not meeting threshold are excluded from output.
-# ==========================================================================
+def test_every_set_is_tested_and_genes_without_evidence_are_in_the_ranking(gsea_result):
+    assert set(gsea_result["set_id"]) == set(_all_gene_sets()["set_id"])
+    # The bottom pathway's genes have no evidence; they are ranked (score 0), so its ES is negative.
+    assert gsea_result.set_index("set_id").loc["bottom_pathway", "es"] < 0
+    assert list(gsea_result.columns) == gd.GSEA_RESULT_COLUMNS
 
 
-def test_noise_pathways_are_tested_but_excluded(gsea_result, significant):
-    noise_ids = set(NOISE_SETS)
-    assert noise_ids <= set(gsea_result.set_id), "noise pathways should still be tested"
-    assert not (noise_ids & set(significant.set_id)), "noise pathways should never pass the significance filter"
+def test_negative_es_is_never_disease_relevant():
+    result = pd.DataFrame({"set_id": ["up", "down"], "gene_set": ["up", "down"], "source_db": "reactome",
+                           "es": [0.5, -0.9], "nes": [1.5, -2.0], "pval": [0.001, 0.0001], "fdr": [0.002, 0.0002],
+                           "n_perm": 1000, "geneset_size": 10})
+    assert list(gd.filter_results(result, 0.05)["set_id"]) == ["up"]
 
 
-def test_filter_results_only_returns_rows_meeting_both_thresholds(significant):
-    assert (significant["pval"] <= PVAL_THRESHOLD).all()
-    assert (significant["fdr"] <= FDR_THRESHOLD).all()
-
-
-# ==========================================================================
-# 4. Two near-identical gene sets (Jaccard > 0.7) are collapsed to one before
-#    testing.
-# ==========================================================================
-
-
-def test_collapse_near_duplicate_sets_jaccard_math():
-    """A minimal, hand-verifiable Jaccard case, independent of the shared
-    fixture: "big" (10 genes) and "small" (its first 8 genes) have
-    Jaccard = 8/10 = 0.8 > 0.7, so "big" must be dropped and the smaller
-    "small" kept; "unrelated" shares nothing and must survive untouched."""
-    gene_sets = _gene_sets_df(
-        {
-            "big": [f"X{i}" for i in range(10)],
-            "small": [f"X{i}" for i in range(8)],
-            "unrelated": [f"Y{i}" for i in range(5)],
-        }
-    )
-    collapsed = gd.collapse_near_duplicate_sets(gene_sets)
-    assert set(collapsed.set_id) == {"small", "unrelated"}
-
-
-def test_collapse_drops_ancestor_keeps_child_in_full_fixture():
-    collapsed = gd.collapse_near_duplicate_sets(_all_gene_sets())
-    kept = set(collapsed.set_id)
-    assert "dup_child" in kept
-    assert "dup_ancestor" not in kept
-    # Nothing else was collapsed as collateral damage.
-    assert kept == set(_all_gene_sets().set_id) - {"dup_ancestor"}
-
-
-def test_collapsed_ancestor_never_reaches_gsea(gsea_result):
-    """Confirms the collapse happens *before* testing, not just before
-    output filtering: the dropped ancestor must be absent even from
-    gsea_result (every tested pathway, unfiltered by significance)."""
-    assert "dup_ancestor" not in set(gsea_result.set_id)
-    assert "dup_child" in set(gsea_result.set_id)
-
-
-# ==========================================================================
-# Bonus: build_signature()'s genetic_association-only restriction, which the
-# module docstring calls out as load-bearing for avoiding circularity.
-# ==========================================================================
+def test_matches_gsea_core_directly(gsea_result):
+    """Stage 2 is a thin layer over gsea_core: same scores and library give the same statistics."""
+    library = {set_id: sorted(genes) for set_id, genes in _all_gene_sets().groupby("set_id")["gene_id"]}
+    direct = gsea_core.run_gsea(_SCORES, library, seed=0, order_seed=0).set_index("set_id")
+    stage2 = gsea_result.set_index("set_id")
+    pd.testing.assert_series_equal(stage2["es"], direct.loc[stage2.index, "es"])
+    pd.testing.assert_series_equal(stage2["pval"], direct.loc[stage2.index, "pval"])
 
 
 def test_build_signature_ignores_non_genetic_association_rows():
-    ot_disease_subset = pd.DataFrame(
-        [
-            {"gene_id": "G1", "disease_id": "EFO_TEST", "datatype_id": "genetic_association",
-             "datasource_id": "eva", "score": 0.20},
-            # Decoy: a much higher score under a different datatype must be ignored.
-            {"gene_id": "G1", "disease_id": "EFO_TEST", "datatype_id": "affected_pathway",
-             "datasource_id": "reactome", "score": 0.99},
-        ]
-    )
-    signature = gd.build_signature(ot_disease_subset)
-    assert signature.set_index("gene").loc["G1", "score"] == 0.20
+    rows = _ot_rows({"G1": 0.20}) + _ot_rows({"G1": 0.99}, datasource="reactome", datatype="affected_pathway")
+    assert gd.build_signature(pd.DataFrame(rows)).set_index("gene").loc["G1", "score"] == 0.20
 
 
-# ==========================================================================
-# GSEA that cannot run: Stage 2 warns and returns no tested pathways
-# ==========================================================================
-#
-# Stage 3 then builds the graph from the seed genes' pathways only, so a small disease still gets a ranking.
+def test_build_signature_aggregates_datasources_like_open_targets():
+    """Two genetic datasources, 0.8 and 0.4: (0.8 / 1 + 0.4 / 4) / (1 + 1 / 4) = 0.72, as Open Targets'
+    genetic_association datatype score (DisPathCatalogue's aggregation). The old max would give 0.8."""
+    rows = _ot_rows({"G1": 0.4}, datasource="gene_burden") + _ot_rows({"G1": 0.8}, datasource="eva")
+    assert gd.build_signature(pd.DataFrame(rows)).set_index("gene").loc["G1", "score"] == pytest.approx(0.72)
+    assert gd.datatype_harmonic_sum([0.6]) == pytest.approx(0.6)
+
+
+def test_build_signature_drops_zero_scores():
+    signature = gd.build_signature(pd.DataFrame(_ot_rows({"G1": 0.5, "G2": 0.0})))
+    assert list(signature["gene"]) == ["G1"]
 
 
 def _assert_nothing_tested(result, caplog, reason):
     assert result.empty
-    assert list(result.columns) == ["set_id", "gene_set", "source_db", "pval", "fdr"]
-    assert gd.filter_results(result, PVAL_THRESHOLD, FDR_THRESHOLD).empty
+    assert list(result.columns) == gd.GSEA_RESULT_COLUMNS
+    assert gd.filter_results(result, FDR_THRESHOLD).empty
     assert reason in caplog.text and "disease_pathways.tsv is written empty" in caplog.text
 
 
-def test_fewer_seed_genes_than_gsea_min_size_skips_gsea(caplog, monkeypatch):
-    # A Mendelian disease with one genetic-association gene crashed blitzgsea's calibration.
+def test_too_few_genes_with_evidence_skips_gsea(caplog, monkeypatch):
     def must_not_run(*args, **kwargs):
-        raise AssertionError("blitzgsea must not be called")
-    monkeypatch.setattr(gd.blitzgsea, "gsea", must_not_run)
-    result, _ = gd.run_gsea(_signature().head(gd.BLITZGSEA_MIN_SIZE - 1), _all_gene_sets(), seed=0)
-    _assert_nothing_tested(result, caplog, f"Only {gd.BLITZGSEA_MIN_SIZE - 1} seed gene(s)")
+        raise AssertionError("GSEA must not run")
+    monkeypatch.setattr(gd.gsea_core, "run_gsea", must_not_run)
+    result = gd.run_gsea(_signature().head(gsea_core.MIN_SIZE - 1), _all_gene_sets(), seed=0)
+    _assert_nothing_tested(result, caplog, f"Only {gsea_core.MIN_SIZE - 1} gene(s) with genetic evidence")
 
 
-@pytest.mark.parametrize("error", [ZeroDivisionError("float division by zero"),
-                                   ValueError("The function value at x=nan is NaN; solver cannot continue.")])
-def test_blitzgsea_calibration_failure_skips_gsea(caplog, monkeypatch, error):
-    def calibration_fails(*args, **kwargs):
-        raise error
-    monkeypatch.setattr(gd.blitzgsea, "gsea", calibration_fails)
-    result, _ = gd.run_gsea(_signature(), _all_gene_sets(), seed=0)
-    _assert_nothing_tested(result, caplog, "could not calibrate GSEA")
+def test_genes_outside_every_gene_set_do_not_count(caplog):
+    outside = gd.build_signature(pd.DataFrame(_ot_rows({f"X{i}": 0.9 for i in range(20)})))
+    result = gd.run_gsea(outside, _all_gene_sets(), seed=0)
+    _assert_nothing_tested(result, caplog, "Only 0 gene(s) with genetic evidence are in a gene set")
 
 
-def test_no_gene_set_with_enough_seed_genes_skips_gsea(caplog, monkeypatch):
-    monkeypatch.setattr(gd.blitzgsea, "gsea", lambda *args, **kwargs: pd.DataFrame())
-    result, _ = gd.run_gsea(_signature(), _all_gene_sets(), seed=0)
+def test_no_gene_set_of_testable_size_skips_gsea(caplog):
+    tiny = _gene_sets_df({"tiny": GENES[:3]})
+    signature = _signature()
+    result = gd.run_gsea(signature, tiny, seed=0, min_genes=1)
     _assert_nothing_tested(result, caplog, "GSEA tested nothing")

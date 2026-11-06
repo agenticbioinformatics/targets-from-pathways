@@ -33,6 +33,7 @@ from stage0_schemas import (
     OTAssociationsSchema,
     UserEdgeWeightsSchema,
     UserNodeWeightsSchema,
+    datatype_harmonic_sum,
     fail,
     find_artifact,
     load_graph,
@@ -78,14 +79,15 @@ def parse_args(argv=None):
 
 
 def compute_genetic_evidence_scores(ot_disease_subset, datatypes, gene_index):
-    """One score per graph gene: its strongest admitted evidence row, or 0.0 if it has none."""
+    """One score per graph gene: its admitted datasource scores combined as Open Targets combines a datatype
+    (datatype_harmonic_sum, the score Stage 2 ranks the seeds by), or 0.0 if it has none."""
     admitted = ot_disease_subset[ot_disease_subset["datatype_id"].isin(datatypes)]
     if admitted.empty:
         logger.warning("No ot_disease_subset rows of datatype %s - every gene scores 0.0.", datatypes)
-    best_score_per_gene = admitted.groupby("gene_id")["score"].max()
+    score_per_gene = admitted.groupby("gene_id")["score"].agg(datatype_harmonic_sum)
 
     scores = pd.Series(0.0, index=gene_index, name="genetic_evidence_score")
-    for gene_id, score in best_score_per_gene.items():
+    for gene_id, score in score_per_gene.items():
         if gene_id in scores.index:
             scores[gene_id] = score
     return scores

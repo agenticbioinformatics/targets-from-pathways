@@ -7,10 +7,22 @@ complementary and which aggregation method is best. Each held-out gene's rank un
 precision@k and recall@k. Combined_score_tests check each aggregation against BFWalk, RWR
 and random.
 
-Caching: a disease is scored again only if something its scores depend on changed: the sha256 of its graph and
-seed files (CACHE_INPUT_FILES), --restart-prob, --bfwalk-alpha, the BFWalk version or the held-out seeds (set by
---max-seeds and --seed). Otherwise its scores are read back from scores_left_out_details.tsv using cache_key.json
-(--recompute ignores the cache and recomputes).
+A degree-only ranking (each candidate's number of graph neighbours, no seeds used) is the baseline any
+propagation has to beat: on these graphs seeds are hubs, so recovering them partly means ranking hubs high.
+
+--refit-gsea removes the circularity of holding a seed out of the propagation only: the seed also helped GSEA
+choose the pathways the graph is built from. Each held-out seed's GSEA is rerun without it, the pathways are
+selected again and the graph rebuilt from them (gsea_refit.py); a seed left outside the refitted graph is ranked
+with score 0, as unreachable.
+
+--holdout known_drug evaluates on a second, independent evidence line instead: the disease's Open Targets
+known_drug targets that are graph genes but not seeds, each ranked by the full-seed scores against the
+candidates that are not known_drug targets. No seed is removed, so nothing leaks into GSEA or the graph.
+
+Caching (seed hold-outs): a disease is scored again only if something its scores depend on changed: the sha256 of
+its graph and seed files (CACHE_INPUT_FILES), --restart-prob, --bfwalk-alpha, the BFWalk version, the held-out
+seeds (set by --max-seeds and --seed) or the refit settings. Otherwise its scores are read back from
+scores_left_out_details.tsv using cache_key.json (--recompute ignores the cache and recomputes).
 """
 
 import argparse
@@ -30,23 +42,31 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import scipy.sparse as sp
 from scipy.special import digamma
 from scipy.stats import beta, wilcoxon
 
 VALIDATION_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(VALIDATION_DIR.parent / "pipeline"))
+import stage3_build_graph as bg
 import stage5_score_candidates as sc
 from stage0_schemas import SeedGenesSchema, load_graph, sha256_of_file
+
+sys.path.insert(0, str(VALIDATION_DIR))
 
 METHODS = ["bfwalk", "rwr"]
 # Rank aggregations of BFWalk and RWR (see combined_scores): whether the two methods are complementary.
 COMBINATIONS = ["rrf", "borda", "rra", "union", "intersection"]
-RANKINGS = METHODS + COMBINATIONS
+# Rankings that ignore the seeds: what a propagation method has to beat.
+BASELINES = ["degree"]
+RANKINGS = METHODS + COMBINATIONS + BASELINES
 RANKING_LABELS = {"bfwalk": "BFWalk", "rwr": "RWR", "rrf": "RRF", "borda": "Borda", "rra": "RRA",
-                  "union": "union top-k", "intersection": "intersection top-k", "open_targets": "Open Targets"}
+                  "union": "union top-k", "intersection": "intersection top-k", "degree": "degree only",
+                  "open_targets": "Open Targets"}
 # One colour per ranking in every plot.
 RANKING_COLOURS = {"bfwalk": "tab:blue", "rwr": "tab:orange", "rrf": "tab:green", "borda": "tab:red",
-                   "rra": "tab:purple", "union": "tab:brown", "intersection": "tab:pink", "open_targets": "black"}
+                   "rra": "tab:purple", "union": "tab:brown", "intersection": "tab:pink", "degree": "tab:gray",
+                   "open_targets": "black"}
 # Reciprocal rank fusion's constant (Cormack et al. 2009): damps the weight of the very top ranks.
 RRF_K = 60
 GRAPH_SUFFIX = "_disease_graph"
@@ -54,8 +74,20 @@ LOO_SUFFIX = "_leave_one_out"
 CACHE_FILE = "cache_key.json"
 # The files of a catalogue disease that its scores are computed from (graph_metadata.json is only a summary).
 CACHE_INPUT_FILES = ["graph_weight.npz", "graph_sign.npz", "graph_gene_index.json", "disease_seed_genes.tsv"]
-RECORD_COLUMNS = ["gene", "status", "genetic_evidence", "n_seeds", "n_candidates",
-                  "bfwalk_score", "bfwalk_rank", "rwr_score", "rwr_rank"] + [f"{combination}_rank" for combination in COMBINATIONS]
+RECORD_COLUMNS = (["gene", "status", "in_graph", "genetic_evidence", "n_seeds", "n_candidates",
+                   "bfwalk_score", "bfwalk_rank", "rwr_score", "rwr_rank", "degree_score", "degree_rank"]
+                  + [f"{combination}_rank" for combination in COMBINATIONS]
+                  + ["n_pathways", "n_pathways_lost", "n_pathways_gained", "pathway_jaccard"])
+# Bumped when the records change, so caches written by an earlier version are recomputed.
+RECORD_VERSION = 2
+HOLDOUTS = ["seeds", "known_drug"]
+DEGREE_QUARTILES = ["lowest 25%", "25-50%", "50-75%", "top 25%"]
+KNOWN_DRUG_SUFFIX = "_known_drug"
+# BFWalk's peak memory grows with the square of the graph's nodes and not with its threads (measured: 1.4 GB at 2,411
+# nodes, 5.4 GB at 5,001, the same with 1 and 2 threads). Every --jobs worker holds its own copy, so parallel workers
+# can exhaust a laptop's memory and freeze it: at most this fraction of the machine's memory is planned for BFWalk.
+BFWALK_BYTES_PER_NODE_SQUARED = 230
+MEMORY_FRACTION = 0.6
 # A uniformly random ranking's expected AUROC; its ROC curve is the diagonal.
 RANDOM_AUROC = 0.5
 # Random rankings sampled for a random ranking's expected AUPRC (see random_auprc).
@@ -93,7 +125,37 @@ def parse_args(argv=None):
     parser.add_argument("--jobs", type=int, default=1, help="Held-out seeds scored in parallel. Default: 1.")
     parser.add_argument("--recompute", action="store_true",
                         help="Score every disease again, even if its cached results match its inputs.")
-    return parser.parse_args(argv)
+    parser.add_argument("--min-pooled-genes", type=int, default=200,
+                        help="Leave diseases whose graph has fewer genes out of the all-diseases outputs: their numbers "
+                        "are too unstable to compare. Their own directories are still written. Default: 200.")
+    parser.add_argument("--min-pooled-seeds", type=int, default=5,
+                        help="As --min-pooled-genes, for the seeds in the graph. Default: 5.")
+    parser.add_argument("--holdout", choices=HOLDOUTS, default="seeds",
+                        help="seeds (default): hold out each seed in turn. known_drug: rank the disease's known_drug "
+                        "targets that are graph genes but not seeds, by the full-seed scores (needs --associations).")
+    parser.add_argument("--associations", type=Path, default=None,
+                        help="--holdout known_drug: Open Targets association_by_datatype_indirect directory, e.g. "
+                        "data/association_by_datatype_indirect.")
+    parser.add_argument("--refit-gsea", action="store_true",
+                        help="Rerun each held-out seed's GSEA without it and rebuild the graph from the pathways "
+                        "selected then (see gsea_refit.py). Needs --gsea-catalogue-dir, --target-dir and --fi-file.")
+    parser.add_argument("--gsea-catalogue-dir", type=Path, default=None,
+                        help="--refit-gsea: the DisPathCatalogue v2 directory with merged_gene_sets.gmt and "
+                        "genetic_gene_scores_input.parquet.")
+    parser.add_argument("--target-dir", type=Path, default=None,
+                        help="--refit-gsea: Open Targets target parquet directory, e.g. data/opentargets/26.06/target.")
+    parser.add_argument("--fi-file", type=Path, default=None,
+                        help="--refit-gsea: Reactome functional-interaction file, unzipped.")
+    parser.add_argument("--fdr", type=float, default=0.05,
+                        help="--refit-gsea: FDR cutoff, as build_graph_catalogue.py --fdr. Default: 0.05.")
+    args = parser.parse_args(argv)
+    if args.holdout == "known_drug" and args.associations is None:
+        parser.error("--holdout known_drug needs --associations.")
+    if args.holdout == "known_drug" and args.refit_gsea:
+        parser.error("--refit-gsea applies to seed hold-outs only: known_drug targets are not in the GSEA ranking.")
+    if args.refit_gsea and None in (args.gsea_catalogue_dir, args.target_dir, args.fi_file):
+        parser.error("--refit-gsea needs --gsea-catalogue-dir, --target-dir and --fi-file.")
+    return args
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -318,11 +380,11 @@ PER_GENE = {
 
 def combined_score_tests(ranked, rng):
     """For each per-gene measure (PER_GENE) and combination: its mean over the held-out genes, the means under
-    BFWalk, RWR and a random ranking (one sample drawn with rng), and one-sided Wilcoxon signed-rank p-values,
+    BFWalk, RWR, degree only and a random ranking (one sample drawn with rng), and one-sided Wilcoxon signed-rank p-values,
     paired by gene, that the combination's is greater. Genes scored equally by both are dropped
     (zero_method="wilcox"); NA when all are. ranked: the ranked held-out seeds (n_candidates, <ranking>_rank)."""
     n_candidates = ranked["n_candidates"]
-    other_ranks = {method: ranked[f"{method}_rank"] for method in METHODS}
+    other_ranks = {method: ranked[f"{method}_rank"] for method in METHODS + BASELINES}
     other_ranks["random"] = random_ranks(n_candidates, rng)
     rows = []
     for measure, per_gene in PER_GENE.items():
@@ -389,50 +451,97 @@ def combined_scores(scores):
             "intersection": -ranks.max(axis=1)}
 
 
-def score_candidates(seeds, weight, gene_index, graph, restart_prob, bfwalk_alpha, bfwalk_threads):
-    """Stage 5's BFWalk and RWR scores of every graph gene that is not a seed."""
+def node_degree(weight, gene_index):
+    """Each gene's number of distinct graph neighbours, either direction, self-loops not counted."""
+    adjacency = ((weight != 0) + (weight.T != 0)).tolil()
+    adjacency.setdiag(0)
+    return pd.Series(np.diff(adjacency.tocsr().indptr), index=list(gene_index), dtype=float, name="degree_score")
+
+
+def score_candidates(seeds, weight, gene_index, graph, restart_prob, bfwalk_alpha, bfwalk_threads, degree=None):
+    """Stage 5's BFWalk and RWR scores of every graph gene that is not a seed, and its degree (the baseline)."""
     scores = pd.DataFrame({"bfwalk_score": pd.Series(sc.bfwalk_scores(weight, gene_index, seeds, bfwalk_alpha,
                                                                          bfwalk_threads))})
     scores["rwr_score"] = pd.Series(sc.rwr_scores(graph, seeds, restart_prob))
+    degree = node_degree(weight, gene_index) if degree is None else degree
+    scores["degree_score"] = degree.reindex(scores.index)
     scores.index.name = "gene"
     return scores.sort_values("bfwalk_score", ascending=False, kind="stable")
+
+
+def add_unreachable(scores, gene):
+    """scores with gene added at score 0 for every ranking: a gene outside the graph cannot be reached."""
+    if gene in scores.index:
+        return scores
+    unreachable = pd.DataFrame(0.0, index=pd.Index([gene], name=scores.index.name), columns=scores.columns)
+    return pd.concat([scores, unreachable])
 
 
 # Each worker process loads the disease's graph once (set by init_worker) instead of receiving it per seed.
 _WORKER = {}
 
 
-def init_worker(disease_dir, restart_prob, bfwalk_alpha, bfwalk_threads):
+def init_worker(disease_dir, restart_prob, bfwalk_alpha, bfwalk_threads, refit=None):
+    """refit: None, or the disease's refit context (see refit_context); disease_dir is then the graph of the
+    full refitted selection."""
     # Ctrl+C reaches every process of the terminal's process group; only the parent handles it (see
     # run_seeds), so workers do not each print a traceback.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     weight, _, gene_index, _ = load_graph(disease_dir)
     _WORKER.update(weight=weight, gene_index=gene_index, graph=sc.build_digraph(weight, gene_index),
-                   restart_prob=restart_prob, bfwalk_alpha=bfwalk_alpha, bfwalk_threads=bfwalk_threads)
+                   degree=node_degree(weight, gene_index), restart_prob=restart_prob, bfwalk_alpha=bfwalk_alpha,
+                   bfwalk_threads=bfwalk_threads, refit=refit)
+
+
+def refitted_graph(gene):
+    """(weight, gene_index, digraph, degree, selection summary) for gene's held-out run with --refit-gsea:
+    the full graph when its GSEA selects the same pathways without it, else the graph of the new selection
+    (weight None when no pathway is left)."""
+    import build_graph_catalogue as gc
+    import gsea_refit
+
+    refit = _WORKER["refit"]
+    selection = refit["gsea"].selection_without(refit["symbols"].get(gene, set()))
+    summary = gsea_refit.selection_summary(refit["gsea"].full_selection, selection)
+    if selection == refit["gsea"].full_selection:
+        return _WORKER["weight"], _WORKER["gene_index"], _WORKER["graph"], _WORKER["degree"], summary
+    if not selection:
+        return None, [], None, None, summary
+    graph = gc.build_disease_graph(selection, refit["gene_sets"], refit["interactions_by_gene_a"])
+    weight, _, gene_index = bg.graph_to_sparse(graph)
+    return weight, gene_index, sc.build_digraph(weight, gene_index), node_degree(weight, gene_index), summary
 
 
 def hold_out(gene, seeds, seed_dir):
-    """Score the candidates with gene removed from the seeds; write seed_dir and return gene's record."""
+    """Score the candidates with gene removed from the seeds (those in the graph used for gene); write seed_dir
+    and return gene's record."""
     started = time.time()
-    remaining = sorted(set(seeds) - {gene})
+    weight, gene_index, graph, degree = _WORKER["weight"], _WORKER["gene_index"], _WORKER["graph"], _WORKER["degree"]
+    record = {"gene": gene}
+    if _WORKER["refit"] is not None:
+        weight, gene_index, graph, degree, summary = refitted_graph(gene)
+        record.update(summary)
+    remaining = sorted((set(seeds) - {gene}) & set(gene_index))
     seed_dir.mkdir(parents=True, exist_ok=True)
-    record = {"gene": gene, "n_seeds": len(remaining)}
-    if not remaining:
+    record.update(n_seeds=len(remaining), in_graph=gene in set(gene_index))
+    if weight is None:
+        record.update(status="no_pathway_left")
+    elif not remaining:
         record.update(status="no_seed_left")
     else:
-        scores = score_candidates(remaining, _WORKER["weight"], _WORKER["gene_index"], _WORKER["graph"],
-                                  _WORKER["restart_prob"], _WORKER["bfwalk_alpha"], _WORKER["bfwalk_threads"])
+        scores = score_candidates(remaining, weight, gene_index, graph, _WORKER["restart_prob"],
+                                  _WORKER["bfwalk_alpha"], _WORKER["bfwalk_threads"], degree)
+        scores = add_unreachable(scores, gene)
         scores.to_csv(seed_dir / "candidate_scores.tsv", sep="\t")
-        record.update(status="ranked", n_candidates=len(scores))
-        for method in METHODS:
-            record[f"{method}_score"] = float(scores.loc[gene, f"{method}_score"])
-            record[f"{method}_rank"] = mid_rank(scores[f"{method}_score"], gene)
-        for combination, combined in combined_scores(scores).items():
-            record[f"{combination}_rank"] = mid_rank(combined, gene)
+        record.update(status="ranked", **rank_record(scores, gene))
     (seed_dir / "result.json").write_text(json.dumps(record, indent=2))
-    lines = [f"held-out gene: {gene}", f"remaining seeds: {len(remaining)}", f"status: {record['status']}"]
+    lines = [f"held-out gene: {gene}", f"remaining seeds: {len(remaining)}", f"status: {record['status']}",
+             f"in the graph: {record['in_graph']}"]
+    if "n_pathways" in record:
+        lines.append(f"refitted GSEA: {record['n_pathways']} pathways ({record['n_pathways_lost']} lost, "
+                     f"{record['n_pathways_gained']} gained, Jaccard {record['pathway_jaccard']:.3f})")
     if record["status"] == "ranked":
-        for method in METHODS:
+        for method in METHODS + BASELINES:
             lines.append(f"{method}: score {record[f'{method}_score']:.6g}, rank {record[f'{method}_rank']:g} "
                          f"of {record['n_candidates']} candidates")
         for combination in COMBINATIONS:
@@ -441,6 +550,37 @@ def hold_out(gene, seeds, seed_dir):
                  f"{time.time() - started:.1f} s")
     (seed_dir / "seed.log").write_text("\n".join(lines) + "\n")
     return record
+
+
+def rank_record(scores, gene):
+    """gene's score and rank under every ranking, among scores' candidates."""
+    record = {"n_candidates": len(scores)}
+    for method in METHODS + BASELINES:
+        record[f"{method}_score"] = float(scores.loc[gene, f"{method}_score"])
+        record[f"{method}_rank"] = mid_rank(scores[f"{method}_score"], gene)
+    for combination, combined in combined_scores(scores).items():
+        record[f"{combination}_rank"] = mid_rank(combined, gene)
+    return record
+
+
+def jobs_that_fit(n_genes, jobs, memory_bytes):
+    """How many of the requested workers fit in memory_bytes on a graph of n_genes; 0 if not even one does."""
+    per_run = BFWALK_BYTES_PER_NODE_SQUARED * n_genes ** 2
+    return min(max(1, jobs), int(MEMORY_FRACTION * memory_bytes // per_run))
+
+
+def fitting_jobs(n_genes, jobs, log):
+    """jobs_that_fit on this machine, logging when it lowers --jobs or leaves nothing to run."""
+    memory_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    fitted = jobs_that_fit(n_genes, jobs, memory_bytes)
+    needed_gb = BFWALK_BYTES_PER_NODE_SQUARED * n_genes ** 2 / 1e9
+    if fitted == 0:
+        log.warning("Skipped: BFWalk on %d genes needs about %.1f GB, more than %.0f%% of this machine's %.0f GB.",
+                    n_genes, needed_gb, 100 * MEMORY_FRACTION, memory_bytes / 1e9)
+    elif fitted < jobs:
+        log.warning("--jobs %d lowered to %d: each BFWalk run on %d genes needs about %.1f GB, and this machine has "
+                    "%.0f GB.", jobs, fitted, n_genes, needed_gb, memory_bytes / 1e9)
+    return fitted
 
 
 def package_version(name):
@@ -455,8 +595,14 @@ def cache_key(disease_dir, held_out, args):
     input_sha256 = {}
     for name in CACHE_INPUT_FILES:
         input_sha256[name] = sha256_of_file(disease_dir / name)
-    return {"input_sha256": input_sha256, "restart_prob": args.restart_prob, "bfwalk_alpha": args.bfwalk_alpha,
-            "bfwalk_version": package_version("bfwalk"), "held_out": [str(gene) for gene in held_out]}
+    key = {"record_version": RECORD_VERSION, "input_sha256": input_sha256, "restart_prob": args.restart_prob,
+           "bfwalk_alpha": args.bfwalk_alpha, "bfwalk_version": package_version("bfwalk"),
+           "held_out": [str(gene) for gene in held_out], "refit_gsea": args.refit_gsea}
+    if args.refit_gsea:
+        key["refit"] = {"fdr": args.fdr, "gmt_sha256": sha256_of_file(args.gsea_catalogue_dir / "merged_gene_sets.gmt"),
+                        "scores_sha256": sha256_of_file(args.gsea_catalogue_dir / "genetic_gene_scores_input.parquet"),
+                        "fi_sha256": sha256_of_file(args.fi_file)}
+    return key
 
 
 def cached_details(out_dir, key):
@@ -506,14 +652,135 @@ def disease_logger(log_path):
     return child
 
 
+def load_refit_inputs(args):
+    """What every disease's --refit-gsea shares: the GSEA library, the Ensembl gene sets and interactions the
+    graphs are built from, and the symbol index. Loaded once."""
+    import build_graph_catalogue as gc
+    import gsea_refit
+    from stage1_ingest import (CoverageTracker, build_genes_table, build_interactions_table, build_symbol_index,
+                               read_target_table)
+
+    target_paths = sorted(args.target_dir.glob("*.parquet"))
+    index = build_symbol_index(build_genes_table(read_target_table(target_paths)))
+    gene_sets, _ = gc.read_reactome_gene_sets(args.gsea_catalogue_dir / "merged_gene_sets.gmt", index)
+    interactions = build_interactions_table(args.fi_file, index, "reactome", CoverageTracker(source="reactome_fi"),
+                                            curated_only=True, min_score=None)
+    return {"library": gsea_refit.CatalogueGsea(args.gsea_catalogue_dir / "merged_gene_sets.gmt", target_paths),
+            "index": index, "gene_sets": gene_sets, "interactions_by_gene_a": interactions.set_index("gene_a")}
+
+
+def refit_context(disease, disease_dir, out_dir, args, log):
+    """The disease's GSEA refitted with every seed (its null sampled once here), and the graph of the pathways
+    it selects, written to out_dir/refit_full_graph. Returns (graph directory, context for the workers)."""
+    import build_graph_catalogue as gc
+    import gsea_refit
+
+    shared = args.refit_inputs
+    started = time.time()
+    scores = gsea_refit.read_disease_scores(args.gsea_catalogue_dir / "genetic_gene_scores_input.parquet", disease)
+    gsea = gsea_refit.DiseaseRefit(shared["library"], scores, args.fdr)
+    catalogue = gsea_refit.catalogue_selection(disease_dir, shared["gene_sets"])
+    log.info("Refit GSEA with every seed: %d pathways selected (%.0f s); the catalogue graph has %d (Jaccard %.3f). "
+             "Held-out genes are compared with this selection's graph.", len(gsea.full_selection),
+             time.time() - started, len(catalogue), gsea_refit.jaccard(gsea.full_selection, catalogue))
+    graph_dir = out_dir / "refit_full_graph"
+    graph = gc.build_disease_graph(gsea.full_selection, shared["gene_sets"], shared["interactions_by_gene_a"])
+    graph_dir.mkdir(parents=True, exist_ok=True)
+    weight, sign, gene_index = bg.graph_to_sparse(graph)
+    sp.save_npz(graph_dir / "graph_weight.npz", weight)
+    sp.save_npz(graph_dir / "graph_sign.npz", sign)
+    (graph_dir / "graph_gene_index.json").write_text(json.dumps(gene_index, indent=2))
+    (graph_dir / "graph_metadata.json").write_text(json.dumps(
+        {"n_nodes": graph.number_of_nodes(), "n_edges": graph.number_of_edges(),
+         "pathways": sorted(gsea.full_selection)}, indent=2))
+    context = {"gsea": gsea, "symbols": gsea_refit.symbols_by_gene(scores, shared["index"]),
+               "gene_sets": shared["gene_sets"], "interactions_by_gene_a": shared["interactions_by_gene_a"]}
+    return graph_dir, context
+
+
+def known_drug_targets(associations, disease):
+    """{target: known_drug score > 0} of one disease (association_by_datatype_indirect)."""
+    import pyarrow.compute as pc
+    import pyarrow.dataset as ds
+
+    table = ds.dataset(str(associations), format="parquet").to_table(
+        filter=(pc.field("diseaseId") == disease) & (pc.field("datatypeId") == "known_drug") & (pc.field("score") > 0),
+        columns=["targetId", "score"]).to_pandas()
+    return dict(zip(table["targetId"], table["score"]))
+
+
+def run_known_drug(disease, args, ks):
+    """--holdout known_drug for one disease: the full-seed scores, and each known_drug target that is a graph
+    gene but not a seed ranked among the candidates that are not known_drug targets (so every target is ranked
+    against the same negatives, one positive at a time, as a held-out seed is). Returns as run_disease."""
+    disease_dir = args.catalogue / f"{disease}{GRAPH_SUFFIX}"
+    out_dir = args.out_dir / f"{disease}{KNOWN_DRUG_SUFFIX}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    log = disease_logger(out_dir / "leave_one_out.log")
+    weight, _, gene_index, _ = load_graph(disease_dir)
+    seed_table = SeedGenesSchema.validate(pd.read_csv(disease_dir / "disease_seed_genes.tsv", sep="\t"))
+    seeds = sorted(set(seed_table["gene_id"]) & set(gene_index))
+    drug = known_drug_targets(args.associations, disease)
+    targets = sorted(set(drug) & (set(gene_index) - set(seeds)))
+    log.info("%s: %d genes in the graph, %d seeds; %d known_drug targets, %d of them graph genes that are not seeds.",
+             disease, len(gene_index), len(seeds), len(drug), len(targets))
+    if not seeds or not targets:
+        log.warning("No seed or no known_drug target to rank - skipped.")
+        return None
+    if not fitting_jobs(len(gene_index), 1, log):
+        return None
+    started = time.time()
+    scores = score_candidates(seeds, weight, gene_index, sc.build_digraph(weight, gene_index), args.restart_prob,
+                              args.bfwalk_alpha, os.cpu_count() or 1)
+    scores.to_csv(out_dir / "candidate_scores.tsv", sep="\t")
+    negatives = scores.drop(index=targets)
+    records = []
+    for target in targets:
+        records.append({"gene": target, "status": "ranked", "in_graph": True, "genetic_evidence": np.nan,
+                        "n_seeds": len(seeds), **rank_record(pd.concat([negatives, scores.loc[[target]]]), target)})
+    details = pd.DataFrame(records).reindex(columns=RECORD_COLUMNS)
+    details["known_drug_score"] = details["gene"].map(drug)
+    details.to_csv(out_dir / "scores_known_drug_details.tsv", sep="\t", index=False, na_rep="NA")
+    return summarise_disease(disease, details, out_dir, ks, args, log, started, "known_drug targets",
+                             len(gene_index), len(seeds))
+
+
+def summarise_disease(disease, details, out_dir, ks, args, log, started, what, n_genes, n_seeds):
+    """Metrics, curves and the disease's summary rows from its records. n_genes, n_seeds: in the graph."""
+    ranked = details[details["status"] == "ranked"]
+    rankings = {ranking: ranked[f"{ranking}_rank"] for ranking in RANKINGS}
+    table = metrics_table(rankings, ranked["n_candidates"], ks, args.follow_up_k, args.seed)
+    table.to_csv(out_dir / "metrics.tsv", sep="\t")
+    plot_roc_pr(rankings, ranked["n_candidates"], out_dir / "roc_pr_curve.png",
+                f"{disease}: {len(ranked)} held-out {what}, median "
+                f"{int(ranked['n_candidates'].median())} candidates", args.follow_up_k)
+    not_in_graph = int((~ranked["in_graph"].astype(bool)).sum())
+    log.info("Metrics (%d held-out %s, %d outside the graph, median %d candidates, %.0f s):\n%s", len(ranked), what,
+             not_in_graph, int(ranked["n_candidates"].median()), time.time() - started, format_metrics(table))
+
+    summary = table.reset_index()
+    summary.insert(0, "diseaseId", disease)
+    summary.insert(2, "n_held_out", len(ranked))
+    summary.insert(3, "n_candidates", float(ranked["n_candidates"].median()))
+    summary.insert(4, "n_not_in_graph", not_in_graph)
+    summary.insert(5, "n_genes", n_genes)
+    summary.insert(6, "n_seeds_in_graph", n_seeds)
+    return summary, ranked.assign(diseaseId=disease)
+
+
 def run_disease(disease, args, ks, rng):
     """Leave-one-out for one disease. Returns (summary rows, details of the ranked seeds) or None."""
+    if args.holdout == "known_drug":
+        return run_known_drug(disease, args, ks)
     disease_dir = args.catalogue / f"{disease}{GRAPH_SUFFIX}"
     out_dir = args.out_dir / f"{disease}{LOO_SUFFIX}"
     out_dir.mkdir(parents=True, exist_ok=True)
     log = disease_logger(out_dir / "leave_one_out.log")
 
-    _, _, gene_index, _ = load_graph(disease_dir)
+    graph_dir, refit = disease_dir, None
+    if args.refit_gsea:
+        graph_dir, refit = refit_context(disease, disease_dir, out_dir, args, log)
+    _, _, gene_index, _ = load_graph(graph_dir)
     seed_table = SeedGenesSchema.validate(pd.read_csv(disease_dir / "disease_seed_genes.tsv", sep="\t"))
     evidence = dict(zip(seed_table["gene_id"], seed_table["score"]))
     seeds = sorted(set(seed_table["gene_id"]) & set(gene_index))
@@ -534,41 +801,32 @@ def run_disease(disease, args, ks, rng):
         log.info("Cached: scores already exist (--recompute to score again).")
         details = add_combined_ranks(details, out_dir)
     else:
+        jobs = fitting_jobs(len(gene_index), args.jobs, log)
+        if not jobs:
+            return None
         # Removed first, so a run interrupted from here on is not taken for a complete one.
         (out_dir / CACHE_FILE).unlink(missing_ok=True)
-        bfwalk_threads = max(1, (os.cpu_count() or 1) // max(1, args.jobs))
-        init_args = (disease_dir, args.restart_prob, args.bfwalk_alpha, bfwalk_threads)
-        records = run_seeds(seeds, held_out, out_dir, args.jobs, init_args)
+        bfwalk_threads = max(1, (os.cpu_count() or 1) // jobs)
+        init_args = (graph_dir, args.restart_prob, args.bfwalk_alpha, bfwalk_threads, refit)
+        records = run_seeds(seeds, held_out, out_dir, jobs, init_args, sorted(set(seed_table["gene_id"])))
         details = pd.DataFrame(records)
         details["genetic_evidence"] = details["gene"].map(evidence)
         details = details.reindex(columns=RECORD_COLUMNS)
         details.to_csv(out_dir / "scores_left_out_details.tsv", sep="\t", index=False, na_rep="NA")
         (out_dir / CACHE_FILE).write_text(json.dumps(key, indent=2))
 
-    ranked = details[details["status"] == "ranked"]
-    rankings = {ranking: ranked[f"{ranking}_rank"] for ranking in RANKINGS}
-    table = metrics_table(rankings, ranked["n_candidates"], ks, args.follow_up_k, args.seed)
-    table.to_csv(out_dir / "metrics.tsv", sep="\t")
-    plot_roc_pr(rankings, ranked["n_candidates"], out_dir / "roc_pr_curve.png",
-                f"{disease}: leave-one-out, {len(ranked)} held-out seeds, median "
-                f"{int(ranked['n_candidates'].median())} candidates", args.follow_up_k)
-    log.info("Leave-one-out metrics (%d held-out seeds, median %d candidates, %.0f s):\n%s", len(ranked),
-             int(ranked["n_candidates"].median()), time.time() - started, format_metrics(table))
-
-    summary = table.reset_index()
-    summary.insert(0, "diseaseId", disease)
-    summary.insert(2, "n_held_out", len(ranked))
-    summary.insert(3, "n_candidates", float(ranked["n_candidates"].median()))
-    return summary, ranked.assign(diseaseId=disease)
+    return summarise_disease(disease, details, out_dir, ks, args, log, started,
+                             "seeds (GSEA refitted)" if args.refit_gsea else "seeds", len(gene_index), len(seeds))
 
 
-def run_seeds(seeds, held_out, out_dir, jobs, init_args):
-    """The full run and one run per held-out seed, in worker processes. On Ctrl+C the queued runs are cancelled
+def run_seeds(seeds, held_out, out_dir, jobs, init_args, all_seeds):
+    """The full run on seeds (those in the graph) and one run per held-out seed, in worker processes. all_seeds:
+    every seed of the disease, because a refitted graph can hold seeds the full graph does not. On Ctrl+C the queued runs are cancelled
     and the workers are terminated at once, instead of the pool waiting for every queued seed to finish."""
     pool = ProcessPoolExecutor(max_workers=max(1, jobs), initializer=init_worker, initargs=init_args)
     try:
         full = pool.submit(score_candidates_full, seeds, out_dir / "full")
-        futures = [pool.submit(hold_out, gene, seeds, out_dir / gene) for gene in held_out]
+        futures = [pool.submit(hold_out, gene, all_seeds, out_dir / gene) for gene in held_out]
         records = [future.result() for future in futures]
         full.result()
     except BaseException:
@@ -609,6 +867,7 @@ def main(argv=None):
     logger.info("leave_one_out.py %s", " ".join(sys.argv[1:] if argv is None else argv))
 
     diseases = select_diseases(args.catalogue, args.diseases, args.n_diseases)
+    args.refit_inputs = load_refit_inputs(args) if args.refit_gsea else None
     summaries, all_ranked = [], []
     try:
         for n, disease in enumerate(diseases, start=1):
@@ -625,11 +884,17 @@ def main(argv=None):
     if not summaries:
         logger.error("No disease could be validated - no metrics.")
         return 1
-    summary = pd.concat(summaries, ignore_index=True)
+    summary = mark_pooled(pd.concat(summaries, ignore_index=True), args.min_pooled_genes, args.min_pooled_seeds)
     summary.to_csv(args.out_dir / "leave_one_out_summary.tsv", sep="\t", index=False)
+    pooled_diseases = summary.loc[summary["in_pooled"], "diseaseId"].unique()
     pooled = pd.concat(all_ranked, ignore_index=True)
-    title = f"Leave-one-out ({pooled['diseaseId'].nunique()} diseases, {len(pooled)} held-out genes)"
-    plot_roc({method: pooled[f"{method}_rank"] for method in METHODS}, pooled["n_candidates"],
+    pooled = pooled[pooled["diseaseId"].isin(pooled_diseases)]
+    quartiles = degree_quartile_table(pooled)
+    quartiles.to_csv(args.out_dir / "auroc_by_degree_quartile.tsv", sep="\t")
+    logger.info("AUROC by the held-out gene's degree quartile:\n%s", format_metrics(quartiles))
+    what = {"seeds": "Leave-one-out", "known_drug": "known_drug targets"}[args.holdout]
+    title = f"{what} ({pooled['diseaseId'].nunique()} diseases, {len(pooled)} held-out genes)"
+    plot_roc({method: pooled[f"{method}_rank"] for method in METHODS + BASELINES}, pooled["n_candidates"],
              args.out_dir / "roc_curve_all_diseases.png", title)
     plot_roc_pr({ranking: pooled[f"{ranking}_rank"] for ranking in RANKINGS}, pooled["n_candidates"],
                 args.out_dir / "roc_pr_curve_combined_all_diseases.png", title, args.follow_up_k, enrichment=True)
@@ -637,10 +902,42 @@ def main(argv=None):
     # AUPRC and precision@k depend on each disease's prevalence: across diseases only their fold enrichments.
     metrics = (["auroc", "auprc_fold_enrichment", f"precision@{args.follow_up_k}_fold_enrichment"]
                + [f"recall@{k}" for k in ks])
-    log_summary(summary, tests, metrics)
-    logger.info("Wrote %s, roc_curve_all_diseases.png, roc_pr_curve_combined_all_diseases.png and "
-                "combined_score_tests.tsv.", args.out_dir / "leave_one_out_summary.tsv")
+    log_summary(summary[summary["in_pooled"]], tests, metrics)
+    logger.info("Wrote %s, auroc_by_degree_quartile.tsv, roc_curve_all_diseases.png, "
+                "roc_pr_curve_combined_all_diseases.png and combined_score_tests.tsv.",
+                args.out_dir / "leave_one_out_summary.tsv")
     return 0
+
+
+def mark_pooled(summary, min_genes, min_seeds):
+    """summary with in_pooled: whether a disease's graph is large enough for the all-diseases outputs. If none is,
+    all are pooled, so that a run on small graphs still gets its outputs."""
+    keep = (summary["n_genes"] >= min_genes) & (summary["n_seeds_in_graph"] >= min_seeds)
+    left_out = sorted(summary.loc[~keep, "diseaseId"].unique())
+    if not keep.any():
+        logger.warning("No graph has at least %d genes and %d seeds: pooling all %d diseases, though their numbers "
+                       "are unstable.", min_genes, min_seeds, len(left_out))
+        return summary.assign(in_pooled=True)
+    if left_out:
+        logger.info("Left out of the all-diseases outputs, with fewer than %d genes or %d seeds in the graph: %s.",
+                    min_genes, min_seeds, ", ".join(left_out))
+    return summary.assign(in_pooled=keep)
+
+
+def degree_quartile_table(pooled):
+    """Mean AUROC per ranking by how connected the held-out gene is: quartiles of its degree percentile among its
+    disease's candidates (auroc_from_rank of its degree rank). A method that only follows hubs tracks the degree
+    baseline from quartile to quartile. Quartiles pool genes, so a disease counts by its number of held-out genes."""
+    percentile = pd.Series([auroc_from_rank(rank, n) for rank, n in zip(pooled["degree_rank"], pooled["n_candidates"])],
+                           index=pooled.index)
+    table = pd.DataFrame({"quartile": pd.cut(percentile, [-np.inf, 0.25, 0.5, 0.75, np.inf], labels=DEGREE_QUARTILES)})
+    for ranking in METHODS + BASELINES:
+        table[f"auroc_{ranking}"] = [auroc_from_rank(rank, n) for rank, n in
+                                     zip(pooled[f"{ranking}_rank"], pooled["n_candidates"])]
+    grouped = table.groupby("quartile", observed=False)
+    result = grouped.mean()
+    result.insert(0, "n_held_out", grouped.size())
+    return result
 
 
 def write_combined_score_tests(pooled, path, seed):
@@ -674,7 +971,7 @@ def log_summary(summary, tests, metrics):
     per_ranking = summary.groupby("ranking", sort=False)[metrics].mean()
     pooled = tests[tests["diseaseId"] == "all"]
     sections = [f"Mean over {n_diseases} diseases:\n{format_metrics(per_ranking)}"]
-    for other in ["random"] + METHODS:
+    for other in ["random"] + METHODS + BASELINES:
         p_values = pooled.pivot(index="combination", columns="measure", values=f"p_vs_{other}")
         sections.append(f"rank combination method vs {other} (p-value, one-sided Wilcoxon signed-rank test)\n"
                         + format_metrics(p_values.reindex(index=COMBINATIONS, columns=list(PER_GENE))))

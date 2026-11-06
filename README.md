@@ -63,10 +63,10 @@ See [docs/README.md](docs/README.md) for each stage's inputs, outputs and option
 
 ## Data
 
-Stage 1 downloads the pinned versions into `--data-dir` on the first run (~1.5 GB), checks
+Stage 1 downloads the pinned versions into `--data-dir` on the first run (~3.5 GB), checks
 their sha256, and reuses them afterwards:
 
-- [Open Targets Platform](https://platform.opentargets.org/) 26.06: `association_by_datasource_direct`
+- [Open Targets Platform](https://platform.opentargets.org/) 26.06: `association_by_datasource_indirect`
   (disease-gene evidence), `target` (gene identifiers, tractability, safety) and `disease`.
 - [Reactome](https://reactome.org/) release 97: `ReactomePathways.gmt` (pathway gene sets) and
   `Ensembl2Reactome.txt`; [Reactome functional interactions](https://reactome.org/tools/reactome-fiviz)
@@ -82,4 +82,4 @@ See [development/README.md](development/README.md) and [development/prompt_histo
 
 ## Validation
 
-See [validation/README.md](validation/README.md).
+See [validation/README.md](validation/README.md). `scripts/run_one_disease.sh` runs the pipeline and every leave-one-out mode for one disease, one step at a time.

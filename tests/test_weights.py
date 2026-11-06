@@ -57,9 +57,17 @@ OT_DISEASE_SUBSET = pd.DataFrame(
 )
 
 
+def test_datatype_harmonic_sum():
+    assert wts.datatype_harmonic_sum([0.5]) == pytest.approx(0.5)
+    # Sorted descending first, each divided by its rank squared, then by the same sum over ones.
+    assert wts.datatype_harmonic_sum([0.7, 0.9]) == pytest.approx((0.9 + 0.7 / 4) / (1 + 1 / 4))
+    # Only the 50 strongest count.
+    assert wts.datatype_harmonic_sum([1.0] * 50 + [0.0] * 10) == pytest.approx(1.0)
+
+
 def test_node_weights_reflect_only_allowed_datatypes():
     scores = wts.compute_genetic_evidence_scores(OT_DISEASE_SUBSET, wts.EVIDENCE_DATATYPES, GENE_INDEX)
-    assert scores[A] == pytest.approx(0.9)  # max of allowed rows, not the 0.99 decoy
+    assert scores[A] == pytest.approx(0.9)  # allowed rows only, not the 0.99 decoy
     assert scores[B] == pytest.approx(0.7)
     assert scores[C] == pytest.approx(0.0)
     assert scores[D] == pytest.approx(0.0)

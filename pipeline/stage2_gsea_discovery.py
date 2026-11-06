@@ -1,20 +1,28 @@
 """Stage 2 - disease-pathway discovery with GSEA.
 
-Runs preranked GSEA of the disease's seed genes - the genes with an Open Targets genetic_association score
-> 0 for the disease - against the Reactome gene sets listed in Stage 1's manifest and writes the significant
-pathways to disease_pathways.tsv next to the manifest. Stage 3 builds the graph from those pathways.
-The same seed genes (minus any benchmark holdout) are written to disease_seed_genes.tsv; Stage 5 propagates
-from them. The holdout itself is written to benchmark_holdout_genes.tsv (empty without
---benchmark-holdout-file), so Stage 4 can ignore its evidence.
+Ranks the disease's genes by genetic evidence and runs preranked GSEA against the Reactome gene sets listed in
+Stage 1's manifest, with the DisPathCatalogue v2 method (gsea_core.py): every gene of the gene sets is in the
+ranking (genes without evidence score 0), enrichment scores on the mean-centred ranking, p-values from a gene-set
+permutation null per set size, Benjamini-Hochberg FDR over all tested sets. A pathway is disease-relevant when
+it is enriched at the top of the ranking (es > 0) with FDR below --fdr-threshold. The validation catalogue
+(validation/build_graph_catalogue.py) selects its pathways the same way, from the same code.
+
+Writes next to the manifest:
+- disease_pathways.tsv: the disease-relevant pathways; Stage 3 builds the graph from them.
+- gsea_results.tsv: every tested pathway with es, nes, pval, fdr, n_perm and size, both ES signs.
+- disease_seed_genes.tsv: the genes with genetic evidence > 0 (minus any benchmark holdout); Stage 5 propagates
+  from them.
+- benchmark_holdout_genes.tsv: the holdout (empty without --benchmark-holdout-file), so Stage 4 can ignore its
+  evidence.
 """
 
 import argparse
 import logging
 from pathlib import Path
 
-import blitzgsea
 import pandas as pd
 
+import gsea_core
 from stage0_schemas import (
     DiseasePathwaysSchema,
     GeneSetsSchema,
@@ -22,6 +30,7 @@ from stage0_schemas import (
     HoldoutGenesSchema,
     OTAssociationsSchema,
     SeedGenesSchema,
+    datatype_harmonic_sum,
     fail,
     find_artifact,
     load_manifest,
@@ -30,25 +39,26 @@ from stage1_ingest import build_symbol_index, resolve_gene
 
 logger = logging.getLogger("gsea_discovery")
 
-# Placeholder threshold, not tuned.
-JACCARD_COLLAPSE_THRESHOLD = 0.7
-# blitzgsea tests only gene sets with at least this many signature genes (its min_size default).
-BLITZGSEA_MIN_SIZE = 5
 NO_GSEA_CONSEQUENCE = ("disease_pathways.tsv is written empty, so Stage 3 has no pathway to build the graph "
                        "from and stops.")
+GSEA_RESULT_COLUMNS = ["set_id", "gene_set", "source_db", "es", "nes", "pval", "fdr", "n_perm", "geneset_size"]
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         prog="stage2_gsea_discovery.py",
-        description="Stage 2 - disease-pathway discovery. FDR-corrected GSEA of the disease's "
-        "genetic-association genes against Reactome gene sets (size-capped, redundancy-collapsed). "
-        "Reads gene_sets.parquet + ot_disease_subset.parquet via --manifest; writes "
-        "disease_pathways.tsv, disease_seed_genes.tsv and benchmark_holdout_genes.tsv next to it.",
+        description="Stage 2 - disease-pathway discovery. GSEA (DisPathCatalogue v2 method: permutation p-values, "
+        "BH-FDR) of the disease's genetic-association ranking against Stage 1's Reactome gene sets. Reads "
+        "gene_sets.parquet + ot_disease_subset.parquet via --manifest; writes disease_pathways.tsv, "
+        "gsea_results.tsv, disease_seed_genes.tsv and benchmark_holdout_genes.tsv next to it.",
     )
     parser.add_argument("--manifest", required=True, type=Path, help="Path to Stage 1's manifest.json.")
-    parser.add_argument("--pval-threshold", type=float, default=0.05, help="Nominal p-value cutoff.")
-    parser.add_argument("--fdr-threshold", type=float, default=0.1, help="BH-FDR cutoff.")
+    parser.add_argument("--fdr-threshold", type=float, default=0.05,
+                        help="BH-FDR cutoff for a pathway enriched at the top of the ranking (es > 0). "
+                        "Default: 0.05, as in the validation catalogue.")
+    parser.add_argument("--min-genes", type=int, default=gsea_core.MIN_SIZE,
+                        help=f"Run GSEA only if at least this many genes have genetic evidence and are in a gene "
+                        f"set. Default: {gsea_core.MIN_SIZE}.")
     parser.add_argument(
         "--benchmark-holdout-file", type=Path, default=None,
         help="Optional file of gene symbols/Ensembl IDs (one per line, '#' comments allowed) to exclude "
@@ -80,105 +90,52 @@ def read_holdout_genes(holdout_path, genes_df):
 
 
 def build_signature(ot_disease_subset):
-    """Rank the seed genes by genetic_association evidence only. Open Targets' overall score includes pathway
-    evidence, and testing that against pathways would be circular. A gene's score is its strongest datasource;
-    only genes scoring > 0 are seeds."""
+    """Each gene's genetic_association score: its datasource scores aggregated as Open Targets aggregates a
+    datatype (datatype_harmonic_sum). Genetic evidence only: Open Targets' overall score includes pathway
+    evidence, and testing that against pathways would be circular. Only genes scoring > 0 are returned."""
     genetic = ot_disease_subset[ot_disease_subset["datatype_id"] == "genetic_association"]
-    signature = genetic.groupby("gene_id", as_index=False)["score"].max()
+    signature = genetic.groupby("gene_id")["score"].agg(datatype_harmonic_sum).reset_index()
     signature = signature[signature["score"] > 0]
     if signature.empty:
         fail("ot_disease_subset.parquet has no genetic_association score > 0 - cannot build a GSEA ranking signature.")
-    return signature.rename(columns={"gene_id": "gene"})[["gene", "score"]]
+    return signature.rename(columns={"gene_id": "gene"})[["gene", "score"]].reset_index(drop=True)
 
 
-def gene_sets_as_dict(gene_sets):
-    sets_by_id = {}
-    for set_id, genes in gene_sets.groupby("set_id")["gene_id"]:
-        sets_by_id[set_id] = set(genes)
-    return sets_by_id
-
-
-def collapse_near_duplicate_sets(gene_sets, jaccard_threshold=JACCARD_COLLAPSE_THRESHOLD):
-    """Drop a gene set if it is nearly identical (Jaccard > threshold) to a smaller set already kept.
-    Reactome lists every hierarchy level as its own set, and testing near-copies breaks the FDR correction."""
-    sets_by_id = gene_sets_as_dict(gene_sets)
-    sizes_and_ids = []
-    for set_id, genes in sets_by_id.items():
-        sizes_and_ids.append((len(genes), set_id))
-
-    kept_ids = []
-    # gene -> kept sets containing it, so each set is compared only with kept sets that share a gene.
-    kept_sets_by_gene = {}
-    for _, set_id in sorted(sizes_and_ids):
-        genes = sets_by_id[set_id]
-        overlapping_kept_sets = set()
-        for gene in genes:
-            overlapping_kept_sets |= kept_sets_by_gene.get(gene, set())
-
-        is_near_duplicate = False
-        for kept_id in overlapping_kept_sets:
-            kept_genes = sets_by_id[kept_id]
-            jaccard = len(genes & kept_genes) / len(genes | kept_genes)
-            if jaccard > jaccard_threshold:
-                is_near_duplicate = True
-                break
-        if is_near_duplicate:
-            continue
-
-        kept_ids.append(set_id)
-        for gene in genes:
-            if gene not in kept_sets_by_gene:
-                kept_sets_by_gene[gene] = set()
-            kept_sets_by_gene[gene].add(set_id)
-
-    n_dropped = len(sets_by_id) - len(kept_ids)
-    if n_dropped:
-        logger.info("Collapsed %d near-duplicate gene set(s) (Jaccard > %.2f).", n_dropped, jaccard_threshold)
-    return gene_sets[gene_sets["set_id"].isin(kept_ids)]
+def gene_sets_as_library(gene_sets):
+    """{set_id: sorted gene IDs}, in set_id order."""
+    return {set_id: sorted(genes) for set_id, genes in gene_sets.groupby("set_id")["gene_id"]}
 
 
 def no_tested_pathways():
-    return pd.DataFrame({"set_id": pd.Series(dtype="object"), "gene_set": pd.Series(dtype="object"),
-                         "source_db": pd.Series(dtype="object"), "pval": pd.Series(dtype="float64"),
-                         "fdr": pd.Series(dtype="float64")})
+    return pd.DataFrame({column: pd.Series(dtype="float64") for column in GSEA_RESULT_COLUMNS}).astype(
+        {"set_id": "object", "gene_set": "object", "source_db": "object", "n_perm": "int64", "geneset_size": "int64"})
 
 
-def run_gsea(signature, gene_sets, seed):
-    """Return every tested pathway's statistics (unfiltered) and the gene sets as {set_id: genes}. When no
-    pathway can be tested the statistics table is empty and a warning says why."""
-    sets_by_id = gene_sets_as_dict(gene_sets)
-    if len(signature) < BLITZGSEA_MIN_SIZE:
-        logger.warning("Only %d seed gene(s): GSEA tests a pathway only if it holds at least %d of them, so "
-                       "nothing can be tested. %s", len(signature), BLITZGSEA_MIN_SIZE, NO_GSEA_CONSEQUENCE)
-        return no_tested_pathways(), sets_by_id
-
-    library = {}
-    for set_id, genes in sets_by_id.items():
-        library[set_id] = sorted(genes)
-    # Scores are one-sided (0-1), so the sign of the enrichment score means top vs bottom of the ranking,
-    # not up- vs down-regulation.
-    try:
-        result = blitzgsea.gsea(signature, library, seed=seed, verbose=False, progress=False)
-    except (ZeroDivisionError, ValueError) as error:
-        # blitzgsea's null-distribution calibration breaks on small signatures: below ~7 genes, and whenever
-        # the signature length equals one of its calibration set sizes (up to ~230 genes).
-        logger.warning("blitzgsea could not calibrate GSEA on the %d-gene signature (%s: %s). %s",
-                       len(signature), type(error).__name__, error, NO_GSEA_CONSEQUENCE)
-        return no_tested_pathways(), sets_by_id
+def run_gsea(signature, gene_sets, seed, min_genes=gsea_core.MIN_SIZE):
+    """Every tested pathway's statistics (unfiltered, both ES signs). Empty, with a warning saying why, when
+    there is nothing to test."""
+    library = gene_sets_as_library(gene_sets)
+    background = set(gene_sets["gene_id"])
+    n_in_background = int(signature["gene"].isin(background).sum())
+    if n_in_background < min_genes:
+        logger.warning("Only %d gene(s) with genetic evidence are in a gene set (fewer than %d), so GSEA does not "
+                       "run. %s", n_in_background, min_genes, NO_GSEA_CONSEQUENCE)
+        return no_tested_pathways()
+    scores = dict(zip(signature["gene"], signature["score"]))
+    result = gsea_core.run_gsea(scores, library, seed=seed, order_seed=seed)
     if result.empty:
-        logger.warning("No gene set holds %d or more of the %d seed genes, so GSEA tested nothing. %s",
-                       BLITZGSEA_MIN_SIZE, len(signature), NO_GSEA_CONSEQUENCE)
-        return no_tested_pathways(), sets_by_id
-
-    result = result.reset_index().rename(columns={"Term": "set_id"})
+        logger.warning("No gene set has %d to %d genes, so GSEA tested nothing. %s", gsea_core.MIN_SIZE,
+                       gsea_core.MAX_SIZE, NO_GSEA_CONSEQUENCE)
+        return no_tested_pathways()
     set_names = gene_sets.drop_duplicates("set_id").set_index("set_id")[["set_name", "source_db"]]
     result = result.join(set_names, on="set_id").rename(columns={"set_name": "gene_set"})
-    return result, sets_by_id
+    return result[GSEA_RESULT_COLUMNS]
 
 
-def filter_results(result, pval_threshold, fdr_threshold):
-    significant = (result["pval"] <= pval_threshold) & (result["fdr"] <= fdr_threshold)
-    return result.loc[significant].sort_values(["fdr", "pval"])
+def filter_results(result, fdr_threshold):
+    """The disease-relevant pathways: enriched at the top of the ranking (es > 0) with FDR below the cutoff.
+    A negative ES means the set's genes sit among the weakest-evidence genes, not that it is depleted."""
+    return gsea_core.significant_sets(result, fdr_threshold)
 
 
 def round_to_4_significant_digits(value):
@@ -201,27 +158,29 @@ def run(args):
         ot_disease_subset = ot_disease_subset[~is_holdout]
 
     signature = build_signature(ot_disease_subset)
-    collapsed_gene_sets = collapse_near_duplicate_sets(gene_sets)
-    result, _ = run_gsea(signature, collapsed_gene_sets, seed=manifest.seed)
+    result = run_gsea(signature, gene_sets, seed=manifest.seed, min_genes=args.min_genes)
+    significant = filter_results(result, args.fdr_threshold)
+    logger.info("GSEA: %d genes with genetic evidence (%d in a gene set), %d/%d gene sets tested, %d with es > 0 "
+                "and FDR < %g.", len(signature), int(signature["gene"].isin(set(gene_sets["gene_id"])).sum()),
+                len(result), gene_sets["set_id"].nunique(), len(significant), args.fdr_threshold)
 
-    significant = filter_results(result, args.pval_threshold, args.fdr_threshold)
-    logger.info("GSEA: %d seed genes, %d/%d gene sets tested, %d significant.",
-                len(signature), len(result), gene_sets["set_id"].nunique(), len(significant))
-
+    out_dir = args.manifest.parent
+    result.sort_values(["fdr", "pval", "set_id"], na_position="last").to_csv(
+        out_dir / "gsea_results.tsv", sep="\t", index=False, na_rep="NA")
     output = significant[list(DiseasePathwaysSchema.columns)].copy()
     output["pval"] = output["pval"].map(round_to_4_significant_digits)
     output["fdr"] = output["fdr"].map(round_to_4_significant_digits)
     output = DiseasePathwaysSchema.validate(output)
-    output_path = args.manifest.parent / "disease_pathways.tsv"
+    output_path = out_dir / "disease_pathways.tsv"
     output.to_csv(output_path, sep="\t", index=False)
 
     seeds = SeedGenesSchema.validate(signature.rename(columns={"gene": "gene_id"}))
     seeds = seeds.sort_values(["score", "gene_id"], ascending=[False, True])
-    seeds_path = args.manifest.parent / "disease_seed_genes.tsv"
+    seeds_path = out_dir / "disease_seed_genes.tsv"
     seeds.to_csv(seeds_path, sep="\t", index=False)
     # Always written, so a later run without a holdout replaces an earlier run's file.
     holdout = HoldoutGenesSchema.validate(pd.DataFrame({"gene_id": pd.Series(sorted(holdout_gene_ids), dtype="object")}))
-    holdout.to_csv(args.manifest.parent / "benchmark_holdout_genes.tsv", sep="\t", index=False)
+    holdout.to_csv(out_dir / "benchmark_holdout_genes.tsv", sep="\t", index=False)
     logger.info("Stage 2 complete: %s, %s (%d seed genes, %d held out)", output_path, seeds_path, len(seeds),
                 len(holdout))
     return output_path

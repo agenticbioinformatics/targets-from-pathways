@@ -108,7 +108,7 @@ def test_missing_package_is_reported_before_help(monkeypatch, caplog):
 
     def import_module(name):
         if name == "stage2_gsea_discovery":
-            raise ModuleNotFoundError("No module named 'blitzgsea'")
+            raise ModuleNotFoundError("No module named 'pyarrow'")
         return real_import(name)
 
     monkeypatch.setattr(run_pipeline.importlib, "import_module", import_module)
@@ -117,7 +117,7 @@ def test_missing_package_is_reported_before_help(monkeypatch, caplog):
             run_pipeline.main(["--help"])
     assert exc.value.code == 1
     message = "\n".join(r.message for r in caplog.records)
-    assert "stage2_gsea_discovery.py: No module named 'blitzgsea'" in message
+    assert "stage2_gsea_discovery.py: No module named 'pyarrow'" in message
     assert "pip install -r requirements.txt" in message
 
 

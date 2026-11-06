@@ -118,7 +118,7 @@ DiseasePathwaysSchema = DataFrameSchema(
 )
 
 # Stage 2's seed genes: the disease's genes with a genetic_association score > 0 (minus any benchmark holdout),
-# with their strongest genetic_association score. GSEA ranks them (Stage 2) and Stage 5 propagates from them.
+# with their genetic_association score (datatype_harmonic_sum). GSEA ranks them (Stage 2) and Stage 5 propagates from them.
 # score is optional so that a hand-made seed list (gene_id only) can be passed to Stage 5.
 SeedGenesSchema = DataFrameSchema(
     {
@@ -300,6 +300,19 @@ class Manifest(BaseModel):
     output_artifacts: List[OutputArtifact]
     coverage_report: Dict[str, CoverageEntry]
     scale_report: ScaleReport
+
+
+# Open Targets' harmonic sum uses at most the 50 strongest scores.
+HARMONIC_SUM_TOP = 50
+
+
+def datatype_harmonic_sum(scores):
+    """Open Targets' aggregation of one gene's datasource scores into a datatype score, as DisPathCatalogue
+    computes it: the top 50 sorted descending, sum of score / rank^2, divided by the same sum over as many ones.
+    Stage 2 ranks genes by it and Stages 4 and 7 report it, so all show the same genetic_association score."""
+    top = np.sort(np.asarray(scores, dtype=float))[::-1][:HARMONIC_SUM_TOP]
+    weights = 1.0 / np.arange(1, len(top) + 1) ** 2
+    return float((top * weights).sum() / weights.sum())
 
 
 def fail(message):

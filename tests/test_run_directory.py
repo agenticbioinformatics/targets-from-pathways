@@ -28,7 +28,6 @@ from fixtures.synthetic_run import write_synthetic_stage1
 from stage0_schemas import find_artifact, load_manifest, sha256_of_file
 
 HOLDOUT_FILE = Path(__file__).parent / "fixtures" / "benchmark_holdout_synthetic.txt"
-HELD_OUT = "ENSG00000000017"  # OLDG17 in benchmark_holdout_synthetic.txt
 # G5: unlike G17 it stays in the graph when held out (its GSEA pathways remain significant without it).
 HELD_OUT_IN_GRAPH = "ENSG00000000005"
 
@@ -123,11 +122,15 @@ def test_holdout_gene_evidence_does_not_feed_stage4(tmp_path):
 
 def test_rerun_without_holdout_clears_the_holdout_file(tmp_path):
     run_dir = _copy_run(tmp_path)
-    _run_stages_2_to_4(run_dir)
+    # A gene in a disease pathway, so it is in the graph with and without the holdout.
+    holdout_file = tmp_path / "holdout.txt"
+    holdout_file.write_text(HELD_OUT_IN_GRAPH + "\n")
+    _run_stages_2_to_4(run_dir, holdout_file)
+    assert json.loads((run_dir / "graph_metadata.json").read_text())["genetic_evidence_score"][HELD_OUT_IN_GRAPH] == 0.0
     _run_stages_2_to_4(run_dir, holdout_file=None)
     assert pd.read_csv(run_dir / "benchmark_holdout_genes.tsv", sep="\t").empty
     metadata = json.loads((run_dir / "graph_metadata.json").read_text())
-    assert metadata["genetic_evidence_score"][HELD_OUT] > 0.0
+    assert metadata["genetic_evidence_score"][HELD_OUT_IN_GRAPH] > 0.0
 
 
 def test_stage4_user_weights_and_rerun_without_them(tmp_path):

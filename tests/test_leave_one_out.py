@@ -119,6 +119,9 @@ def test_held_out_seed_is_ranked_among_the_candidates(results):
 
 def test_metrics_and_summary(results):
     summary = pd.read_csv(results / "leave_one_out_summary.tsv", sep="\t").set_index("ranking")
+    assert (results / "auroc_by_degree_quartile.tsv").exists()
+    assert (summary["n_genes"] == 6).all() and (summary["n_seeds_in_graph"] == 3).all()
+    assert summary["in_pooled"].all()  # STAR is small, but it is the only disease
     assert list(summary.index) == loo.RANKINGS + ["random"]
     assert list(summary["diseaseId"].unique()) == ["STAR"]
     assert (summary["n_held_out"] == 3).all() and (summary["n_candidates"] == 4).all()
@@ -139,7 +142,8 @@ def test_metrics_and_summary(results):
     tests = pd.read_csv(results / "combined_score_tests.tsv", sep="\t")
     assert set(tests["diseaseId"]) == {"all", "STAR"}
     assert list(tests.columns) == ["diseaseId", "measure", "combination", "n_held_out", "mean", "mean_bfwalk",
-                                   "mean_rwr", "mean_random", "p_vs_bfwalk", "p_vs_rwr", "p_vs_random"]
+                                   "mean_rwr", "mean_degree", "mean_random", "p_vs_bfwalk", "p_vs_rwr",
+                                   "p_vs_degree", "p_vs_random"]
     # Every combination ranks each held-out gene exactly as BFWalk and RWR do: nothing to test.
     assert tests["p_vs_bfwalk"].isna().all() and tests["p_vs_rwr"].isna().all()
 
@@ -224,12 +228,14 @@ def test_combined_score_tests():
     by per-gene AUROC (1 vs 0) and average precision vs random (100 / harmonic(100) vs 1 / harmonic(100))."""
     n = 20
     ranked = pd.DataFrame({"n_candidates": [100] * n, "bfwalk_rank": [100.0] * n, "rwr_rank": [100.0] * n,
+                           "degree_rank": [50.0] * n,
                            **{f"{combination}_rank": [1.0] * n for combination in loo.COMBINATIONS}})
     rows = {(row["measure"], row["combination"]): row for row in loo.combined_score_tests(ranked, np.random.default_rng(0))}
     assert set(rows) == {(measure, combination) for measure in loo.PER_GENE for combination in loo.COMBINATIONS}
     for row in rows.values():
         assert row["n_held_out"] == n
         assert row["p_vs_bfwalk"] < 1e-5 and row["p_vs_rwr"] < 1e-5 and row["p_vs_random"] < 1e-4
+        assert row["p_vs_degree"] < 1e-5
     assert (rows[("auroc", "rrf")]["mean"], rows[("auroc", "rrf")]["mean_bfwalk"]) == (1.0, 0.0)
     harmonic = sum(1 / i for i in range(1, 101))
     assert rows[("average_precision_vs_random", "rrf")]["mean"] == pytest.approx(100 / harmonic)
@@ -309,3 +315,156 @@ def test_cached_results_get_up_to_date_combinations(tmp_path):
     assert "Cached:" in (out_dir / "STAR_leave_one_out" / "leave_one_out.log").read_text()
     details = pd.read_csv(details_file, sep="\t")
     assert (details["rra_rank"] == 2.5).all() and (details["rrf_rank"] == 2.5).all()
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Degree baseline, --holdout known_drug, --refit-gsea
+# ---------------------------------------------------------------------------------------------------------
+
+
+def test_degree_baseline(results):
+    weight, _, gene_index, _ = loo.load_graph(results.parent / "disease_graph_catalogue" / "STAR_disease_graph")
+    degree = loo.node_degree(weight, gene_index)
+    assert degree[H] == 4 and degree[S1] == degree[X] == 1 and degree[Y] == 0
+    details = pd.read_csv(results / "STAR_leave_one_out" / "scores_left_out_details.tsv", sep="\t").set_index("gene")
+    # Candidates H (4), S1 and X (1, tied), Y (0): S1 is 2.5 of 4, as for the propagation methods.
+    assert (details["degree_rank"] == 2.5).all() and (details["degree_score"] == 1).all()
+    assert details["in_graph"].all()
+
+
+def test_small_graphs_are_left_out_of_the_pooled_outputs():
+    summary = pd.DataFrame({"diseaseId": ["BIG", "FEW_GENES", "FEW_SEEDS"], "n_genes": [500, 100, 500],
+                            "n_seeds_in_graph": [20, 20, 3]})
+    assert loo.mark_pooled(summary, 200, 5)["in_pooled"].tolist() == [True, False, False]
+    # All small: pooled anyway, so the run still gets its outputs.
+    assert loo.mark_pooled(summary.iloc[1:], 200, 5)["in_pooled"].all()
+
+
+def test_degree_quartile_table():
+    # 5 candidates: degree ranks 1 to 5 are percentiles 1, 0.75, 0.5, 0.25, 0.
+    pooled = pd.DataFrame({"n_candidates": [5] * 5, "degree_rank": [1.0, 2.0, 3.0, 4.0, 5.0],
+                           "bfwalk_rank": [1.0, 1.0, 1.0, 5.0, 5.0], "rwr_rank": [3.0] * 5})
+    table = loo.degree_quartile_table(pooled)
+    assert table["n_held_out"].tolist() == [2, 1, 1, 1]
+    assert table.loc["lowest 25%", "auroc_bfwalk"] == 0.0
+    assert table.loc["top 25%", "auroc_bfwalk"] == 1.0
+    assert (table["auroc_rwr"] == 0.5).all()
+    assert table["auroc_degree"].tolist() == [0.125, 0.5, 0.75, 1.0]
+
+
+def test_jobs_are_limited_by_memory():
+    memory_16gb = 16 * 1024 ** 3
+    assert loo.jobs_that_fit(2411, 4, memory_16gb) == 4
+    assert loo.jobs_that_fit(5001, 4, memory_16gb) == 1  # four workers froze a 16 GB laptop
+    assert loo.jobs_that_fit(10350, 1, memory_16gb) == 0
+    assert loo.jobs_that_fit(10350, 8, 256 * 1024 ** 3) == 6
+
+
+def test_unreachable_gene_ranks_last_with_score_zero():
+    scores = pd.DataFrame({"bfwalk_score": [0.5, 0.1], "rwr_score": [0.4, 0.2], "degree_score": [3.0, 1.0]},
+                          index=pd.Index(["A", "B"], name="gene"))
+    with_c = loo.add_unreachable(scores, "C")
+    assert list(with_c.index) == ["A", "B", "C"] and (with_c.loc["C"] == 0).all()
+    record = loo.rank_record(with_c, "C")
+    assert record["n_candidates"] == 3 and record["bfwalk_rank"] == 3 and record["degree_rank"] == 3
+    assert loo.add_unreachable(scores, "A") is scores
+
+
+def test_known_drug_holdout(results, tmp_path):
+    """STAR's known_drug targets: X (a graph gene, not a seed: ranked), S1 (a seed: not a hold-out), and a gene
+    outside the graph. X is ranked against H and Y: H first, X second (a leaf of H), Y last."""
+    associations = tmp_path / "association_by_datatype_indirect"
+    associations.mkdir()
+    pd.DataFrame([
+        {"diseaseId": "STAR", "targetId": X, "datatypeId": "known_drug", "score": 0.6},
+        {"diseaseId": "STAR", "targetId": S1, "datatypeId": "known_drug", "score": 0.9},
+        {"diseaseId": "STAR", "targetId": "ENSG00000000099", "datatypeId": "known_drug", "score": 0.5},
+        {"diseaseId": "STAR", "targetId": Y, "datatypeId": "literature", "score": 0.5},
+    ]).to_parquet(associations / "part-0.parquet", index=False)
+    out_dir = tmp_path / "known_drug"
+    assert loo.main(["--catalogue", str(results.parent / "disease_graph_catalogue"), "--out-dir", str(out_dir),
+                     "--diseases", "STAR", "--holdout", "known_drug", "--associations", str(associations)]) == 0
+    details = pd.read_csv(out_dir / "STAR_known_drug" / "scores_known_drug_details.tsv", sep="\t")
+    assert list(details["gene"]) == [X]
+    row = details.iloc[0]
+    assert row["n_candidates"] == 3 and row["n_seeds"] == 3 and row["known_drug_score"] == 0.6
+    assert row["bfwalk_rank"] == 2 and row["rwr_rank"] == 2 and row["degree_rank"] == 2
+    summary = pd.read_csv(out_dir / "leave_one_out_summary.tsv", sep="\t").set_index("ranking")
+    assert summary.loc["rwr", "auroc"] == pytest.approx(0.5) and summary.loc["rwr", "n_held_out"] == 1
+
+
+def test_known_drug_and_refit_options_are_checked():
+    with pytest.raises(SystemExit):
+        loo.parse_args(["--catalogue", "c", "--holdout", "known_drug"])
+    with pytest.raises(SystemExit):
+        loo.parse_args(["--catalogue", "c", "--holdout", "known_drug", "--associations", "a", "--refit-gsea"])
+    with pytest.raises(SystemExit):
+        loo.parse_args(["--catalogue", "c", "--refit-gsea"])
+
+
+class _FakeRefit:
+    """Holding out S1 (symbol GENE_S1) loses pathway P1, which is the only one S1 is on."""
+    full_selection = frozenset({"P1", "P2"})
+
+    def selection_without(self, symbols):
+        return frozenset({"P2"}) if "GENE_S1" in symbols else self.full_selection
+
+
+def _star_refit_worker(results):
+    import gsea_refit
+
+    weight, _, gene_index, _ = loo.load_graph(results.parent / "disease_graph_catalogue" / "STAR_disease_graph")
+    gene_sets = pd.DataFrame([("P1", g) for g in (H, S1, S2, S3, X, Y)] + [("P2", g) for g in (H, S2, S3, X)],
+                             columns=["set_id", "gene_id"])
+    interactions = pd.DataFrame([{"gene_a": H, "gene_b": leaf, "directed": False, "confidence": np.nan, "sign": 0,
+                                  "evidence_type": "curated", "source_db": "reactome"} for leaf in (S1, S2, S3, X)])
+    refit = {"gsea": _FakeRefit(), "symbols": {S1: {"GENE_S1"}, S2: {"GENE_S2"}}, "gene_sets": gene_sets,
+             "interactions_by_gene_a": interactions.set_index("gene_a")}
+    assert gsea_refit.selection_summary(_FakeRefit.full_selection, frozenset({"P2"}))["n_pathways_lost"] == 1
+    return {"weight": weight, "gene_index": gene_index, "graph": loo.sc.build_digraph(weight, gene_index),
+            "degree": loo.node_degree(weight, gene_index), "restart_prob": 0.5, "bfwalk_alpha": 0.5,
+            "bfwalk_threads": 1, "refit": refit}
+
+
+def test_refit_gsea_rebuilds_the_graph_without_the_held_out_seed(results, tmp_path, monkeypatch):
+    monkeypatch.setattr(loo, "_WORKER", _star_refit_worker(results))
+    # S1's only pathway is lost: the refitted graph is P2 {H, S2, S3, X}, S1 is outside it and ranks last.
+    record = loo.hold_out(S1, [S1, S2, S3], tmp_path / S1)
+    assert record["status"] == "ranked" and not record["in_graph"]
+    assert record["n_pathways"] == 1 and record["n_pathways_lost"] == 1 and record["pathway_jaccard"] == 0.5
+    assert record["n_candidates"] == 3  # H, X and S1 added at score 0
+    assert record["bfwalk_rank"] == 3 and record["rwr_rank"] == 3 and record["degree_rank"] == 3
+    assert "refitted GSEA: 1 pathways (1 lost" in (tmp_path / S1 / "seed.log").read_text()
+    # S2's GSEA selects the same pathways without it: the full graph, ranked as without the refit.
+    record = loo.hold_out(S2, [S1, S2, S3], tmp_path / S2)
+    assert record["in_graph"] and record["n_pathways_lost"] == 0 and record["n_candidates"] == 4
+    assert record["bfwalk_rank"] == 2.5 and record["rwr_rank"] == 2.5
+
+
+def test_disease_refit_reuses_the_null_and_drops_pathways():
+    from types import SimpleNamespace
+
+    import gsea_core
+    import gsea_refit
+
+    reference = json.loads((Path(__file__).parent / "fixtures" / "gsea_reference.json").read_text())
+    library = SimpleNamespace(background=gsea_core.ordered_background(reference["library"]),
+                              reactome=reference["library"])
+    refit = gsea_refit.DiseaseRefit(library, reference["scores"], 0.05)
+    assert refit.full_selection >= {"S00", "S01", "S02", "S03"}
+    sizes = set(refit.null_cache)
+    assert refit.selection_without({"not scored"}) is refit.full_selection
+    # Zero the top genes of S02 until it is no longer selected; the null is reused, not sampled again.
+    top = sorted(reference["library"]["S02"], key=lambda g: -reference["scores"].get(g, 0))[:6]
+    assert "S02" not in refit.selection_without(set(top))
+    assert set(refit.null_cache) == sizes
+
+
+def test_library_symbols_are_normalised(tmp_path):
+    import gsea_refit
+
+    gmt = tmp_path / "lib.gmt"
+    gmt.write_text("A [Reactome]\tR-1\tTP53\tCOX2\tPTGS2\tAMBIG\n")
+    library = gsea_refit.read_library(gmt, {"TP53", "PTGS2"}, {"COX2": "PTGS2"})
+    # COX2 becomes PTGS2 (kept once); an alias of more than one gene (AMBIG) is left as it is.
+    assert library == {"A [Reactome]": ["TP53", "PTGS2", "AMBIG"]}

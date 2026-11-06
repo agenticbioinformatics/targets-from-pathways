@@ -28,6 +28,7 @@ import pandas as pd
 import scipy.sparse as sp
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pipeline"))
+import gsea_core
 import stage3_build_graph as bg
 from stage0_schemas import DiseasePathwaysSchema, SeedGenesSchema
 from stage1_ingest import (
@@ -70,14 +71,8 @@ def parse_args(argv=None):
 
 
 def benjamini_hochberg(pvals):
-    pvals = np.asarray(pvals, dtype=float)
-    n = len(pvals)
-    order = np.argsort(pvals)
-    adjusted = pvals[order] * n / np.arange(1, n + 1)
-    adjusted = np.minimum.accumulate(adjusted[::-1])[::-1]
-    fdr = np.empty(n)
-    fdr[order] = np.minimum(adjusted, 1.0)
-    return fdr
+    """gsea_core.bh_fdr, the correction Stage 2 applies."""
+    return gsea_core.bh_fdr(np.asarray(pvals, dtype=float))
 
 
 def select_reactome_pathways(catalogue, fdr_cutoff):

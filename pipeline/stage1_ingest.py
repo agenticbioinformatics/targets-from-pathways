@@ -94,7 +94,14 @@ PINNED_DIRECTORIES = {
         "url": f"{OPENTARGETS_URL}/association_by_datasource_direct/",
         "path": f"opentargets/{OPENTARGETS_VERSION}/association_by_datasource_direct",
     },
+    "opentargets_association_by_datasource_indirect": {
+        "url": f"{OPENTARGETS_URL}/association_by_datasource_indirect/",
+        "path": f"opentargets/{OPENTARGETS_VERSION}/association_by_datasource_indirect",
+    },
 }
+# --associations: indirect evidence includes the disease's descendant terms (IBD's includes Crohn's disease and
+# ulcerative colitis), as in the DisPathCatalogue v2 GSEA the validation catalogue comes from.
+ASSOCIATION_TYPES = ("indirect", "direct")
 
 # The association table only has a datasource column; this maps it to the Open Targets datatype
 # (https://platform-docs.opentargets.org/evidence). An unknown datasource stops the run, because
@@ -160,10 +167,17 @@ def parse_args(argv=None):
         "--pathway-db", choices=sorted(SUPPORTED_SOURCE_DBS), default="reactome",
         help="Pathway database (only 'reactome' is supported).",
     )
+    parser.add_argument(
+        "--associations", choices=ASSOCIATION_TYPES, default="indirect",
+        help="Open Targets association table: indirect (default) includes evidence on the disease's descendant terms, "
+        "as in the DisPathCatalogue v2 GSEA; direct only the disease's own.",
+    )
     parser.add_argument("--no-download", action="store_true", help="Never use the network; --data-dir must be populated.")
     parser.add_argument("--seed", type=int, default=0, help="Random seed, recorded in the manifest (default: 0).")
-    parser.add_argument("--min-set-size", type=int, default=10, help="Drop gene sets smaller than this (default: 10).")
-    parser.add_argument("--max-set-size", type=int, default=200, help="Drop gene sets larger than this (default: 200).")
+    # The defaults are GSEA's own size limits (gsea_core.MIN_SIZE / MAX_SIZE), so Stage 2 tests the same sets as
+    # the DisPathCatalogue v2 run the validation catalogue comes from. Narrow them for a smaller, more specific graph.
+    parser.add_argument("--min-set-size", type=int, default=5, help="Drop gene sets smaller than this (default: 5).")
+    parser.add_argument("--max-set-size", type=int, default=4000, help="Drop gene sets larger than this (default: 4000).")
     parser.add_argument(
         "--fi-curated-only", action=argparse.BooleanOptionalAction, default=True,
         help="Keep only curated Reactome FI rows (predicted rows carry no direction/sign).",
@@ -661,7 +675,7 @@ def run_ingest(args):
     disease_parquet = get_pinned_file("opentargets_disease", data_dir, args.no_download)
     target_paths = sorted(get_directory_files("opentargets_target", data_dir, args.no_download))
     association_paths = sorted(
-        get_directory_files("opentargets_association_by_datasource_direct", data_dir, args.no_download)
+        get_directory_files(f"opentargets_association_by_datasource_{args.associations}", data_dir, args.no_download)
     )
     gmt_path = unzip_single_file(gmt_zip)
     fi_path = unzip_single_file(fi_zip)
