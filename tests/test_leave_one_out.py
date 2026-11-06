@@ -119,6 +119,9 @@ def test_held_out_seed_is_ranked_among_the_candidates(results):
 
 def test_metrics_and_summary(results):
     summary = pd.read_csv(results / "leave_one_out_summary.tsv", sep="\t").set_index("ranking")
+    assert (results / "auroc_by_degree_quartile.tsv").exists()
+    assert (summary["n_genes"] == 6).all() and (summary["n_seeds_in_graph"] == 3).all()
+    assert summary["in_pooled"].all()  # STAR is small, but it is the only disease
     assert list(summary.index) == loo.RANKINGS + ["random"]
     assert list(summary["diseaseId"].unique()) == ["STAR"]
     assert (summary["n_held_out"] == 3).all() and (summary["n_candidates"] == 4).all()
@@ -327,6 +330,26 @@ def test_degree_baseline(results):
     # Candidates H (4), S1 and X (1, tied), Y (0): S1 is 2.5 of 4, as for the propagation methods.
     assert (details["degree_rank"] == 2.5).all() and (details["degree_score"] == 1).all()
     assert details["in_graph"].all()
+
+
+def test_small_graphs_are_left_out_of_the_pooled_outputs():
+    summary = pd.DataFrame({"diseaseId": ["BIG", "FEW_GENES", "FEW_SEEDS"], "n_genes": [500, 100, 500],
+                            "n_seeds_in_graph": [20, 20, 3]})
+    assert loo.mark_pooled(summary, 200, 5)["in_pooled"].tolist() == [True, False, False]
+    # All small: pooled anyway, so the run still gets its outputs.
+    assert loo.mark_pooled(summary.iloc[1:], 200, 5)["in_pooled"].all()
+
+
+def test_degree_quartile_table():
+    # 5 candidates: degree ranks 1 to 5 are percentiles 1, 0.75, 0.5, 0.25, 0.
+    pooled = pd.DataFrame({"n_candidates": [5] * 5, "degree_rank": [1.0, 2.0, 3.0, 4.0, 5.0],
+                           "bfwalk_rank": [1.0, 1.0, 1.0, 5.0, 5.0], "rwr_rank": [3.0] * 5})
+    table = loo.degree_quartile_table(pooled)
+    assert table["n_held_out"].tolist() == [2, 1, 1, 1]
+    assert table.loc["lowest 25%", "auroc_bfwalk"] == 0.0
+    assert table.loc["top 25%", "auroc_bfwalk"] == 1.0
+    assert (table["auroc_rwr"] == 0.5).all()
+    assert table["auroc_degree"].tolist() == [0.125, 0.5, 0.75, 1.0]
 
 
 def test_jobs_are_limited_by_memory():

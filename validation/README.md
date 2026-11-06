@@ -51,6 +51,40 @@ From here, Stage 5 of the pipeline can use the output directly for network propa
 
 ## Leave-one-out
 
+### One disease, end to end
+
+`scripts/run_one_disease.sh` runs every step for one disease: it finishes the download of the indirect association table, runs the tests, runs the pipeline, then the three leave-one-out modes below. Each step runs alone, with `--jobs 1`, and is stopped if the machine runs short of memory.
+
+```
+export GSEA_CATALOGUE=<DisPathCatalogue v2 directory>
+scripts/run_one_disease.sh check    # read-only: inputs, disk, memory, other jobs
+scripts/run_one_disease.sh all
+```
+
+`scripts/run_one_disease.sh <step>` runs one step (`download`, `tests`, `pipeline`, `loo-standard`, `loo-known-drug`, `loo-refit`). The header of the script lists its settings. Close other apps, plug in and keep the lid open: closing it sleeps the machine. Results and one log per step go to `data/runs/one_disease/`.
+
+### The three modes, by hand
+
+```
+# Seeds held out of the propagation only (circular: the seed helped choose the graph's pathways)
+python validation/leave_one_out.py --catalogue data/disease_graph_catalogue \
+    --out-dir out/loo_standard --diseases EFO_0000095
+
+# Known drug targets instead of seeds
+python validation/leave_one_out.py --catalogue data/disease_graph_catalogue \
+    --out-dir out/loo_known_drug --diseases EFO_0000095 \
+    --holdout known_drug --associations data/association_by_datatype_indirect
+
+# Seeds held out of GSEA too, with the graph rebuilt each time
+python validation/leave_one_out.py --catalogue data/disease_graph_catalogue \
+    --out-dir out/loo_refit --diseases EFO_0000095 --refit-gsea \
+    --gsea-catalogue-dir <DisPathCatalogue v2 directory> \
+    --target-dir data/opentargets/26.06/target \
+    --fi-file data/reactome/FIsInGene_04142025_with_annotations.txt
+```
+
+### Many diseases
+
 ```
 python validation/leave_one_out.py \
     --catalogue validation/Disease_graph_catalogue/disease_graph_catalogue \
@@ -58,6 +92,10 @@ python validation/leave_one_out.py \
 ```
 
 **Memory.** One BFWalk run needs about 5.4 GB on a 5,000-node graph, growing with the square of the nodes (about 24 GB at 10,000), and every `--jobs` worker holds its own copy. Extra threads cost no memory, and with the default `--jobs 1` BFWalk gets every core, so use more workers only on a large machine. The script lowers `--jobs` when the workers would need more than 60% of the machine's memory, and skips a disease when one run would.
+
+**Small graphs.** A disease with fewer than 200 genes or 5 seeds in its graph (`--min-pooled-genes`, `--min-pooled-seeds`) is left out of the all-diseases outputs, as its numbers are too unstable to compare. Its own directory is still written, and `leave_one_out_summary.tsv` flags it with `in_pooled`. If no disease is large enough, all are pooled, with a warning.
+
+**Hub bias.** `auroc_by_degree_quartile.tsv` gives each ranking's mean AUROC by the held-out gene's degree quartile among its disease's candidates. A method that only follows hubs tracks the degree baseline from quartile to quartile.
 
 **Baseline.** A degree-only ranking (each candidate's number of graph neighbours, no seeds used) is reported next to every method: on these graphs seeds are hubs, so recovering them partly means ranking hubs high.
 
@@ -108,6 +146,7 @@ validation/leave_one_out/
 ├── leave_one_out_summary.tsv                one row per disease and ranking: bfwalk, rwr, rrf, borda, rra,
 │                                            union, intersection, degree, random
 ├── combined_score_tests.tsv                 each combination vs BFWalk, RWR, degree, random: means, p-values
+├── auroc_by_degree_quartile.tsv             BFWalk, RWR and degree by the held-out gene's degree quartile
 ├── roc_pr_curve_combined_all_diseases.png   all rankings, all diseases pooled
 ├── roc_curve_all_diseases.png               BFWalk, RWR and degree, all diseases pooled
 ├── leave_one_out.log

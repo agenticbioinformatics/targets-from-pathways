@@ -81,6 +81,7 @@ RECORD_COLUMNS = (["gene", "status", "in_graph", "genetic_evidence", "n_seeds", 
 # Bumped when the records change, so caches written by an earlier version are recomputed.
 RECORD_VERSION = 2
 HOLDOUTS = ["seeds", "known_drug"]
+DEGREE_QUARTILES = ["lowest 25%", "25-50%", "50-75%", "top 25%"]
 KNOWN_DRUG_SUFFIX = "_known_drug"
 # BFWalk's peak memory grows with the square of the graph's nodes and not with its threads (measured: 1.4 GB at 2,411
 # nodes, 5.4 GB at 5,001, the same with 1 and 2 threads). Every --jobs worker holds its own copy, so parallel workers
@@ -124,6 +125,11 @@ def parse_args(argv=None):
     parser.add_argument("--jobs", type=int, default=1, help="Held-out seeds scored in parallel. Default: 1.")
     parser.add_argument("--recompute", action="store_true",
                         help="Score every disease again, even if its cached results match its inputs.")
+    parser.add_argument("--min-pooled-genes", type=int, default=200,
+                        help="Leave diseases whose graph has fewer genes out of the all-diseases outputs: their numbers "
+                        "are too unstable to compare. Their own directories are still written. Default: 200.")
+    parser.add_argument("--min-pooled-seeds", type=int, default=5,
+                        help="As --min-pooled-genes, for the seeds in the graph. Default: 5.")
     parser.add_argument("--holdout", choices=HOLDOUTS, default="seeds",
                         help="seeds (default): hold out each seed in turn. known_drug: rank the disease's known_drug "
                         "targets that are graph genes but not seeds, by the full-seed scores (needs --associations).")
@@ -735,11 +741,12 @@ def run_known_drug(disease, args, ks):
     details = pd.DataFrame(records).reindex(columns=RECORD_COLUMNS)
     details["known_drug_score"] = details["gene"].map(drug)
     details.to_csv(out_dir / "scores_known_drug_details.tsv", sep="\t", index=False, na_rep="NA")
-    return summarise_disease(disease, details, out_dir, ks, args, log, started, "known_drug targets")
+    return summarise_disease(disease, details, out_dir, ks, args, log, started, "known_drug targets",
+                             len(gene_index), len(seeds))
 
 
-def summarise_disease(disease, details, out_dir, ks, args, log, started, what):
-    """Metrics, curves and the disease's summary rows from its records."""
+def summarise_disease(disease, details, out_dir, ks, args, log, started, what, n_genes, n_seeds):
+    """Metrics, curves and the disease's summary rows from its records. n_genes, n_seeds: in the graph."""
     ranked = details[details["status"] == "ranked"]
     rankings = {ranking: ranked[f"{ranking}_rank"] for ranking in RANKINGS}
     table = metrics_table(rankings, ranked["n_candidates"], ks, args.follow_up_k, args.seed)
@@ -756,6 +763,8 @@ def summarise_disease(disease, details, out_dir, ks, args, log, started, what):
     summary.insert(2, "n_held_out", len(ranked))
     summary.insert(3, "n_candidates", float(ranked["n_candidates"].median()))
     summary.insert(4, "n_not_in_graph", not_in_graph)
+    summary.insert(5, "n_genes", n_genes)
+    summary.insert(6, "n_seeds_in_graph", n_seeds)
     return summary, ranked.assign(diseaseId=disease)
 
 
@@ -807,7 +816,7 @@ def run_disease(disease, args, ks, rng):
         (out_dir / CACHE_FILE).write_text(json.dumps(key, indent=2))
 
     return summarise_disease(disease, details, out_dir, ks, args, log, started,
-                             "seeds (GSEA refitted)" if args.refit_gsea else "seeds")
+                             "seeds (GSEA refitted)" if args.refit_gsea else "seeds", len(gene_index), len(seeds))
 
 
 def run_seeds(seeds, held_out, out_dir, jobs, init_args, all_seeds):
@@ -875,9 +884,14 @@ def main(argv=None):
     if not summaries:
         logger.error("No disease could be validated - no metrics.")
         return 1
-    summary = pd.concat(summaries, ignore_index=True)
+    summary = mark_pooled(pd.concat(summaries, ignore_index=True), args.min_pooled_genes, args.min_pooled_seeds)
     summary.to_csv(args.out_dir / "leave_one_out_summary.tsv", sep="\t", index=False)
+    pooled_diseases = summary.loc[summary["in_pooled"], "diseaseId"].unique()
     pooled = pd.concat(all_ranked, ignore_index=True)
+    pooled = pooled[pooled["diseaseId"].isin(pooled_diseases)]
+    quartiles = degree_quartile_table(pooled)
+    quartiles.to_csv(args.out_dir / "auroc_by_degree_quartile.tsv", sep="\t")
+    logger.info("AUROC by the held-out gene's degree quartile:\n%s", format_metrics(quartiles))
     what = {"seeds": "Leave-one-out", "known_drug": "known_drug targets"}[args.holdout]
     title = f"{what} ({pooled['diseaseId'].nunique()} diseases, {len(pooled)} held-out genes)"
     plot_roc({method: pooled[f"{method}_rank"] for method in METHODS + BASELINES}, pooled["n_candidates"],
@@ -888,10 +902,42 @@ def main(argv=None):
     # AUPRC and precision@k depend on each disease's prevalence: across diseases only their fold enrichments.
     metrics = (["auroc", "auprc_fold_enrichment", f"precision@{args.follow_up_k}_fold_enrichment"]
                + [f"recall@{k}" for k in ks])
-    log_summary(summary, tests, metrics)
-    logger.info("Wrote %s, roc_curve_all_diseases.png, roc_pr_curve_combined_all_diseases.png and "
-                "combined_score_tests.tsv.", args.out_dir / "leave_one_out_summary.tsv")
+    log_summary(summary[summary["in_pooled"]], tests, metrics)
+    logger.info("Wrote %s, auroc_by_degree_quartile.tsv, roc_curve_all_diseases.png, "
+                "roc_pr_curve_combined_all_diseases.png and combined_score_tests.tsv.",
+                args.out_dir / "leave_one_out_summary.tsv")
     return 0
+
+
+def mark_pooled(summary, min_genes, min_seeds):
+    """summary with in_pooled: whether a disease's graph is large enough for the all-diseases outputs. If none is,
+    all are pooled, so that a run on small graphs still gets its outputs."""
+    keep = (summary["n_genes"] >= min_genes) & (summary["n_seeds_in_graph"] >= min_seeds)
+    left_out = sorted(summary.loc[~keep, "diseaseId"].unique())
+    if not keep.any():
+        logger.warning("No graph has at least %d genes and %d seeds: pooling all %d diseases, though their numbers "
+                       "are unstable.", min_genes, min_seeds, len(left_out))
+        return summary.assign(in_pooled=True)
+    if left_out:
+        logger.info("Left out of the all-diseases outputs, with fewer than %d genes or %d seeds in the graph: %s.",
+                    min_genes, min_seeds, ", ".join(left_out))
+    return summary.assign(in_pooled=keep)
+
+
+def degree_quartile_table(pooled):
+    """Mean AUROC per ranking by how connected the held-out gene is: quartiles of its degree percentile among its
+    disease's candidates (auroc_from_rank of its degree rank). A method that only follows hubs tracks the degree
+    baseline from quartile to quartile. Quartiles pool genes, so a disease counts by its number of held-out genes."""
+    percentile = pd.Series([auroc_from_rank(rank, n) for rank, n in zip(pooled["degree_rank"], pooled["n_candidates"])],
+                           index=pooled.index)
+    table = pd.DataFrame({"quartile": pd.cut(percentile, [-np.inf, 0.25, 0.5, 0.75, np.inf], labels=DEGREE_QUARTILES)})
+    for ranking in METHODS + BASELINES:
+        table[f"auroc_{ranking}"] = [auroc_from_rank(rank, n) for rank, n in
+                                     zip(pooled[f"{ranking}_rank"], pooled["n_candidates"])]
+    grouped = table.groupby("quartile", observed=False)
+    result = grouped.mean()
+    result.insert(0, "n_held_out", grouped.size())
+    return result
 
 
 def write_combined_score_tests(pooled, path, seed):

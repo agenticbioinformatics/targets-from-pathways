@@ -82,4 +82,4 @@ See [development/README.md](development/README.md) and [development/prompt_histo
 
 ## Validation
 
-See [validation/README.md](validation/README.md).
+See [validation/README.md](validation/README.md). `scripts/run_one_disease.sh` runs the pipeline and every leave-one-out mode for one disease, one step at a time.
