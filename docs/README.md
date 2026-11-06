@@ -33,7 +33,7 @@ stage's own error message is just above. `--report` also writes `out/report.html
 | `--method` | Stage 5's method: `bfwalk` (default), `rwr` or `bfwalk,rwr`. |
 | `--node-weights`, `--edge-weights` | Stage 4's optional weight files (see Stage 4). |
 | `--report` | Also write the HTML report. |
-| anything else | Passed on to Stage 1, e.g. `--allow-low-coverage` or `--min-set-size 5`. |
+| anything else | Passed on to Stage 1, e.g. `--allow-low-coverage` or `--associations direct`. |
 
 **Installation check.** Every run, `--help` included, first imports every stage. If a package is
 missing it stops and lists what is missing, so `python pipeline/run_pipeline.py --help` tells you
@@ -52,7 +52,7 @@ python pipeline/stage1_ingest.py --disease MONDO_0005265 --data-dir data/ --out-
 
 Downloads the pinned source files into `--data-dir` on the first run and checks each against a
 stored sha256 (later runs reuse the cache):
-- Open Targets Platform 26.06: `association_by_datasource_direct`, `target`, `disease`;
+- Open Targets Platform 26.06: `association_by_datasource_indirect` (or `_direct` with `--associations direct`), `target`, `disease`;
 - Reactome 97: `ReactomePathways.gmt`, `Ensembl2Reactome.txt`, and the functional-interaction file
   `FIsInGene_04142025_with_annotations.txt`.
 
@@ -70,7 +70,8 @@ file next to `manifest.json` and refuse one whose checksum no longer matches the
 |---|---|---|
 | `--disease` | required | EFO, MONDO or another ontology ID that Open Targets knows. |
 | `--no-download` | off | Never use the network; `--data-dir` must already hold the files. |
-| `--min-set-size`, `--max-set-size` | 10, 200 | Keep only pathways with this many genes. |
+| `--associations` | `indirect` | Open Targets association table: `indirect` includes evidence on the disease's descendant terms, `direct` only its own. |
+| `--min-set-size`, `--max-set-size` | 5, 4000 | Keep only pathways with this many genes. |
 | `--fi-curated-only` | on | Keep only curated functional interactions (predicted ones carry no reliable direction or sign). |
 | `--fi-min-score` | none | Drop functional interactions scoring below this. |
 | `--allow-low-coverage` | off | Do not stop when fewer than 90% of identifiers map, or the disease has fewer than 5 seed genes. |
@@ -83,20 +84,38 @@ file next to `manifest.json` and refuse one whose checksum no longer matches the
 python pipeline/stage2_gsea_discovery.py --manifest out/manifest.json
 ```
 
-Ranks the seed genes by their strongest `genetic_association` score and runs preranked GSEA
-([blitzgsea](https://github.com/MaayanLab/blitzgsea)) against the Reactome pathways. Only genetic
-evidence is used: Open Targets' overall score includes Reactome-derived evidence, which would make
-testing against Reactome pathways circular. Near-duplicate pathways (Jaccard > 0.7, common in
-Reactome's hierarchy) are collapsed to the smallest one first, and p-values are BH-FDR corrected.
+Runs preranked GSEA of the disease's genetic evidence against the Reactome pathways, with the
+DisPathCatalogue v2 method, implemented in `pipeline/gsea_core.py` (the validation catalogue uses the same
+module):
 
-**Writes:** `disease_pathways.tsv` (the significant pathways: `set_id`, `gene_set`, `source_db`,
-`pval`, `fdr`), `disease_seed_genes.tsv` (`gene_id`, `score`) and `benchmark_holdout_genes.tsv`.
+- **Ranking.** Each gene's `genetic_association` score is its datasource scores combined the way Open
+  Targets combines a datatype (harmonic sum of the top 50). Every gene in a Reactome set is ranked, and a
+  gene with no genetic evidence scores 0. Ties at 0 are broken by a seeded random order, not alphabetically.
+  Only genetic evidence is used: Open Targets' overall score includes Reactome-derived evidence, which
+  would make testing against Reactome pathways circular.
+- **Statistics.** blitzGSEA's enrichment score on the mean-centred ranking. Permutation p-values from
+  random gene sets of the same size: 1,000 draws to start, growing ×10 until each enriched set has at
+  least 10 as extreme, up to 100,000. BH-FDR over all tested sets. blitzGSEA's gamma-fit p-values are not
+  used: they are miscalibrated on this zero-inflated ranking.
+- **Selection.** A pathway is disease-relevant when its genes sit at the top of the ranking
+  (`es > 0`) and FDR < `--fdr-threshold`. A negative ES only means the set's genes have the weakest
+  evidence.
+
+The same seed and inputs always give the same output (`tests/test_gsea_core.py` checks it against the
+reference implementation).
+
+**Writes:** `disease_pathways.tsv` (the selected pathways: `set_id`, `gene_set`, `source_db`, `pval`,
+`fdr`), `gsea_results.tsv` (every tested pathway with `es`, `nes`, `pval`, `fdr`, `n_perm`,
+`geneset_size`), `disease_seed_genes.tsv` (`gene_id`, `score`) and `benchmark_holdout_genes.tsv`.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--pval-threshold` | 0.05 | Nominal p-value cutoff. |
-| `--fdr-threshold` | 0.1 | FDR cutoff. |
+| `--fdr-threshold` | 0.05 | BH-FDR cutoff for a pathway with `es > 0`. |
+| `--min-genes` | 5 | Run GSEA only if at least this many genes with genetic evidence are in a pathway. |
 | `--benchmark-holdout-file` | none | Genes to treat as not associated with the disease (see below). |
+
+Stage 1's `--min-set-size` / `--max-set-size` now default to 5 / 4000, GSEA's own limits, so Stage 2 tests
+the same pathways as the catalogue.
 
 **Benchmark holdout.** `--benchmark-holdout-file` lists genes, one per line (symbol, synonym or Ensembl
 ID; `#` starts a comment). They are removed from the seeds and the GSEA ranking, and Stage 4 ignores
@@ -105,8 +124,8 @@ ranked only if the remaining seeds still detect one of its pathways; otherwise i
 (`validation/leave_one_out.py` does not use this option: it holds seeds out on the precomputed disease graphs,
 see `validation/README.md`.)
 
-**Diseases with few seed genes.** GSEA needs at least 5 seed genes in a pathway, and blitzgsea's
-calibration can fail on small rankings. In those cases Stage 2 logs a warning and writes an empty
+**Diseases with few seed genes.** GSEA needs at least 5 genes with genetic evidence in the pathways.
+With fewer, Stage 2 logs a warning and writes an empty
 `disease_pathways.tsv`, and Stage 3 then stops with a message: without a disease pathway there is no
 graph.
 
@@ -182,8 +201,8 @@ Rules:
 `graph_metadata.json` records what was used under `stage4_user_weights`, and the report header says
 whether the graph is weighted.
 
-**2. Genetic-evidence scores, for Stage 6.** Each graph gene gets its strongest Open Targets
-`genetic_association` score. Other evidence types are not counted: `affected_pathway` contains
+**2. Genetic-evidence scores, for Stage 6.** Each graph gene gets its Open Targets
+`genetic_association` score, its datasource scores combined by harmonic sum as in Stage 2. Other evidence types are not counted: `affected_pathway` contains
 Reactome evidence (circular, as in Stage 2), and `known_drug` would favour genes that are already drug
 targets for the disease. These scores are **never used as weights**. With Stage 2's seeds every
 candidate scores 0 (a gene scoring > 0 is a seed), so the score is informative only when Stage 5 is

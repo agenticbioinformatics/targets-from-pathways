@@ -39,6 +39,7 @@ _PINNED_FIXTURES = {
 _DIRECTORY_FIXTURES = {
     "opentargets_target": [FIXTURES_DIR / "opentargets" / "target.parquet"],
     "opentargets_association_by_datasource_direct": [FIXTURES_DIR / "opentargets" / "association.parquet"],
+    "opentargets_association_by_datasource_indirect": [FIXTURES_DIR / "opentargets" / "association.parquet"],
 }
 
 
@@ -86,6 +87,7 @@ def make_args(out_dir: Path, data_dir: Path, **overrides) -> argparse.Namespace:
         data_dir=data_dir,
         out_dir=out_dir,
         pathway_db="reactome",
+        associations="indirect",
         no_download=False,
         seed=0,
         min_set_size=1,

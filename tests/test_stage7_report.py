@@ -66,10 +66,10 @@ def test_evidence_trace_shared_pathways_and_scoping():
     assert tr["shared_pathways"] == [("Seed Pathway", 1)]     # P1 has C and one seed (T); P3 is not disease-relevant
     assert tr["member_pathways"] == ["Disease Pathway"]       # P2 has C but no seed
 
-    # datatypes: max over datasources, every datatype shown, strongest first
+    # datatypes: datasources combined by harmonic sum, every datatype shown, strongest first
     assert [d["datatype"] for d in tr["datatypes"]] == ["affected_pathway", "genetic_association"]
     ga = tr["datatypes"][1]
-    assert ga["score"] == pytest.approx(0.9)
+    assert ga["score"] == pytest.approx((0.9 + 0.7 / 4) / (1 + 1 / 4))
     assert set(ga["datasources"]) == {"eva", "gwas"}
     assert "feeds" not in ga  # the report shows no genetic-evidence score, so nothing "feeds" it
 

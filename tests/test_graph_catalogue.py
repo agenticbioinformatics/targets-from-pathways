@@ -97,7 +97,7 @@ def _edges(disease_dir):
 
 
 def test_benjamini_hochberg_matches_statsmodels():
-    from statsmodels.stats.multitest import multipletests
+    multipletests = pytest.importorskip("statsmodels.stats.multitest").multipletests
 
     pvals = [0.01, 0.04, 0.03, 0.2, 0.001, 0.5]
     # Hand check on the first four: p * m / rank = 0.04, 0.0533, 0.06, 0.2, then the step-up minimum.

@@ -16,8 +16,8 @@ It has two links, joined at Stage 1's output contract:
 
 - **link 2** — Stages 2→6 via ``run_pipeline`` on the shared 30-gene
   synthetic Stage 1 output the Stage 2-6 tests are built around
-  (``tests/fixtures/synthetic_run.py``, written into ``tmp_path``). blitzgsea
-  (Stage 2) cannot calibrate a GSEA on the 3-gene signature the
+  (``tests/fixtures/synthetic_run.py``, written into ``tmp_path``). GSEA
+  (Stage 2) needs at least 5 genes with evidence, more than the 3-gene signature the
   ``tests/fixtures/`` inputs produce, so the chain continues from that
   larger synthetic Stage 1 output — which is emitted and schema-validated
   exactly like ``stage1_ingest``'s. Every remaining hand-off

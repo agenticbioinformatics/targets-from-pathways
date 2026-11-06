@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from stage0_schemas import AnnotatedCandidatesSchema, fail, ranking_column
+from stage0_schemas import AnnotatedCandidatesSchema, datatype_harmonic_sum, fail, ranking_column
 
 
 logger = logging.getLogger("stage7_report")
@@ -200,7 +200,7 @@ def evidence_trace(gene_id, run):
         for datatype, rows in ot[ot["gene_id"] == gene_id].groupby("datatype_id"):
             datatypes.append({
                 "datatype": str(datatype),
-                "score": float(rows["score"].max()),
+                "score": datatype_harmonic_sum(rows["score"]),
                 "datasources": sorted(rows["datasource_id"].astype(str).unique()),
             })
         datatypes.sort(key=lambda entry: (-entry["score"], entry["datatype"]))

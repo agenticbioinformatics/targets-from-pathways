@@ -9,9 +9,7 @@ numpy
 pyarrow
 pandas
 
-# Stage 2 — disease-pathway discovery (GSEA, FDR correction)
-blitzgsea
-statsmodels
+# Stage 2 — disease-pathway discovery: GSEA is pipeline/gsea_core.py (numpy), no extra package
 
 # Stage 3 — pathway-based gene-gene graph construction
 networkx

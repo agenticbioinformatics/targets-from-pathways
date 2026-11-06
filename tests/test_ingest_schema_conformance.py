@@ -121,7 +121,7 @@ def test_unrecognized_datasource_fails_loudly(tmp_path, monkeypatch, patched_acq
         ingest,
         "get_directory_files",
         _make_fake_get_directory_files(
-            overrides={"opentargets_association_by_datasource_direct": [bad_assoc]}
+            overrides={"opentargets_association_by_datasource_indirect": [bad_assoc]}
         ),
     )
 

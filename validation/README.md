@@ -54,8 +54,16 @@ From here, Stage 5 of the pipeline can use the output directly for network propa
 ```
 python validation/leave_one_out.py \
     --catalogue validation/Disease_graph_catalogue/disease_graph_catalogue \
-    --diseases EFO_0003767,MONDO_0004975 --jobs 8
+    --diseases EFO_0003767,MONDO_0004975
 ```
+
+**Memory.** One BFWalk run needs about 5.4 GB on a 5,000-node graph, growing with the square of the nodes (about 24 GB at 10,000), and every `--jobs` worker holds its own copy. Extra threads cost no memory, and with the default `--jobs 1` BFWalk gets every core, so use more workers only on a large machine. The script lowers `--jobs` when the workers would need more than 60% of the machine's memory, and skips a disease when one run would.
+
+**Baseline.** A degree-only ranking (each candidate's number of graph neighbours, no seeds used) is reported next to every method: on these graphs seeds are hubs, so recovering them partly means ranking hubs high.
+
+**`--refit-gsea`.** A held-out seed also helped GSEA choose the pathways the graph is built from. With this option each held-out seed's GSEA is rerun without it, the pathways are selected again and the graph rebuilt from them; a seed left outside the rebuilt graph ranks last, with score 0. Needs `--gsea-catalogue-dir`, `--target-dir` and `--fi-file`.
+
+**`--holdout known_drug`.** Evaluates on an independent evidence line instead of the seeds: the disease's Open Targets `known_drug` targets that are graph genes but not seeds, ranked by the full-seed scores. Needs `--associations`, an `association_by_datatype_indirect` directory. It writes `<diseaseId>_known_drug/` and is not cached.
 
 For each disease, every seed is iteratively held out from the seeds set: Stage 5 (BFWalk and RWR) scores these held-out genes using the remaining seeds.
 
@@ -98,10 +106,10 @@ show precision where each held-out gene is recovered. `roc_curve_all_diseases.pn
 ```
 validation/leave_one_out/                    
 ├── leave_one_out_summary.tsv                one row per disease and ranking: bfwalk, rwr, rrf, borda, rra,
-│                                            union, intersection, random
-├── combined_score_tests.tsv                 each combination vs BFWalk, RWR, random: means, p-values
+│                                            union, intersection, degree, random
+├── combined_score_tests.tsv                 each combination vs BFWalk, RWR, degree, random: means, p-values
 ├── roc_pr_curve_combined_all_diseases.png   all rankings, all diseases pooled
-├── roc_curve_all_diseases.png               BFWalk and RWR, all diseases pooled
+├── roc_curve_all_diseases.png               BFWalk, RWR and degree, all diseases pooled
 ├── leave_one_out.log
 └── EFO_0003767_leave_one_out/
     ├── metrics.tsv                          one row per ranking
@@ -112,7 +120,7 @@ validation/leave_one_out/
     ├── cache_key.json                       what input files the scores were computed from
     ├── full/candidate_scores.tsv            seeds
     └── ENSG00000.../                        one subdirectory per held-out gene
-        ├── candidate_scores.tsv             every candidate's bfwalk_score and rwr_score
+        ├── candidate_scores.tsv             every candidate's bfwalk_score, rwr_score and degree_score
         ├── result.json                      the held-out gene's scores and ranks
         └── seed.log
 ```
